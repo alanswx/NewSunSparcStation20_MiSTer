@@ -10,6 +10,7 @@
 #include "t_traps.S"
 #include "t_window.S"
 #include "t_psr.S"
+#include "t_fpu.S"
 #include "mmu_setup.S"              /* not a test: the MMU-on setup t_dcti and t_iu2 use */
 #include "t_iu2.S"
 #include "t_dcti.S"

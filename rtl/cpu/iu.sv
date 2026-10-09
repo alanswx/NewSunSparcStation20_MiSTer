@@ -32,10 +32,18 @@
 //   W  the register write (two cycles for ldd), icc/Y/PSR/WIM/TBR, the
 //      trap sequence (two cycles: %l1 then %l2).
 //
-// Left out in this version: the FPU (fpop traps fp_disabled; EF is kept as
-// written), the coprocessor (EC reads 0), FLUSH and STBAR as no-ops (the
-// caches come in phase 3), the watchdog reset (error mode halts and raises
-// error_o; the module resets the IU).
+// The FPU (phase 2) hangs off fpu_req_o/fpu_rsp_i (fpu_pkg, docs/arch/cpu.md
+// §1.7): an FP instruction waits in D while another is in E/M/W or the FPU
+// is busy, so that when it reaches E the FPU's state is final: the deferred
+// fp_exception, the sequence errors and the FBfcc condition are decided
+// there, after the alignment check (Table 7-1: mem_address_not_aligned 10,
+// fp_exception 11). An FPop is handed to the FPU when W commits it; FP
+// loads write the FPU's registers (or the FSR) at W; FP stores take their
+// data from the FPU in E; stdfq pops the queue at W.
+//
+// Left out in this version: the coprocessor (EC reads 0), FLUSH and STBAR
+// as no-ops (the caches come in phase 3), the watchdog reset (error mode
+// halts and raises error_o; the module resets the IU).
 
 module iu
   import cpu_pkg::*;
@@ -49,6 +57,8 @@ module iu
   input  ifetch_rsp_t ifetch_rsp_i,
   output dmem_req_t   dmem_req_o,
   input  dmem_rsp_t   dmem_rsp_i,
+  output fpu_pkg::fpu_req_t fpu_req_o,
+  input  fpu_pkg::fpu_rsp_t fpu_rsp_i,
 
   input  logic [3:0]  irl_i,          // the interrupt controller's level, 0 = none
   output logic        error_o,        // error mode: halted after a trap with ET = 0
@@ -90,6 +100,7 @@ module iu
   // E
   logic        e_valid;
   dec_t        e_dec;
+  logic [31:0] e_inst;         // the word, for the FPU
   logic [31:0] e_pc, e_npc;
   logic        e_trap;
   logic [7:0]  e_tt;
@@ -97,6 +108,7 @@ module iu
   // M
   logic        m_valid;
   dec_t        m_dec;
+  logic [31:0] m_inst;
   logic [31:0] m_pc, m_npc;
   logic        m_trap;
   logic [7:0]  m_tt;
@@ -113,6 +125,7 @@ module iu
   /* verilator lint_off UNUSEDSIGNAL */   // W needs only cls, rd, size, sgn, wr_rd of the decode
   dec_t        w_dec;
   /* verilator lint_on UNUSEDSIGNAL */
+  logic [31:0] w_inst;
   logic [31:0] w_pc, w_npc;
   logic        w_trap;
   logic [7:0]  w_tt;
@@ -342,12 +355,22 @@ module iu
     end
   end
 
+  // FP instructions go one at a time: the next waits in D until the one
+  // ahead has left W and the FPU is idle, so that the FPU's state (the
+  // exception state, fcc, the registers an FP store reads) is final in E.
+  function automatic logic is_fp(input cls_t c);
+    return c == C_FPOP || c == C_FBFCC || c == C_FPLOAD || c == C_FPSTORE;
+  endfunction
+  logic fp_inflight;
+  assign fp_inflight = (e_valid && is_fp(e_dec.cls)) || (m_valid && is_fp(m_dec.cls)) ||
+                       (w_valid && is_fp(w_dec.cls)) || fpu_rsp_i.busy;
+
   // D stalls (keeps its instruction) when E cannot take it
   logic d_hazard;
   // With a serialising instruction in flight every instruction waits: the
   // window, S, ET and PIL may all change (rare enough; a later version can
   // forward the window and let the independent ones through).
-  assign d_hazard = d_valid && !d_trap && (d_uses_rd_of_e || ser_inflight);
+  assign d_hazard = d_valid && !d_trap && (d_uses_rd_of_e || ser_inflight || (is_fp(d_dec.cls) && fp_inflight));
 
   assign d_go    = d_valid && !e_stall && !d_hazard;
   assign d_stall = d_valid && !d_go;
@@ -396,11 +419,12 @@ module iu
   always_ff @(posedge clk) begin
     if (rst || flush) begin
       e_valid <= 1'b0;
-      e_dec <= '0; e_pc <= '0; e_npc <= '0; e_trap <= 1'b0; e_tt <= '0;
+      e_dec <= '0; e_inst <= '0; e_pc <= '0; e_npc <= '0; e_trap <= 1'b0; e_tt <= '0;
       e_rs1 <= '0; e_rs2 <= '0; e_rs3 <= '0; e_rs4 <= '0;
     end else if (d_go) begin
       e_valid <= 1'b1;
       e_dec <= d_annul_now ? '{default: '0, cls: C_NOP} : d_dec;
+      e_inst <= d_inst;
       e_pc <= d_pc;
       e_npc <= (slot_in_d && redirect) ? redirect_target : d_npc;
       // the RF output is a cycle old: a write landing at this edge is taken here
@@ -516,6 +540,24 @@ module iu
     return c[3] ? ~r : r;             // the other eight are the negations (a: always)
   endfunction
 
+  // FBfcc (V8 Table F-7): the fcc meanings E (0), L (1), G (2), U (3);
+  // cond[3] negates as for Bicc
+  function automatic logic fcond_true(input logic [3:0] c, input logic [1:0] fcc);
+    logic fe, fl, fg, fu, r;
+    fe = fcc == 2'd0; fl = fcc == 2'd1; fg = fcc == 2'd2; fu = fcc == 2'd3;
+    case (c[2:0])
+      3'd0: r = 1'b0;                 // never / always
+      3'd1: r = ~fe;                  // ne / e
+      3'd2: r = fl | fg;              // lg / ue
+      3'd3: r = fu | fl;              // ul / ge
+      3'd4: r = fl;                   // l / uge
+      3'd5: r = fu | fg;              // ug / le
+      3'd6: r = fg;                   // g / ule
+      default: r = fu;                // u / o
+    endcase
+    return c[3] ? ~r : r;
+  endfunction
+
   logic        e_taken;        // this instruction transfers control
   logic [31:0] e_target;
   logic        e_annul;
@@ -544,6 +586,11 @@ module iu
         e_target = e_pc + e_dec.disp22;
         // annul: untaken with a = 1, or BA with a = 1 (never-branch BN with a also annuls)
         e_annul  = e_dec.annul && (!br_cond || e_dec.cond == 4'h8);
+      end
+      C_FBFCC: begin
+        e_taken  = fcond_true(e_dec.cond, fpu_rsp_i.fsr[11:10]);
+        e_target = e_pc + e_dec.disp22;
+        e_annul  = e_dec.annul && (!e_taken || e_dec.cond == 4'h8);
       end
       C_CALL: begin
         e_taken  = 1'b1;
@@ -579,6 +626,12 @@ module iu
       e_tag_trap = 1'b1; e_tag_tt = TT_WINDOW_UNDERFLOW;
     end else if (e_misaligned) begin
       e_tag_trap = 1'b1; e_tag_tt = TT_MEM_ADDR_NOT_ALIGNED;
+    end else if (is_fp(e_dec.cls) && fpu_rsp_i.exc_pending) begin
+      e_tag_trap = 1'b1; e_tag_tt = TT_FP_EXCEPTION;      // the deferred exception
+    end else if (fpu_rsp_i.exc_state && (e_dec.cls == C_FPOP || e_dec.cls == C_FBFCC || e_dec.cls == C_FPLOAD)) begin
+      e_tag_trap = 1'b1; e_tag_tt = TT_FP_EXCEPTION;      // sequence error: only stores run in fp_exception
+    end else if (e_dec.cls == C_FPSTORE && e_dec.fq && !fpu_rsp_i.fsr[13]) begin
+      e_tag_trap = 1'b1; e_tag_tt = TT_FP_EXCEPTION;      // sequence error: stdfq on an empty queue
     end else if (alu_tag_trap && e_dec.cls == C_ALU) begin
       e_tag_trap = 1'b1; e_tag_tt = TT_TAG_OVERFLOW;
     end else if (e_dec.cls == C_DIV && md_dz) begin
@@ -640,21 +693,33 @@ module iu
   assign e_go    = e_valid && !m_stall && !md_wait;
   assign e_stall = e_valid && !e_go;
 
+  // An FP store's data comes from the FPU: a register (or pair), the FSR,
+  // or the front of the queue
+  logic [63:0] fp_st_data;
+  always_comb begin
+    if (e_dec.fq)                fp_st_data = fpu_rsp_i.fq;
+    else if (e_dec.fsr)          fp_st_data = {32'd0, fpu_rsp_i.fsr};
+    else if (e_dec.size == 2'd3) fp_st_data = fpu_rsp_i.rd_data;
+    else                         fp_st_data = {32'd0, e_dec.rd[0] ? fpu_rsp_i.rd_data[31:0] : fpu_rsp_i.rd_data[63:32]};
+  end
+
   always_ff @(posedge clk) begin
     if (rst || flush) begin
       m_valid <= 1'b0;
-      m_dec <= '0; m_pc <= '0; m_npc <= '0; m_trap <= 1'b0; m_tt <= '0;
+      m_dec <= '0; m_inst <= '0; m_pc <= '0; m_npc <= '0; m_trap <= 1'b0; m_tt <= '0;
       m_result <= '0; m_wdata <= '0; m_icc <= '0; m_wicc <= 1'b0; m_y <= '0; m_wy <= 1'b0;
       m_wr_val <= '0; m_newcwp <= '0;
     end else if (e_go) begin
       m_valid <= 1'b1;
       m_dec <= e_dec;
+      m_inst <= e_inst;
       m_pc <= e_pc;
       m_npc <= e_npc;
       m_trap <= e_trap | e_tag_trap;
       m_tt <= e_trap ? e_tt : e_tag_tt;
       m_result <= e_result;
-      m_wdata <= (e_dec.size == 2'd3) ? {rs3v, rs4v} : {32'd0, rs3v};   // std: {even, odd}; else right-aligned
+      m_wdata <= (e_dec.cls == C_FPSTORE) ? fp_st_data :
+                 (e_dec.size == 2'd3) ? {rs3v, rs4v} : {32'd0, rs3v};   // std: {even, odd}; else right-aligned
       m_icc <= e_icc;
       m_wicc <= e_wicc & ~e_trap & ~e_tag_trap;
       m_y <= e_y;
@@ -670,14 +735,15 @@ module iu
   // M: memory
   // =====================================================================
   logic m_is_mem;
-  assign m_is_mem = m_valid && !m_trap && (m_dec.cls == C_LOAD || m_dec.cls == C_STORE || m_dec.cls == C_ATOMIC);
+  assign m_is_mem = m_valid && !m_trap && (m_dec.cls == C_LOAD || m_dec.cls == C_STORE || m_dec.cls == C_ATOMIC ||
+                                           m_dec.cls == C_FPLOAD || m_dec.cls == C_FPSTORE);
   logic m_done;                // the access completed this cycle
   assign m_done = m_is_mem && dmem_rsp_i.ack;
 
   always_comb begin
     dmem_req_o = '0;
     dmem_req_o.valid  = m_is_mem & ~m_acked;
-    dmem_req_o.write  = m_dec.cls == C_STORE;
+    dmem_req_o.write  = m_dec.cls == C_STORE || m_dec.cls == C_FPSTORE;
     dmem_req_o.atomic = m_dec.cls == C_ATOMIC;
     dmem_req_o.asi    = m_dec.alt ? m_dec.asi : (s ? ASI_SUPV_DATA : ASI_USER_DATA);
     dmem_req_o.va     = m_result;
@@ -705,12 +771,13 @@ module iu
   always_ff @(posedge clk) begin
     if (rst || flush) begin
       w_valid <= 1'b0;
-      w_dec <= '0; w_pc <= '0; w_npc <= '0; w_trap <= 1'b0; w_tt <= '0;
+      w_dec <= '0; w_inst <= '0; w_pc <= '0; w_npc <= '0; w_trap <= 1'b0; w_tt <= '0;
       w_result <= '0; w_rdata <= '0; w_icc <= '0; w_wicc <= 1'b0; w_y <= '0; w_wy <= 1'b0;
       w_wr_val <= '0; w_newcwp <= '0;
     end else if (m_go) begin
       w_valid <= 1'b1;
       w_dec <= m_dec;
+      w_inst <= m_inst;
       w_pc <= m_pc;
       w_npc <= m_npc;
       w_result <= m_result;
@@ -776,6 +843,28 @@ module iu
         rf_wdata = w_second ? w_rdata[31:0] : w_rdata[63:32];
       end
     end
+  end
+
+  // The FPU: an FPop is handed over when it commits; FP loads write the
+  // registers or the FSR; stdfq pops the queue; a taken fp_exception is
+  // reported (the FPU knows whether it was the pending one or a sequence
+  // error). The register read for an FP store is addressed from E.
+  logic w_commit;
+  assign w_commit = w_valid && !w_stall && !w_trap && !error;
+  always_comb begin
+    fpu_req_o = '0;
+    fpu_req_o.rd_addr    = e_dec.rd;
+    fpu_req_o.fpop_valid = HAS_FPU && w_commit && w_dec.cls == C_FPOP;
+    fpu_req_o.fpop_inst  = w_inst;
+    fpu_req_o.fpop_pc    = w_pc;
+    fpu_req_o.trap_taken = HAS_FPU && w_take_trap && et && w_tt == TT_FP_EXCEPTION;
+    fpu_req_o.wr_valid   = HAS_FPU && w_commit && w_dec.cls == C_FPLOAD && !w_dec.fsr;
+    fpu_req_o.wr_addr    = w_dec.rd;
+    fpu_req_o.wr_dbl     = w_dec.size == 2'd3;
+    fpu_req_o.wr_data    = w_rdata;
+    fpu_req_o.fsr_wr     = HAS_FPU && w_commit && w_dec.cls == C_FPLOAD && w_dec.fsr;
+    fpu_req_o.fsr_wdata  = w_rdata[31:0];
+    fpu_req_o.fq_pop     = HAS_FPU && w_commit && w_dec.cls == C_FPSTORE && w_dec.fq;
   end
 
   // Architectural state updates

@@ -28,6 +28,12 @@ PASS window: WIM implements NWINDOWS bits, save into WIM traps
 PASS psr: impl/ver read-only, PIL and icc writable
     check 00000004 exp=00000b30 obs=00000ff0
 FAIL psr: TBR.tt holds the last trap type, TBA writable
+PASS fpu: single precision add/sub/mul/div/sqrt, moves
+PASS fpu: double precision arithmetic, even/odd pairs
+PASS fpu: fitos/fitod/fstoi/fdtoi/fstod/fdtos
+PASS fpu: fcmps/fcmpd fcc values and FBfcc
+PASS fpu: FSR cexc/aexc on inexact, divide-by-zero, invalid
+PASS fpu: FLT_MIN*FLT_MIN, DBL_MIN*DBL_MIN: trapped UF|NX (store blocked), untrapped +0
 PASS fpu: misaligned st %f with a pending fp_exception takes tt 7 first
 PASS fpu: FQ holds the trapping FPop; STDFQ empties it, is privileged, traps when empty
 PASS trap: LDC/STC family -> cp_disabled (0x24), no memory access
@@ -36,4 +42,4 @@ PASS trap: wr %psr with CWP = NWINDOWS -> illegal_instruction
 FAIL iu: reserved ASRs read %y, writes do nothing; CASA -> illegal_instruction
 PASS mmu: SS20 ASI 0x4c is a register, not ASI 0x0c; ASI 0x38 holds 64-bit values
 PASS iu: jmp/rett to a jmpl %g1,%o7 (0, 1, 2, 4, 8 stores before the rett), caches on: %o7 is the jmpl's address
-CPUTEST DONE pass=30 fail=3 skip=0
+CPUTEST DONE pass=36 fail=3 skip=0

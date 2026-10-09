@@ -48,19 +48,18 @@ if [ "$QEMU" = 1 ] || [ ! -f "$ref" ]; then
     | tr -d '\r' | sed -u '/CPUTEST DONE/q' > "$ref" || true
   echo "qemu reference: $ref ($(grep -c . "$ref") lines)"
 fi
-srcs="rtl/pkg/iobus_pkg.sv rtl/pkg/sun4m_pkg.sv rtl/pkg/cpu_pkg.sv rtl/cpu/*.sv rtl/obio/escc.sv rtl/obio/escc_chan.sv sim/iu/iu_sim.sv"
+srcs="rtl/pkg/iobus_pkg.sv rtl/pkg/sun4m_pkg.sv rtl/pkg/cpu_pkg.sv rtl/pkg/fpu_pkg.sv rtl/cpu/*.sv rtl/obio/escc.sv rtl/obio/escc_chan.sv sim/iu/iu_sim.sv"
 if ! verilator --binary --timing --timescale 1ns/1ps -Wall -Wno-DECLFILENAME -Wno-UNUSEDSIGNAL -Wno-UNUSEDPARAM \
       -Wno-WIDTHTRUNC -Wno-WIDTHEXPAND -Wno-BLKSEQ -Wno-PROCASSINIT --top-module iu_sim --Mdir "$obj/build" -o Viu_sim \
       -GROM="\"$obj/rom.hex\"" $srcs > "$obj/build.log" 2>&1; then
   echo "build failed: see $obj/build.log"; grep -E '%Error|%Warning' "$obj/build.log" | head -20; exit 1
 fi
 "$obj/build/Viu_sim" | tr -d '\r' | tee "$obj/run.log" | tail -3
-# Compare the result lines (PASS/FAIL/SKIP), leaving out the FPU-dependent
-# ones (phase 2: ours SKIP, QEMU passes) and the CPUTEST DONE totals, and
-# with QEMU's known deviations from V8 (tests/cpu/README.md) taken as PASS
+# Compare the result lines (PASS/FAIL/SKIP), leaving out the CPUTEST DONE
+# totals, and with QEMU's known deviations from V8 (tests/cpu/README.md) taken as PASS
 # in the reference: the core must be right where QEMU is wrong.
 QEMU_DEVIATIONS='rett with traps enabled|TBR.tt holds the last trap type|reserved ASRs read %y'
-filt() { grep -a -E '^(PASS|FAIL|SKIP)' "$1" | grep -v -E '^(PASS|SKIP) fpu:'; }
+filt() { grep -a -E '^(PASS|FAIL|SKIP)' "$1"; }
 reffilt() { filt "$1" | sed -E "s/^FAIL (.*($QEMU_DEVIATIONS))/PASS \\1/"; }
 if diff <(reffilt "$ref") <(filt "$obj/run.log") > "$obj/diff.txt"; then
   echo "iu_sim: result lines match QEMU with its deviations corrected ($(grep -c '^PASS' "$obj/run.log") PASS, $(grep -c '^SKIP' "$obj/run.log") SKIP)"

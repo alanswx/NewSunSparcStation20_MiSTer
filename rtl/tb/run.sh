@@ -32,6 +32,7 @@ else
   echo "clean"
 fi
 
+cd "$rtl/.." || exit 2          # benches open their data files by repository-relative paths
 if [ $# -gt 0 ]; then
   tbs="$*"
 else

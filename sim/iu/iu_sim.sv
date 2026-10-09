@@ -35,8 +35,13 @@ module iu_sim
   logic        error, halt;
   logic [2:0]  cwp;
 
-  iu #(.HAS_FPU(1'b0)) u_iu (.clk, .rst, .ifetch_req_o(ifr), .ifetch_rsp_i(ifs), .dmem_req_o(dmr), .dmem_rsp_i(dms),
+  fpu_pkg::fpu_req_t fpr;
+  fpu_pkg::fpu_rsp_t fps;
+
+  iu #(.HAS_FPU(1'b1)) u_iu (.clk, .rst, .ifetch_req_o(ifr), .ifetch_rsp_i(ifs), .dmem_req_o(dmr), .dmem_rsp_i(dms),
+                             .fpu_req_o(fpr), .fpu_rsp_i(fps),
                              .irl_i(4'd0), .error_o(error), .cwp_o(cwp), .halt_o(halt));
+  fpu u_fpu (.clk, .rst, .req_i(fpr), .rsp_o(fps));
 
   // ---- memories ----
   logic [31:0] rom [0:65535];        // 256 KB
