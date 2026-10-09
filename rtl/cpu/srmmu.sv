@@ -261,8 +261,9 @@ module srmmu
 
   always_comb begin
     mem_req_o = '0;
-    mem_req_o.valid = (ws == W_READ) || (ws == W_WRITE);
-    mem_req_o.write = ws == W_WRITE;
+    // held from the request until the ack (the arbiter follows valid)
+    mem_req_o.valid = (ws == W_READ) || (ws == W_WAIT) || (ws == W_WRITE) || (ws == W_WRITE_WAIT);
+    mem_req_o.write = (ws == W_WRITE) || (ws == W_WRITE_WAIT);
     mem_req_o.pa    = {w_addr[35:3], 3'b000};
     mem_req_o.be    = w_addr[2] ? 8'h0F : 8'hF0;
     mem_req_o.wdata = w_addr[2] ? {32'd0, w_entry} : {w_entry, 32'd0};

@@ -9,7 +9,8 @@
 //               no write-allocate; ignores its own module's snoops (it
 //               updates its line on a write hit instead)
 // Physically tagged (PA[35:12]); the set index is within the page offset.
-// Data and tags in dual-port RAM, the valid/MRU/lock bits in flops.
+// Data and tags in RAM (a lookup read port and a write/read port), the
+// valid/MRU/lock bits in flops.
 //
 // From: the Viking (TMS390Z50) user documentation §4.7 (I-cache: 5-way,
 //   64-byte lines with two valid bits, replacement by MRU history and lock
@@ -103,13 +104,13 @@ module l1cache
   genvar w;
   generate
     for (w = 0; w < WAYS; w++) begin : g_way
-      ram_tdp64_be #(.AW(9)) u_data (
+      ram_2r1w_be #(.AW(9), .BYTES(8)) u_data (
         .clk,
-        .a_addr(da_addr), .a_we(1'b0), .a_be(8'h00), .a_wdata(64'd0), .a_rdata(da_rdata[w]),
+        .a_addr(da_addr), .a_rdata(da_rdata[w]),
         .b_addr(db_addr), .b_we(db_we & db_we_way[w]), .b_be(db_be), .b_wdata(db_wdata), .b_rdata(db_rdata[w]));
-      ram_tdp_be #(.AW(SET_W)) u_tag (
+      ram_2r1w_be #(.AW(SET_W), .BYTES(4)) u_tag (
         .clk,
-        .a_addr(ta_addr), .a_we(1'b0), .a_be(4'h0), .a_wdata(32'd0), .a_rdata(ta_rdata[w]),
+        .a_addr(ta_addr), .a_rdata(ta_rdata[w]),
         .b_addr(tb_addr), .b_we(tb_we & tb_we_way[w]), .b_be(4'hF), .b_wdata(tb_wdata), .b_rdata(tb_rdata[w]));
     end
   endgenerate
