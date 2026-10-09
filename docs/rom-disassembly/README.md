@@ -1,12 +1,12 @@
 # Sun boot PROM disassembly
 
-> **On this branch:** the files that reproduce Sun's code are not included:
+> **In this repository:** the files that reproduce Sun's code are not included:
 > `listing.s`, `forth-dictionary.txt`, `forth-nodes.txt`, `forth.json` and
 > the detokenized `fcode-*.txt`. What stays is our own analysis
 > (`README.md`, `hardware-access.md`, `post-tests.md`, `device-tree.md`),
 > the `romdis.json` label configs and the QEMU traces. To regenerate the
 > rest from your own ROM images, run `tools/romdis/` (`romdis.py`,
-> `obpforth.py`, `detok.py`). Keep the output out of git. The links to
+> `obpforth.py`, `detok.py`). Keep the output out of git (the full set is in the gitignored `scratch/private/rom-disassembly/`). The links to
 > those files below assume you have done that.
 
 A complete disassembly of the two Sun OpenBoot PROMs that match what this

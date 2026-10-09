@@ -1,14 +1,15 @@
 # SunSparcStation20_MiSTer: the Verilog rewrite
 
-This branch (`verilog-rewrite`) is the start of a new Sun SPARCstation 20
-core for MiSTer, written from scratch in SystemVerilog and licensed
+This repository is the start of a new Sun SPARCstation 20 core for
+MiSTer, written from scratch in SystemVerilog and licensed
 GPL-2.0-or-later.
 
-It is an orphan branch: it shares no history with `master`. The VHDL core
-on `master` is built on Grabulosaure's CPU and chipset, which were
-published with "All rights reserved" and no license. This branch holds
-only what can be reused: our own code, the GPL firmware and framework,
-the tests, the tools and the documentation.
+It starts fresh, with no history from the VHDL core
+(MiSTer-devel/SunSparcStation20_MiSTer). That core is built on
+Grabulosaure's CPU and chipset, published with "All rights reserved" and
+no license. This repository holds only what can be reused: our own code,
+the GPL firmware and framework, the tests, the tools and the
+documentation.
 
 **Start with [docs/VERILOG-PLAN.md](docs/VERILOG-PLAN.md)**: the clean-room
 rules, the compatibility contracts with Main and OpenBIOS, the
@@ -28,9 +29,10 @@ architecture, the phases and the requirements learned on the VHDL core.
 | `tools/` | ROM analysis (`romdis/`), FCode, NVRAM, CD-audio, UFS, NeXTSTEP and MiSTer tools; `debugarm/pcdump.c` | ours |
 | `docs/rom-disassembly/` | our analysis of the SS20 OBP 2.25 and SS5 OBP 2.15 PROMs (no Sun code) | ours |
 | `docs/legacy/` | the VHDL core's plans, gap audits, design notes and session hand-offs | ours |
+| `scratch/` | local only, gitignored: reference manuals, Sun PROM images and their full disassembly, candidate RTL from other cores (see `scratch/README.md`) | not in git |
 
 The VHDL files in `rtl/` use helper packages of the old core that are not
-here, so they do not build on this branch yet. They are kept to be ported.
+here, so they do not build here yet. They are kept to be ported.
 
 Not here, on purpose: Grabulosaure's RTL and tools; Keith Conger's CS4231
 model; Sun PROM images and their disassembly listings; release binaries.

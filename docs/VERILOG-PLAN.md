@@ -1,12 +1,13 @@
 # SPARCstation 20 in Verilog: the rewrite plan
 
 A new SPARCstation 20 (sun4m) core for MiSTer, written from scratch in
-SystemVerilog under GPL-2.0-or-later. It replaces the VHDL core on
-`master`. The CPU, the bus and most of the chipset there are Grabulosaure's
-(TEMLIB), published "All rights reserved" with no license, so they cannot
-be relicensed or redistributed. This branch keeps only code we own or that
-carries a compatible license. Everything else is rebuilt from public
-specifications, GPL references and our own test suite.
+SystemVerilog under GPL-2.0-or-later. It replaces the VHDL core
+(MiSTer-devel/SunSparcStation20_MiSTer), whose CPU, bus and most of the
+chipset are Grabulosaure's (TEMLIB), published "All rights reserved"
+with no license, so they cannot be relicensed or redistributed. This
+repository keeps only code we own or that carries a compatible license.
+Everything else is rebuilt from public specifications, GPL references and
+our own test suite.
 
 Plan written 2026-10-09. The VHDL core's own plans and records are in
 [legacy/](legacy/). They are useful as hardware notes, but they are not
@@ -17,7 +18,7 @@ this plan.
 ### 1.1 Clean room
 
 1. **Never open the VHDL core's source while writing RTL here.** That
-   means `master`'s `rtl/cpu`, `rtl/plomb`, `rtl/peri`, Grabulosaure's
+   means the VHDL core's `rtl/cpu`, `rtl/plomb`, `rtl/peri`, Grabulosaure's
    files in `rtl/sun4m` and `rtl/mister`, the backup tarball and
    `danifunker/ss`. Do not translate it by hand or by tool
    (`sim/gen_verilog.sh`'s GHDL output is still his code).
@@ -27,7 +28,7 @@ this plan.
    `hw/timer/slavio_timer.c`, `hw/intc/slavio_intctl.c`,
    `hw/misc/slavio_misc.c`, `hw/sparc/sun4m_iommu.c`,
    `target/sparc/`); OpenBIOS (in `bios/`); the Linux and NetBSD
-   drivers; our own docs, tests and tools on this branch; and GPL- or
+   drivers; our own docs, tests and tools in this repository; and GPL- or
    MIT-compatible RTL from other cores (§5).
 3. **The old core may be used as a black box only**: its released
    `.rbf` on a board, to compare observable behaviour (console output,
@@ -36,7 +37,7 @@ this plan.
    names as history and take only the hardware facts from them.
 5. Sun PROM images and anything that reproduces their code (listings,
    decompiled Forth, detokenized FCode) never go into git. They live in
-   the kit's `private/` folder (see the kit README).
+   the gitignored `scratch/private/` (see `scratch/README.md`).
 
 ### 1.2 Compatibility contracts (keep these unchanged)
 
@@ -161,11 +162,12 @@ M (1-2 weeks), L (several weeks), XL (a month or more).
   unimplemented, as SuperSPARC does), FSR/FQ, deferred traps, IEEE
   underflow and inexact exactly as the POST and `t_fpu` check (including
   "a product shifted entirely out of the mantissa is an underflow").
-- Start with an iterative divide and square root. Reusing or adapting
-  AP68040's IEEE units is an option (Adam Polkosnik, GPL-2; check what
-  they cover first).
+- Start with an iterative divide and square root. Write the FPU for
+  SPARC directly: an FPU built for another architecture (for example a
+  68040's 80-bit extended datapath and exception model) does not carry
+  over. QEMU's `target/sparc/fop_helper.c` is the behavioural reference.
 - **Exit:** `t_fpu` passes; the SS20 POST's FPU tests pass in simulation
-  (run the real PROM in sim from the kit's `private/roms`).
+  (run the real PROM in sim from `scratch/private/roms`).
 
 ### Phase 3: SRMMU and caches (XL)
 - SPARC reference MMU: context table, three-level table walk, R/M bit
@@ -280,7 +282,7 @@ Order: 0 → 1 → 2 and 3 (in parallel once the IU runs) → 4 → 5 → 6 →
 7 → 8 → 9 → 10 → 11 → 12. Phase 9 can start after phase 5 if the bus
 was designed for SMP from the start (it should be).
 
-## 4. What we carry over (on this branch)
+## 4. What we carry over (in this repository)
 
 | Item | Where | Use |
 |---|---|---|
@@ -300,11 +302,14 @@ was designed for SMP from the start (it should be).
 | Hardware knowledge | `docs/rom-disassembly/`, `docs/legacy/` | requirements |
 
 The VHDL files above use small helper types from the old core's packages
-(`base_pack`, `ts_pack`, `plomb_pack`), which are not on this branch, so
+(`base_pack`, `ts_pack`, `plomb_pack`), which are not here, so
 they will not compile here as they are. Port their logic, not those
 types.
 
 ## 5. Outside RTL we may use
+
+Copies of the GPL-2 and MIT candidates below, with their licenses, are in
+the gitignored `scratch/third-party-rtl/`.
 
 | What | Source | License | Note |
 |---|---|---|---|
@@ -314,7 +319,6 @@ types.
 | Z8530 SCC | `MacQuadra800_MiSTer/rtl/scc.v` (minimigmac lineage) | GPL-2 | simplified; needs the ESCC parts |
 | Z8530 SCC | z8530_scc (vz50938) | **GPL-3** | would make the core GPL-3 |
 | Sun keyboard/mouse | `Sun-2_MiSTer/rtl/sun2_mister_kbd_mouse.sv` | **GPL-3** | same |
-| IEEE-754 units | `AP68040/rtl/ap040_fpu.v` | GPL-2 (Adam Polkosnik) | check what it covers |
 | SPARC V8 + SRMMU reference | GRLIB LEON3 (Frontgrade Gaisler) | GPL edition | read as reference; check its version |
 
 **A license decision for you:** our files are GPL-2.0-or-later and
@@ -374,7 +378,7 @@ the start of each phase.
 
 ## 8. Reference documents
 
-In the kit's `reference/` (PDFs, with text extractions): the SPARC V8
+In `scratch/reference/` (PDFs, with text extractions): the SPARC V8
 architecture manual (get it from SPARC International if it is not
 there), SuperSPARC (`SuperSparc.pdf`, `SuperSPARC2.pdf`,
 `supersparcwhitepaper.pdf`, STP1021UG), the *Sun-4M System Architecture*

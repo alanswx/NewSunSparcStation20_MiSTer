@@ -62,7 +62,7 @@ tools/debugarm/debug
 tools/debugarm/pcdump
 
 # Sun PROM images and anything reproduced from them: never commit
-# (docs/VERILOG-PLAN.md 1.1; keep them in the kit's private/ folder)
+# (docs/VERILOG-PLAN.md 1.1; keep them in scratch/private/)
 private/
 scratch/
 *.ROM

@@ -1,19 +1,19 @@
 # SunSparcStation20_MiSTer (Verilog rewrite): working notes for Claude
 
-A new SPARCstation 20 (sun4m) core for MiSTer in SystemVerilog, branch
-`verilog-rewrite`. **Read [docs/VERILOG-PLAN.md](docs/VERILOG-PLAN.md)
-first**: clean-room rules, compatibility contracts, architecture, phases.
+A new SPARCstation 20 (sun4m) core for MiSTer in SystemVerilog.
+**Read [docs/VERILOG-PLAN.md](docs/VERILOG-PLAN.md) first**: clean-room
+rules, compatibility contracts, architecture, phases.
 
 ## Rules
 
 - **Clean room.** Never open, quote or translate the VHDL core's source
-  (`master`'s `rtl/cpu`, `rtl/plomb`, `rtl/peri`, Grabulosaure's files in
+  (its `rtl/cpu`, `rtl/plomb`, `rtl/peri`, Grabulosaure's files in
   `rtl/sun4m` and `rtl/mister`, the `ss` backup tarball, GHDL output of
   any of them). Work from datasheets, QEMU, OpenBIOS, OS drivers, our own
   docs and tests. `docs/legacy/` names old files and signals: take the
   hardware facts, not the structure.
 - Sun PROM images and any listing, decompiled Forth or detokenized FCode
-  made from them stay out of git (the kit's `private/` folder).
+  made from them stay out of git, in the gitignored `scratch/private/`.
 - Keep Main's `hps_io` protocol and OpenBIOS's address map unchanged
   (plan §1.2).
 - New files are GPL-2.0-or-later. Use outside RTL only under GPL-2 or a
