@@ -411,6 +411,15 @@ module iu
   // =====================================================================
   // E: execute
   // =====================================================================
+  // An annulled instruction becomes a NOP (an assignment pattern with a
+  // named member is not accepted by Quartus 17)
+  function automatic dec_t nop_dec();
+    dec_t d;
+    d = '0;
+    d.cls = C_NOP;
+    return d;
+  endfunction
+
   // The instruction in D is annulled: marked earlier, or the DCTI in E says so now
   logic d_annul_now;
   assign d_annul_now = d_annulled | (slot_in_d & annul_slot);
@@ -423,7 +432,7 @@ module iu
       e_rs1 <= '0; e_rs2 <= '0; e_rs3 <= '0; e_rs4 <= '0;
     end else if (d_go) begin
       e_valid <= 1'b1;
-      e_dec <= d_annul_now ? '{default: '0, cls: C_NOP} : d_dec;
+      e_dec <= d_annul_now ? nop_dec() : d_dec;
       e_inst <= d_inst;
       e_pc <= d_pc;
       e_npc <= (slot_in_d && redirect) ? redirect_target : d_npc;
