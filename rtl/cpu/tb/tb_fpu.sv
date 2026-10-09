@@ -109,10 +109,17 @@ module tb_fpu
         if ($sscanf(line, "%d %h %h %h %b", rm, va, vb, vres, vflags) != 5) continue;
         n++;
         wr_fsr({rm[1:0], 30'd0});
-        wr_reg(5'd0, ops[k].src_dbl, va);
-        if (ops[k].two) wr_reg(5'd2, ops[k].src_dbl, vb);
+        // rs1 in f0, rs2 in f2; a one-operand op takes rs2 (f2), with
+        // rs1 = f0 left holding something else so that a mix-up shows
+        if (ops[k].two) begin
+          wr_reg(5'd0, ops[k].src_dbl, va);
+          wr_reg(5'd2, ops[k].src_dbl, vb);
+        end else begin
+          wr_reg(5'd0, 1'b1, 64'h4000_0000_0000_0000);
+          wr_reg(5'd2, ops[k].src_dbl, va);
+        end
         wr_reg(5'd4, 1'b1, 64'hDEAD_BEEF_DEAD_BEEF);      // the destination, to see a missing write
-        fpop(enc(ops[k].fpop2, 5'd4, 5'd0, ops[k].opf, ops[k].two ? 5'd2 : 5'd0), 32'h1000);
+        fpop(enc(ops[k].fpop2, 5'd4, 5'd0, ops[k].opf, 5'd2), 32'h1000);
         @(negedge clk);
         if (ops[k].cmp) begin
           got = {62'd0, rsp.fsr[11:10]};

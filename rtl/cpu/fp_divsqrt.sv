@@ -24,8 +24,8 @@ module fp_divsqrt
   input  logic     rst,
   input  logic     start_i,
   input  logic     sqrt_i,
-  input  fp_t      a_i,
-  input  fp_t      b_i,
+  input  fp_t      a_i,           // the dividend (rs1)
+  input  fp_t      b_i,           // the divisor, or the square root's operand (rs2)
   output logic     busy_o,
   output logic     done_o,
   output fp_wide_t r_o
@@ -62,12 +62,13 @@ module fp_divsqrt
         q <= '0;
         rem <= '0;
         sign <= 1'b0;
-        if (a_i.exp[0]) begin
-          rad <= 116'(a_i.man) << 61;
-          exp <= (a_i.exp - 14'sd1) >>> 1;
+        // the square root's operand is rs2 (b)
+        if (b_i.exp[0]) begin
+          rad <= 116'(b_i.man) << 61;
+          exp <= (b_i.exp - 14'sd1) >>> 1;
         end else begin
-          rad <= 116'(a_i.man) << 60;
-          exp <= a_i.exp >>> 1;
+          rad <= 116'(b_i.man) << 60;
+          exp <= b_i.exp >>> 1;
         end
       end else begin
         cnt <= 6'd57;

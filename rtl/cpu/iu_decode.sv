@@ -161,8 +161,12 @@ module iu_decode
           default: dec_o.cls = C_ILLEGAL;
         endcase
         if (op3[5]) begin
-          // FP (0x20-0x27) and coprocessor (0x30-0x37) loads and stores
+          // FP (0x20-0x27) and coprocessor (0x30-0x37) loads and stores:
+          // none writes an integer register
           dec_o.cls = C_ILLEGAL;
+          dec_o.wr_rd = 1'b0;
+          dec_o.sgn = 1'b0;
+          dec_o.swap = 1'b0;
           if (!op3[4]) begin
             case (op3[3:0])
               4'h0: begin dec_o.cls = C_FPLOAD;  dec_o.size = 2'd2; end                 // ldf

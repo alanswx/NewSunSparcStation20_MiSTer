@@ -192,21 +192,29 @@ behavioural memory answers them with 0 and ignores writes.
 
 ### 1.7 The FPU interface (phase 2)
 
-- FPops (`op = 2, op3 = 0x34/0x35`) are decoded in D and issued to the
-  FPU with their `pc` (for the FQ); `fp_disabled` (tt 0x04) when
-  `PSR.EF = 0` or no FPU. The IU does not wait for the result; the FPU
-  writes its own register file. FP loads and stores move data between
-  memory and the FPU's registers through `dmem` and an FPU data port;
-  `ldfsr`/`stfsr` likewise for the FSR.
-- Interlocks: an FBfcc waits for a pending FCMP; an FPop/FP load/store
-  targeting a register an FPop still writes waits; `stfsr` waits for the
-  queue to drain.
-- Exceptions are deferred (as V8 allows and SuperSPARC does): the FPU
-  raises `fp_exc_pending`; the next FP instruction (FPop, FBfcc, FP
-  ld/st) is tagged tt 0x08 in D and the FQ holds the faulting FPop and its
-  address (`stdfq` pops; an empty `stdfq` traps with `ftt = 4`,
-  `t_fpu_fq`). Trap priority: a misaligned FP store with an fp_exception
-  pending takes tt 7 first (V8 Table 7-1; `t_fpu_trap_prio`).
+`fpu_pkg::fpu_req_t` / `fpu_rsp_t` (`rtl/cpu/iu.sv`, `rtl/cpu/fpu.sv`):
+
+- FP instructions (FPop, FBfcc, FP load/store) go through the IU **one
+  at a time**: the next waits in D while one is in E/M/W or the FPU is
+  busy. So when an FP instruction reaches E the FPU's state is final and
+  E decides, after the alignment check (Table 7-1: mem_address_not_aligned
+  10 before fp_exception 11; `t_fpu_trap_prio`): the deferred
+  `fp_exception` when the FPU is in fp_exception_pending; a sequence
+  error (`ftt = 4`) for an FPop/FBfcc/FP load in fp_exception, or for
+  `stdfq` with `qne = 0` (`t_fpu_fq`); the FBfcc condition on the FSR's
+  fcc. `fp_disabled` (tt 0x04) is tagged in D when `PSR.EF = 0`.
+- An FPop is handed to the FPU with its word and `pc` when W commits it;
+  the FPU writes its own registers when done. FP loads write the FPU's
+  registers (or the FSR) at W from the load data; FP stores take their
+  data from the FPU in E (a register or pair, the FSR, the FQ's front
+  entry); `stdfq` pops the queue at W. `trap_taken` tells the FPU an
+  fp_exception trap was taken: from fp_exception_pending it enters
+  fp_exception (the FQ holds the faulting FPop and its address), otherwise
+  it records the sequence error.
+- Cost: an FP instruction needs about five cycles of pipe plus the FPU's
+  execution before the next one can issue. Good enough for the POST and
+  the OS; a pipelined FPU with scoreboarding is a later improvement that
+  changes only this interface's timing, not its rules.
 
 ## 2. The FPU
 
@@ -215,12 +223,30 @@ SPARC V8 single and double precision: `fadds/d`, `fsubs/d`, `fmuls/d`,
 the conversions (`fitos/d`, `fstoi`, `fdtoi`, `fstod`, `fdtos`), `fmovs`,
 `fnegs`, `fabss`; quad traps as unimplemented (`ftt = 3`), as on the
 SuperSPARC. 32 single registers, pairs for doubles. The FSR: `RD`, `TEM`,
-`NS` (reads 0), `ver`, `ftt`, `qne`, `fcc`, `aexc`, `cexc`. IEEE 754 with
-the exact underflow/inexact and NaN behaviour the POST and `t_fpu` check
-(`iu-notes.md`, the SPARC "Behavior and Implementation" notes). Add/sub/mul
-pipelined (3-4 cycles), divide and square root iterative (one bit per
-cycle). QEMU's `fop_helper.c` and SoftFloat are the references; TestFloat
-vectors the unit test.
+`NS` (reads 0), `ver` (0), `ftt`, `qne`, `fcc`, `aexc`, `cexc`; a
+one-entry FQ; the fp_execute / fp_exception_pending / fp_exception states
+of V8 §4.4.
+
+Arithmetic (`fp_unpack`, `fp_round`, `fp_divsqrt`): operands are unpacked
+to a normalised 53-bit significand (subnormals exactly), results are
+formed exactly as a 58-bit significand plus a sticky bit and rounded once.
+Add/sub align with three guard bits and a sticky; multiply is a 53×53
+product registered twice; divide (57 steps) and square root (58 steps)
+are restoring, one bit per cycle; the conversions and compares are direct.
+Conventions (`tests/fpu/README.md`, from V8 App. N, the Viking manual and
+QEMU): tininess detected **after** rounding; UF raised when tiny and
+inexact, or tiny with `TEM.UF`; a signalling NaN raises invalid and wins
+over a quiet one, otherwise rs2's NaN is returned quieted; the default
+NaN is 0x7FFFFFFF / 0x7FFFFFFFFFFFFFFF; `F?TOi` out of range gives
+0x7FFFFFFF or 0x80000000 by sign (a NaN 0x7FFFFFFF) with invalid.
+
+Verification: `tests/fpu/fpref.py` is an exact IEEE 754 model (Python
+rationals) with the conventions above; `gen_vectors.py` writes 617k
+vectors (every op, both precisions, all four rounding modes: random
+operands plus every special-case class, halfway cases, subnormal
+boundaries, the `t_fpu` values); `rtl/cpu/tb/tb_fpu.sv` runs them through
+the FPU's own interface and then exercises the trap states. The
+acceptance tests are `t_fpu` and the `t_iu2` FPU checks in `sim/iu`.
 
 ## 3. The MMU and caches (phase 3)
 
