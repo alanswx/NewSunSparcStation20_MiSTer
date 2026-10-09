@@ -1,0 +1,40 @@
+# SunSparcStation20_MiSTer (Verilog rewrite): working notes for Claude
+
+A new SPARCstation 20 (sun4m) core for MiSTer in SystemVerilog, branch
+`verilog-rewrite`. **Read [docs/VERILOG-PLAN.md](docs/VERILOG-PLAN.md)
+first**: clean-room rules, compatibility contracts, architecture, phases.
+
+## Rules
+
+- **Clean room.** Never open, quote or translate the VHDL core's source
+  (`master`'s `rtl/cpu`, `rtl/plomb`, `rtl/peri`, Grabulosaure's files in
+  `rtl/sun4m` and `rtl/mister`, the `ss` backup tarball, GHDL output of
+  any of them). Work from datasheets, QEMU, OpenBIOS, OS drivers, our own
+  docs and tests. `docs/legacy/` names old files and signals: take the
+  hardware facts, not the structure.
+- Sun PROM images and any listing, decompiled Forth or detokenized FCode
+  made from them stay out of git (the kit's `private/` folder).
+- Keep Main's `hps_io` protocol and OpenBIOS's address map unchanged
+  (plan §1.2).
+- New files are GPL-2.0-or-later. Use outside RTL only under GPL-2 or a
+  permissive license unless the user has decided on GPL-3 (plan §5).
+- SystemVerilog that both Quartus 17.0 and Verilator 5 accept; a unit
+  bench for each block; comments in English.
+- `sys/` is the verbatim Template_MiSTer framework: do not edit it.
+
+## Tools (as set up on the original dev box; adjust per machine)
+
+- Quartus 17.0.2 Lite (`scripts/build.sh`); one flow at a time, restore
+  the `.qsf` after Quartus rewrites it.
+- Verilator 5 and iverilog for benches and `sim/`.
+- QEMU 11.1.1 (`qemu-system-sparc`, built from source; Ubuntu's 8.2.2
+  cannot install Solaris and has an `sdiv` bug) for the CPU suite's
+  references and running the real PROMs.
+- LLVM 18 (`clang --target=sparc-unknown-elf -mcpu=v8`) plus
+  `tools/sparc_link.py` for the test suite; SPARC cross GCC
+  (`sparc64-linux-gnu-`) and `xsltproc` for `scripts/build-bios.sh`.
+- A test MiSTer, set in the gitignored `scripts/local.env`
+  (`local.env.sample`); disk images built as in
+  [docs/disk-images.md](docs/disk-images.md).
+- Main: upstream Main_MiSTer `support/sun` (#1344); CD audio on the
+  `sun-ss20-cdaudio` branch (#1345).
