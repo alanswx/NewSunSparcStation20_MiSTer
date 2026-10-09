@@ -24,18 +24,20 @@ module ram_tdp64_be #(
   output logic [63:0]   b_rdata
 );
 
-  logic [63:0] mem [0:(1 << AW) - 1];
+  logic [7:0][7:0] mem [2**AW];
 
   always_ff @(posedge clk) begin
     if (a_we) begin
-      for (int i = 0; i < 8; i++) if (a_be[i]) mem[a_addr][i*8 +: 8] <= a_wdata[i*8 +: 8];
+      for (int i = 0; i < 8; i++)
+        if (a_be[i]) mem[a_addr][i] <= a_wdata[8*i +: 8];
     end
     a_rdata <= mem[a_addr];
   end
 
   always_ff @(posedge clk) begin
     if (b_we) begin
-      for (int i = 0; i < 8; i++) if (b_be[i]) mem[b_addr][i*8 +: 8] <= b_wdata[i*8 +: 8];
+      for (int i = 0; i < 8; i++)
+        if (b_be[i]) mem[b_addr][i] <= b_wdata[8*i +: 8];
     end
     b_rdata <= mem[b_addr];
   end
