@@ -71,3 +71,6 @@ docs/rom-disassembly/*/forth-dictionary.txt
 docs/rom-disassembly/*/forth-nodes.txt
 docs/rom-disassembly/*/forth.json
 docs/rom-disassembly/*/fcode-*.txt
+
+# block testbench builds (rtl/tb/run.sh)
+rtl/tb/obj/

@@ -387,3 +387,29 @@ service manual, microSPARC-II and TurboSPARC manuals (for the SS5 and
 the SRMMU), HyperSPARC, LEON2. To add: the NCR 53C90A/ESP100A and
 53C9x datasheets, Am7990, Z85C30/85230, M48T08, CS4231A, MBus
 specification, and the TCX section of the Sun framebuffer docs or QEMU.
+
+## 9. Status
+
+Updated 2026-10-09.
+
+| Phase | State |
+|---|---|
+| 0 skeleton and tooling | `docs/arch/bus.md` (the I/O bus; the interconnect still to define), `docs/arch/memory-map.md`, `rtl/tb/run.sh` (Verilator lint + benches). No `emu` top or `sim_top` yet. |
+| 1 integer unit | not started (next) |
+| 2 FPU | not started |
+| 3 SRMMU and caches | not started |
+| 4 memory, PROM, HPS blocks | not started |
+| 5 system devices | **done early** as I/O-bus slaves in `rtl/obio/`, each with a bench: `slavio_timer` (Sun-4M §5.3; user timers, TMR-4/TMR-8), `slavio_intctl` (§5.7, §6; INT-2: bits 26:23 read 0), `slavio_misc` (LEDs, AUXIO, power, system control/status with RS/WD — RST), `m48t08` (BCD leap years, image port for `nvram_sd`, host-clock seed), `escc` (Z85C30 from the Am85C30 manual: both channels, shared pointer, BRG from a 4.9152 MHz PCLK, 3-deep Rx FIFO, special conditions, BREAK with RR0 bit 7 and the ext/status interrupt — BRK, kms D: 0x38 is a no-op and 0x28 clears the Tx IP without a mask). Still to do in this phase: MID, EMC/MSI registers, SBus time-outs, the system-space decoder. |
+| 6 keyboard, mouse, TCX | not started |
+| 7-12 | not started |
+
+**The serial port, at integration (phase 5 exit):** the ESCC runs ttya at
+the baud rate the OS programs (WR12/13 from PCLK), so the wire to the HPS
+UART needs either Main's `uart_speed` to match (declare `UART…` in
+CONF_STR, HARDWARE_GAPS #3) or a byte-level rate bridge between the ESCC's
+TxD/RxD and the HPS UART; drive `UART_DTR/RTS` from WR5 and feed
+`UART_DSR/CTS` into DCD/CTS (kms S2); connect port B's RxD high (kms S3).
+
+Reference material: [references/INDEX.md](references/INDEX.md) lists the
+datasheets, Sun specs and emulator/driver sources in `scratch/reference/`
+with their URLs; each RTL header names the sections it was written from.
