@@ -135,6 +135,7 @@ module slavio_intctl
   logic [31:0] cpu_pending [NCPU];
 
   genvar n;
+  generate
   for (n = 0; n < NCPU; n = n + 1) begin : g_cpu
     logic sel, wr_clr, wr_set;
     logic is_target;
@@ -179,6 +180,7 @@ module slavio_intctl
       end
     end
   end
+  endgenerate
 
   // ---------------------------------------------------------------------
   // Read data and the response

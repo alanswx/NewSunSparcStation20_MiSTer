@@ -175,6 +175,7 @@ module slavio_timer
 
   // Processor counters
   genvar n;
+  generate
   for (n = 0; n < NCPU; n = n + 1) begin : g_cpu
     logic sel, wr0, wr1, wr2, wr3, rd0;
     logic mode_change;
@@ -251,6 +252,7 @@ module slavio_timer
 
     assign irq_cpu[n] = cpu_l[n] & ~user_mode[n];
   end
+  endgenerate
 
   // ---------------------------------------------------------------------
   // Read data and the response
