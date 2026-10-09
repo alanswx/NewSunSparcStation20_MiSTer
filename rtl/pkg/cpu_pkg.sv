@@ -96,4 +96,44 @@ package cpu_pkg;
     logic [1:0]  fault;       // 0 ok, 1 access exception (tt 9), 2 access error (tt 0x29)
   } dmem_rsp_t;
 
+
+  // ---------------------------------------------------------------------
+  // The decoded instruction (iu_decode)
+  // ---------------------------------------------------------------------
+  typedef enum logic [4:0] {
+    C_ILLEGAL, C_NOP, C_SETHI, C_BICC, C_FBFCC, C_CALL, C_ALU, C_MUL, C_DIV,
+    C_RDY, C_RDPSR, C_RDWIM, C_RDTBR, C_WRY, C_WRPSR, C_WRWIM, C_WRTBR,
+    C_FPOP, C_JMPL, C_RETT, C_TICC, C_FLUSH, C_SAVE, C_RESTORE,
+    C_LOAD, C_STORE, C_ATOMIC, C_FPLOAD, C_FPSTORE
+  } cls_t;
+
+  typedef struct packed {
+    cls_t        cls;
+    logic [4:0]  rd, rs1, rs2;
+    logic        imm;              // i bit: rs2 is simm13
+    logic [31:0] simm13;           // sign-extended
+    logic [3:0]  cond;
+    logic        annul;
+    logic [7:0]  asi;
+    logic [5:0]  op3;
+    logic [8:0]  opf;
+    logic [31:0] disp30;           // call displacement, already x4
+    logic [31:0] disp22;           // branch displacement, sign-extended, x4
+    logic [31:0] imm22;            // sethi value
+    logic        wr_rd;            // writes rd (the pipeline suppresses on traps)
+    logic        cc;               // mul/div: the cc form
+    logic        sgn;              // mul/div signed; loads: sign-extend
+    logic [1:0]  size;             // 0 byte, 1 half, 2 word, 3 doubleword
+    logic        alt;              // alternate-space load/store
+    logic        swap;             // the atomic is swap (else ldstub)
+    logic        fsr;              // ldfsr/stfsr
+    logic        fq;               // stdfq
+    logic        stbar;
+    logic        priv;             // a privileged instruction
+    logic        trap_illegal;     // tt 0x02
+    logic        trap_priv;        // tt 0x03
+    logic        trap_fp_disabled; // tt 0x04
+    logic        trap_cp_disabled; // tt 0x24
+  } dec_t;
+
 endpackage
