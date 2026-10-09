@@ -174,7 +174,8 @@ module slavio_timer
   end
 
   // Processor counters
-  for (genvar n = 0; n < NCPU; n++) begin : g_cpu
+  genvar n;
+  for (n = 0; n < NCPU; n = n + 1) begin : g_cpu
     logic sel, wr0, wr1, wr2, wr3, rd0;
     logic mode_change;
 
@@ -197,7 +198,7 @@ module slavio_timer
       end else begin
         if (tick) begin
           if (user_mode[n]) begin
-            if (run[n]) begin                    // 54-bit count; L sticks once set
+            if (run[n]) begin : inc              // 54-bit count; L sticks once set
               logic [54:0] sum;
               sum = {1'b0, ucnt_hi[n], cpu_count[n]} + 55'd1;
               {ucnt_hi[n], cpu_count[n]} <= sum[53:0];

@@ -39,7 +39,6 @@
 
 module slavio_intctl
   import iobus_pkg::*;
-  import sun4m_pkg::*;
 #(
   parameter int NCPU = 2                   // 1 to 4
 )(
@@ -54,6 +53,8 @@ module slavio_intctl
 
   output logic [NCPU-1:0][3:0] irl_o       // to each processor, 0 = none
 );
+
+  import sun4m_pkg::*;               // a second header import is not Quartus 17 syntax
 
   localparam int TW = (NCPU > 1) ? $clog2(NCPU) : 1;
 
@@ -133,7 +134,8 @@ module slavio_intctl
   logic        l15     [NCPU];
   logic [31:0] cpu_pending [NCPU];
 
-  for (genvar n = 0; n < NCPU; n++) begin : g_cpu
+  genvar n;
+  for (n = 0; n < NCPU; n = n + 1) begin : g_cpu
     logic sel, wr_clr, wr_set;
     logic is_target;
     logic [15:1] hard;
