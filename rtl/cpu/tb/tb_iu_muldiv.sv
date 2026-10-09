@@ -14,7 +14,7 @@ module tb_iu_muldiv;
   logic [31:0] a = 0, b = 0, y = 0, r, yo;
   logic        busy, done, v, dz;
 
-  iu_muldiv dut (.clk, .rst, .start_i(start), .div_i(div), .signed_i(sgn), .a_i(a), .b_i(b), .y_i(y),
+  iu_muldiv dut (.clk, .rst, .start_i(start), .kill_i(1'b0), .div_i(div), .signed_i(sgn), .a_i(a), .b_i(b), .y_i(y),
                  .busy_o(busy), .done_o(done), .r_o(r), .y_o(yo), .v_o(v), .div_zero_o(dz));
 
   task automatic cycles(input int n);

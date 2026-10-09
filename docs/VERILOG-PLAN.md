@@ -390,16 +390,16 @@ specification, and the TCX section of the Sun framebuffer docs or QEMU.
 
 ## 9. Status
 
-Updated 2026-10-09.
+Updated 2026-10-09 (evening).
 
 | Phase | State |
 |---|---|
-| 0 skeleton and tooling | `docs/arch/bus.md` (the I/O bus; the interconnect still to define), `docs/arch/memory-map.md`, `rtl/tb/run.sh` (Verilator lint + benches). No `emu` top or `sim_top` yet. |
-| 1 integer unit | not started (next) |
+| 0 skeleton and tooling | `docs/arch/bus.md` (the I/O bus; the interconnect still to define), `docs/arch/memory-map.md`, `docs/arch/cpu.md`, `docs/arch/iu-notes.md` (the V8/QEMU/test-suite digest), `rtl/tb/run.sh` (Verilator lint + benches), `scripts/qcheck.sh` (a Quartus 17 syntax check in half a minute). No `emu` top or `sim_top` yet. |
+| 1 integer unit | **running the suite.** `rtl/cpu/`: `iu` (the 5-stage pipeline, docs/arch/cpu.md §1), `iu_decode`, `iu_regfile`, `iu_alu`, `iu_muldiv`, each with a bench; `sim/iu/run.sh` builds the phase-1 subset of the suite (`tests/cpu/src/main_iu.S`: t_alu, t_ldst, t_branch, t_traps, t_window, t_psr, t_iu2, t_dcti) and runs it on the IU with a behavioural memory and the new `escc` on ttya, against a QEMU 11 reference with its V8 deviations corrected. All 30 tests pass; the two FPU-dependent checks of t_iu2 SKIP until phase 2. Not yet: `brktest` (needs the interrupt path), the watchdog reset (IU-1), timing. |
 | 2 FPU | not started |
 | 3 SRMMU and caches | not started |
 | 4 memory, PROM, HPS blocks | not started |
-| 5 system devices | **done early** as I/O-bus slaves in `rtl/obio/`, each with a bench: `slavio_timer` (Sun-4M §5.3; user timers, TMR-4/TMR-8), `slavio_intctl` (§5.7, §6; INT-2: bits 26:23 read 0), `slavio_misc` (LEDs, AUXIO, power, system control/status with RS/WD — RST), `m48t08` (BCD leap years, image port for `nvram_sd`, host-clock seed), `escc` (Z85C30 from the Am85C30 manual: both channels, shared pointer, BRG from a 4.9152 MHz PCLK, 3-deep Rx FIFO, special conditions, BREAK with RR0 bit 7 and the ext/status interrupt — BRK, kms D: 0x38 is a no-op and 0x28 clears the Tx IP without a mask). Still to do in this phase: MID, EMC/MSI registers, SBus time-outs, the system-space decoder. |
+| 5 system devices | **done early** as I/O-bus slaves in `rtl/obio/`, each with a bench: `slavio_timer` (Sun-4M §5.3; user timers, TMR-4/TMR-8), `slavio_intctl` (§5.7, §6; INT-2: bits 26:23 read 0), `slavio_misc` (LEDs, AUXIO, power, system control/status with RS/WD — RST), `m48t08` (BCD leap years, image port for `nvram_sd`, host-clock seed), `escc` (Z85C30 from the Am85C30 manual: both channels, shared pointer, BRG from a 4.9152 MHz PCLK, 3-deep Rx FIFO, special conditions, BREAK with RR0 bit 7 and the ext/status interrupt — BRK, kms D: 0x38 is a no-op and 0x28 clears the Tx IP without a mask). Still to do in this phase: MID, EMC/MSI registers, SBus time-outs, the system-space decoder. **Proven on the board** (2026-10-09): a hybrid build of the VHDL core with `slavio_timer` and `slavio_intctl` swapped in (branch `hybrid` of the old repository, VHDL shims on its PVC bus) passes the CPU suite identically (76/0/2) and boots NetBSD 11 and Solaris 8 to login; the Sun POST stops at the same memory-controller test as the release core. |
 | 6 keyboard, mouse, TCX | not started |
 | 7-12 | not started |
 

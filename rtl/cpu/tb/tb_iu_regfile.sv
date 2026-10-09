@@ -11,12 +11,12 @@ module tb_iu_regfile;
   initial clk = 0;
   always #5 clk = ~clk;
 
-  logic [4:0]  rs1 = 0, rs2 = 0, rs3 = 0, rd = 0;
+  logic [4:0]  rs1 = 0, rs2 = 0, rs3 = 0, rs4 = 0, rd = 0;
   logic [2:0]  rcwp = 0, wcwp = 0;
   logic        we = 0;
-  logic [31:0] wdata = 0, o1, o2, o3;
+  logic [31:0] wdata = 0, o1, o2, o3, o4;
 
-  iu_regfile dut (.clk, .rs1_i(rs1), .rs2_i(rs2), .rs3_i(rs3), .rcwp_i(rcwp), .rs1_o(o1), .rs2_o(o2), .rs3_o(o3),
+  iu_regfile dut (.clk, .rs1_i(rs1), .rs2_i(rs2), .rs3_i(rs3), .rs4_i(rs4), .rcwp_i(rcwp), .rs1_o(o1), .rs2_o(o2), .rs3_o(o3), .rs4_o(o4),
                   .we_i(we), .rd_i(rd), .wcwp_i(wcwp), .wdata_i(wdata));
 
   task automatic cycles(input int n);
@@ -77,9 +77,9 @@ module tb_iu_regfile;
     read(3'd7, 5'd24, v); check(v == {8'hA0, 16'h0, 8'd0}, "window 7's ins are window 0's outs (wrap)");
 
     // Three read ports at once, and forwarding of a same-cycle write
-    rcwp = 2; rs1 = 8; rs2 = 16; rs3 = 24;
+    rcwp = 2; rs1 = 8; rs2 = 16; rs3 = 24; rs4 = 25;
     cycles(1);
-    check(o1 == {8'hA2, 16'h0, 8'd0} && o2 == {8'd2, 16'h0, 8'd16} && o3 == {8'hA3, 16'h0, 8'd0}, "three ports");
+    check(o1 == {8'hA2, 16'h0, 8'd0} && o2 == {8'd2, 16'h0, 8'd16} && o3 == {8'hA3, 16'h0, 8'd0} && o4 == {8'hA3, 16'h0, 8'd1}, "four ports");
     we = 1; wcwp = 2; rd = 16; wdata = 32'hCAFE_0016; rs2 = 16;
     cycles(1);
     we = 0;

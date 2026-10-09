@@ -23,6 +23,7 @@ module iu_muldiv (
   input  logic        rst,
 
   input  logic        start_i,
+  input  logic        kill_i,         // abandon the operation in progress (a trap flushed it)
   input  logic        div_i,          // 0 multiply, 1 divide
   input  logic        signed_i,       // smul / sdiv
   input  logic [31:0] a_i,            // rs1
@@ -50,7 +51,7 @@ module iu_muldiv (
       p1 <= '0; p2 <= '0; p3 <= '0;
       ma <= '0; mb <= '0;
     end else begin
-      mstage <= {mstage[2:0], start_i & ~div_i};
+      mstage <= kill_i ? 4'b0 : {mstage[2:0], start_i & ~div_i};
       if (start_i & ~div_i) begin
         ma <= {signed_i & a_i[31], a_i};
         mb <= {signed_i & b_i[31], b_i};
@@ -94,6 +95,8 @@ module iu_muldiv (
       dcnt <= '0;
       num <= '0; den <= '0; rem <= '0; quo <= '0;
       qneg <= 1'b0; ovf_pre <= 1'b0; dsigned <= 1'b0;
+    end else if (kill_i) begin
+      drun <= 1'b0;
     end else if (start_i & div_i) begin
       if (b_i == 32'd0) begin
         dz <= 1'b1;

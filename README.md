@@ -22,7 +22,9 @@ architecture, the phases and the requirements learned on the VHDL core.
 | `bios/` | OpenBIOS (TACUS port) and fcode-utils; `scripts/build-bios.sh` builds the boot ROM | GPL-2 |
 | `sys/` | Template_MiSTer framework | GPL-2+ |
 | `rtl/pkg/`, `rtl/lib/` | the bus packages (`iobus_pkg`, `sun4m_pkg`), building blocks (`ram_tdp_be`) | ours |
+| `rtl/cpu/` | the integer unit: `iu` (pipeline), `iu_decode`, `iu_regfile`, `iu_alu`, `iu_muldiv` (+ benches in `tb/`) | ours |
 | `rtl/obio/` | the new sun4m system devices: `slavio_timer`, `slavio_intctl`, `slavio_misc`, `m48t08`, `escc` (+ benches in `tb/`) | ours |
+| `sim/iu/` | the IU harness: the CPU test suite's integer subset on the IU with a behavioural memory, compared with QEMU (`run.sh`) | ours |
 | `rtl/tb/` | `run.sh`: lint every module and run every block bench under Verilator; `tb_pkg.sv` | ours |
 | `rtl/mister/` | `ddram_arb.sv` (+ benches), `eth_hps.vhd`, `nvram_sd.vhd`: to be ported to SV | ours |
 | `rtl/sun4m/` | `scsi_targets.vhd`, `ts_fdc.vhd`, `ts_beep.vhd`, the FCode packages, `tb/tb_kbd.vhd`: to be ported | ours / GPL-2 (TCX FCode) |

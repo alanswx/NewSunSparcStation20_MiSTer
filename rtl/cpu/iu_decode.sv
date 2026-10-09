@@ -82,7 +82,7 @@ module iu_decode
             dec_o.cls = C_FBFCC;
             if (!ef_i) dec_o.trap_fp_disabled = 1'b1;
           end
-          3'b111: dec_o.trap_cp_disabled = 1'b1;      // CBccc: no coprocessor
+          3'b111: begin dec_o.cls = C_NOP; dec_o.trap_cp_disabled = 1'b1; end   // CBccc: no coprocessor
           default: dec_o.cls = C_ILLEGAL;
         endcase
       end
@@ -132,7 +132,7 @@ module iu_decode
             dec_o.cls = C_FPOP;
             if (!ef_i) dec_o.trap_fp_disabled = 1'b1;
           end
-          6'h36, 6'h37: dec_o.trap_cp_disabled = 1'b1; // CPop
+          6'h36, 6'h37: begin dec_o.cls = C_NOP; dec_o.trap_cp_disabled = 1'b1; end   // CPop
           6'h38: begin dec_o.cls = C_JMPL; dec_o.wr_rd = 1'b1; end
           6'h39: begin dec_o.cls = C_RETT; dec_o.priv = 1'b1; end
           6'h3A: dec_o.cls = C_TICC;
@@ -177,7 +177,7 @@ module iu_decode
             if (dec_o.cls != C_ILLEGAL && !ef_i) dec_o.trap_fp_disabled = 1'b1;
           end else begin
             case (op3[3:0])
-              4'h0, 4'h1, 4'h3, 4'h4, 4'h5, 4'h6, 4'h7: dec_o.trap_cp_disabled = 1'b1;   // ldc stcsr ... (IU-3)
+              4'h0, 4'h1, 4'h3, 4'h4, 4'h5, 4'h6, 4'h7: begin dec_o.cls = C_NOP; dec_o.trap_cp_disabled = 1'b1; end   // ldc stcsr ... (IU-3)
               default: dec_o.cls = C_ILLEGAL;
             endcase
           end
@@ -191,8 +191,7 @@ module iu_decode
     // Trap tags the decoder decides
     if (dec_o.cls == C_ILLEGAL) dec_o.trap_illegal = 1'b1;
     if (dec_o.priv && !supv_i) dec_o.trap_priv = 1'b1;
-    if (dec_o.trap_cp_disabled) dec_o.cls = C_NOP;     // the trap replaces the instruction
-    // A cp instruction from user mode is still cp_disabled (not privileged)
+    // A coprocessor instruction from user mode is cp_disabled, not privileged
   end
 
 endmodule

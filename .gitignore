@@ -74,3 +74,6 @@ docs/rom-disassembly/*/fcode-*.txt
 
 # block testbench builds (rtl/tb/run.sh)
 rtl/tb/obj/
+
+# IU harness builds
+sim/iu/obj/

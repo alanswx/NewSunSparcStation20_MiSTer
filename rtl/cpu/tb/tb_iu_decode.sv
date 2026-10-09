@@ -66,7 +66,7 @@ module tb_iu_decode;
     expect_cls(f2b(0, 4'h8, 3'b000, 22'd1), C_ILLEGAL, "unimp");
     expect_cls(f2b(0, 4'h8, 3'b001, 22'd1), C_ILLEGAL, "op2 = 1 unassigned");
     inst = f2b(0, 4'h8, 3'b111, 22'd1); #1;
-    check(d.trap_cp_disabled, "cbccc: cp_disabled");
+    check(d.trap_cp_disabled && !d.trap_illegal, "cbccc: cp_disabled, not illegal");
 
     // ---- call ----
     inst = {2'b01, 30'h3FFFFFFF}; #1;
@@ -102,7 +102,7 @@ module tb_iu_decode;
     expect_cls(f3(2, 5'd0, 6'h34, 5'd0, 0, 0), C_FPOP, "fpop1");
     expect_cls(f3(2, 5'd0, 6'h35, 5'd0, 0, 0), C_FPOP, "fpop2 with EF off", 1, 0);
     check(d.trap_fp_disabled, "fpop with EF = 0: fp_disabled");
-    inst = f3(2, 5'd0, 6'h36, 5'd0, 0, 0); #1; check(d.trap_cp_disabled, "cpop1: cp_disabled");
+    inst = f3(2, 5'd0, 6'h36, 5'd0, 0, 0); #1; check(d.trap_cp_disabled && !d.trap_illegal && d.cls == C_NOP, "cpop1: cp_disabled, not illegal");
 
     // ---- loads and stores ----
     inst = f3(3, 5'd1, 6'h00, 5'd2, 1, 13'd4); #1;
@@ -137,7 +137,7 @@ module tb_iu_decode;
     inst = f3(3, 5'd1, 6'h20, 5'd2, 1, 13'd4); ef = 0; #1; check(d.trap_fp_disabled, "ldf with EF = 0: fp_disabled");
     ef = 1;
     expect_cls(f3(3, 5'd1, 6'h22, 5'd2, 1, 13'd4), C_ILLEGAL, "op3 0x22 (memory) unassigned");
-    inst = f3(3, 5'd1, 6'h30, 5'd2, 1, 13'd4); #1; check(d.trap_cp_disabled && d.cls == C_NOP, "ldc: cp_disabled, no access (IU-3)");
+    inst = f3(3, 5'd1, 6'h30, 5'd2, 1, 13'd4); #1; check(d.trap_cp_disabled && !d.trap_illegal && d.cls == C_NOP, "ldc: cp_disabled, no access (IU-3)");
     inst = f3(3, 5'd1, 6'h34, 5'd2, 1, 13'd4); supv = 0; #1;
     check(d.trap_cp_disabled && !d.trap_priv, "stc from user mode: cp_disabled, not privileged");
     supv = 1;

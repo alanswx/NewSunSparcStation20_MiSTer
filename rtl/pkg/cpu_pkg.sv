@@ -87,12 +87,12 @@ package cpu_pkg;
     logic [7:0]  asi;
     logic [31:0] va;
     logic [1:0]  size;        // 0 byte, 1 half, 2 word, 3 doubleword (two beats)
-    logic [63:0] wdata;       // the doubleword, or the word/half/byte in the right lane
+    logic [63:0] wdata;       // size 3: {even register, odd register}; else the value right-aligned in [31:0]
   } dmem_req_t;
 
   typedef struct packed {
     logic        ack;
-    logic [63:0] rdata;
+    logic [63:0] rdata;       // size 3: {word at va, word at va+4}; else the value right-aligned in [31:0]
     logic [1:0]  fault;       // 0 ok, 1 access exception (tt 9), 2 access error (tt 0x29)
   } dmem_rsp_t;
 
