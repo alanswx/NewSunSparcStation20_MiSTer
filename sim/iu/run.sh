@@ -48,7 +48,7 @@ if [ "$QEMU" = 1 ] || [ ! -f "$ref" ]; then
     | tr -d '\r' | sed -u '/CPUTEST DONE/q' > "$ref" || true
   echo "qemu reference: $ref ($(grep -c . "$ref") lines)"
 fi
-srcs="rtl/pkg/iobus_pkg.sv rtl/pkg/sun4m_pkg.sv rtl/pkg/cpu_pkg.sv rtl/pkg/fpu_pkg.sv rtl/cpu/*.sv rtl/obio/escc.sv rtl/obio/escc_chan.sv sim/iu/iu_sim.sv"
+srcs="rtl/pkg/iobus_pkg.sv rtl/pkg/sun4m_pkg.sv rtl/pkg/cpu_pkg.sv rtl/pkg/fpu_pkg.sv rtl/pkg/mem_pkg.sv rtl/pkg/mmu_pkg.sv rtl/lib/*.sv rtl/cpu/*.sv rtl/obio/escc.sv rtl/obio/escc_chan.sv sim/iu/iu_sim.sv"
 if ! verilator --binary --timing --timescale 1ns/1ps -Wall -Wno-DECLFILENAME -Wno-UNUSEDSIGNAL -Wno-UNUSEDPARAM \
       -Wno-WIDTHTRUNC -Wno-WIDTHEXPAND -Wno-BLKSEQ -Wno-PROCASSINIT --top-module iu_sim --Mdir "$obj/build" -o Viu_sim \
       -GROM="\"$obj/rom.hex\"" $srcs > "$obj/build.log" 2>&1; then
