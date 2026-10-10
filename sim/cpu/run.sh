@@ -5,6 +5,8 @@
 # and SMP tests; --all: the whole suite), runs it on the cpu_sim harness
 # under Verilator and compares the result lines with QEMU's. --qemu
 # (re)generates the QEMU reference, tests/cpu/expected/ss20-cpu-qemu.log.
+# --bench=NAME builds and runs tests/cpu/src/NAME.S (tlbbench, bmbench) and
+# prints its numbers; no comparison.
 # --wd builds and runs tests/cpu/src/wdtest.S instead (error mode → the
 # watchdog reset → second boot), passing when it prints PASS and CPUTEST
 # DONE; it has no QEMU reference (QEMU has no watchdog).
@@ -19,6 +21,7 @@ for a in "$@"; do
     --all) ALL=1; main=main ;;
     --qemu) QEMU=1 ;;
     --wd) WD=1; main=wdtest; PLUS="$PLUS +wd" ;;
+    --bench=*) WD=2; main="${a#--bench=}" ;;
     +*) PLUS="$PLUS $a" ;;
     *) echo "unknown argument $a" >&2; exit 2 ;;
   esac
@@ -55,13 +58,16 @@ if [ "$WD" = 0 ] && { [ "$QEMU" = 1 ] || [ ! -f "$ref" ]; }; then
     | tr -d '\r' | sed -u '/CPUTEST DONE/q' > "$ref" || true
   echo "qemu reference: $ref ($(grep -c . "$ref") lines)"
 fi
-srcs="rtl/pkg/iobus_pkg.sv rtl/pkg/sun4m_pkg.sv rtl/pkg/cpu_pkg.sv rtl/pkg/fpu_pkg.sv rtl/pkg/mem_pkg.sv rtl/pkg/mmu_pkg.sv rtl/lib/*.sv rtl/cpu/*.sv rtl/obio/escc.sv rtl/obio/escc_chan.sv rtl/obio/slavio_misc.sv sim/cpu/cpu_sim.sv"
+srcs="rtl/pkg/iobus_pkg.sv rtl/pkg/sun4m_pkg.sv rtl/pkg/cpu_pkg.sv rtl/pkg/fpu_pkg.sv rtl/pkg/mem_pkg.sv rtl/pkg/mmu_pkg.sv rtl/lib/*.sv rtl/cpu/*.sv rtl/obio/escc.sv rtl/obio/escc_chan.sv rtl/obio/slavio_misc.sv rtl/obio/slavio_timer.sv sim/cpu/cpu_sim.sv"
 if ! verilator --binary --timing --timescale 1ns/1ps -Wall -Wno-DECLFILENAME -Wno-UNUSEDSIGNAL -Wno-UNUSEDPARAM \
       -Wno-WIDTHTRUNC -Wno-WIDTHEXPAND -Wno-BLKSEQ -Wno-PROCASSINIT --top-module cpu_sim --Mdir "$obj/build" -o Vcpu_sim \
       -GROM="\"$obj/rom.hex\"" $srcs > "$obj/build.log" 2>&1; then
   echo "build failed: see $obj/build.log"; grep -E '%Error|%Warning' "$obj/build.log" | head -20; exit 1
 fi
 "$obj/build/Vcpu_sim" $PLUS | tr -d '\r' | tee "$obj/run.log" | tail -3
+if [ "$WD" = 2 ]; then
+  grep -E 'passes|cycles|PASS|FAIL|DONE' "$obj/run.log"; exit 0
+fi
 if [ "$WD" = 1 ]; then
   if grep -q '^PASS wdog' "$obj/run.log" && grep -q 'CPUTEST DONE' "$obj/run.log" && ! grep -q 'ran on' "$obj/run.log"; then
     echo "cpu_sim: wdtest PASS (error mode came back as a watchdog reset)"; exit 0
