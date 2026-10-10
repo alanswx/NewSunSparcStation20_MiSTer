@@ -89,6 +89,7 @@ module cpu_module
   xlat_rsp_t   xi_r, xd_r;
   logic        wk_req_d, wk_req_i, wk_done, wk_fault, wk_masked;
   logic [1:0]  wk_owner;
+  logic        tlb_changed;
   logic        be_valid, be_no_fault, be_masked;
   at_t         be_at;
   logic [31:0] be_va;
@@ -100,7 +101,7 @@ module cpu_module
     .clk, .rst,
     .reg_valid_i(rg_valid), .reg_we_i(rg_we), .reg_asi_i(rg_asi), .reg_va_i(rg_va), .reg_wdata_i(rg_wdata),
     .reg_size_i(rg_size), .reg_ack_o(rg_ack), .reg_fault_o(rg_fault), .reg_rdata_o(rg_rdata),
-    .xi_i(xi), .xi_o(xi_r), .xd_i(xd), .xd_o(xd_r),
+    .xi_i(xi), .xi_o(xi_r), .xd_i(xd), .xd_o(xd_r), .tlb_changed_o(tlb_changed),
     .walk_req_d_i(wk_req_d), .walk_req_i_i(wk_req_i), .walk_owner_o(wk_owner),
     .walk_done_o(wk_done), .walk_fault_o(wk_fault), .walk_masked_o(wk_masked),
     .berr_valid_i(be_valid), .berr_at_i(be_at), .berr_va_i(be_va), .berr_no_fault_i(be_no_fault), .berr_masked_o(be_masked),
@@ -236,18 +237,57 @@ module cpu_module
   at_t         i_at;
   assign i_at = {1'b0, 1'b1, i_supv};
 
+  // The instruction side's own translation cache: the last eight pages
+  // translated through the MMU, so that the MMU's one lookup port is
+  // mostly the data side's. A hit must still pass the permission check
+  // (else the MMU records the fault); everything is dropped whenever a
+  // translation may have changed (tlb_changed).
+  localparam int UT = 8;
+  logic        ut_v [UT];
+  logic [19:0] ut_vtag [UT];
+  logic [23:0] ut_ppn [UT];
+  logic [2:0]  ut_acc [UT];
+  logic [2:0]  ut_wp;
+  logic        ut_hit, ut_use;
+  logic [35:0] ut_pa;
+  logic [2:0]  ut_acc_hit;
+  always_comb begin
+    ut_hit = 1'b0; ut_pa = '0; ut_acc_hit = '0;
+    for (int k = 0; k < UT; k++) begin
+      if (ut_v[k] && ut_vtag[k] == i_va_now[31:12]) begin
+        ut_hit = 1'b1; ut_pa = {ut_ppn[k], i_va_now[11:0]}; ut_acc_hit = ut_acc[k];
+      end
+    end
+    ut_use = i_xlat_now && mcntl[MC_EN] && !mcntl[MC_BM] && ut_hit &&
+             acc_fault({1'b0, 1'b1, i_supv_now}, ut_acc_hit) == FT_NONE;
+  end
+  logic ut_fill;
+  assign ut_fill = i_xlat_now && !ut_use && xi_r.hit && !xi_r.busy && mcntl[MC_EN] && !mcntl[MC_BM];
+  always_ff @(posedge clk) begin
+    if (rst || tlb_changed) begin
+      for (int k = 0; k < UT; k++) ut_v[k] <= 1'b0;
+      ut_wp <= '0;
+    end else if (ut_fill) begin
+      ut_v[ut_wp] <= 1'b1;
+      ut_vtag[ut_wp] <= i_va_now[31:12];
+      ut_ppn[ut_wp] <= xi_r.pa[35:12];
+      ut_acc[ut_wp] <= xi_r.acc;
+      ut_wp <= ut_wp + 3'd1;
+    end
+  end
+
   always_comb begin
     xi = '0;
-    xi.valid = i_xlat_now;
+    xi.valid = i_xlat_now && !ut_use;
     xi.va = i_va_now;
     xi.at = {1'b0, 1'b1, i_supv_now};
     xi.no_fault = 1'b0;
-    wk_req_i = i_xlat_now && xi_r.miss && wk_owner == 2'd0;
+    wk_req_i = xi.valid && xi_r.miss && !xi_r.busy && wk_owner == 2'd0;
   end
-  assign i_hit_now    = i_xlat_now && xi_r.hit;
+  assign i_hit_now    = i_xlat_now && (ut_use || (xi_r.hit && !xi_r.busy));
   assign ic_req       = i_hit_now || (is == I_CACHE && !ic_done);
-  assign ic_pa        = i_hit_now ? xi_r.pa : ic_pa_q;
-  assign ic_cacheable = i_hit_now ? cacheable_pa(xi_r.pa) : ic_cacheable_q;
+  assign ic_pa        = i_hit_now ? (ut_use ? ut_pa : xi_r.pa) : ic_pa_q;
+  assign ic_cacheable = i_hit_now ? cacheable_pa(ut_use ? ut_pa : xi_r.pa) : ic_cacheable_q;
   assign ic_idx       = i_hit_now ? i_va_now[11:3] : ic_pa_q[11:3];
 
   // The response: a cache answer the cycle it comes, a fault from the register
@@ -273,7 +313,13 @@ module cpu_module
             // waiting for the cache
           end else if (i_xlat_now) begin
             if (i_new) begin i_va <= ifr.va; i_supv <= ifr.supv; end
-            if (xi_r.hit) begin
+            if (ut_use) begin
+              ic_pa_q <= ut_pa;
+              ic_cacheable_q <= cacheable_pa(ut_pa);
+              is <= I_CACHE;
+            end else if (xi_r.busy) begin
+              is <= I_XLAT;                 // the data side had the lookup: again next cycle
+            end else if (xi_r.hit) begin
               ic_pa_q <= xi_r.pa;
               ic_cacheable_q <= cacheable_pa(xi_r.pa);
               is <= I_CACHE;
@@ -591,6 +637,6 @@ module cpu_module
   end
 
   logic unused_ok;
-  assign unused_ok = &{1'b0, iu_halt, iu_cwp, be_masked, xd_r.pte_c, xi_r.pte_c, ifr.supv, dmr.va[7:0]};
+  assign unused_ok = &{1'b0, iu_halt, iu_cwp, be_masked, xd_r.pte_c, xi_r.pte_c, xd_r.acc, xd_r.busy, ifr.supv, dmr.va[7:0]};
 
 endmodule

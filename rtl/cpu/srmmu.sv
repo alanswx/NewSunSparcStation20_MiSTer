@@ -47,11 +47,14 @@ module srmmu
   output logic        reg_fault_o,     // with ack: data_access_exception (CS)
   output logic [31:0] reg_rdata_o,
 
-  // Translation lookups
+  // Translation lookups: one CAM, the data side first; the instruction
+  // side is told busy and retries (it keeps a small translation cache of
+  // its own in cpu_module)
   input  xlat_req_t   xi_i,
   output xlat_rsp_t   xi_o,
   input  xlat_req_t   xd_i,
   output xlat_rsp_t   xd_o,
+  output logic        tlb_changed_o,   // a flush, an ASI 5/6/7 write, a CTX/CTPR/MCNTL write: translation caches drop
 
   // The walker, for the side that missed (its request fields are used):
   // the data side wins when both ask in one cycle; walk_owner_o says
@@ -162,7 +165,7 @@ module srmmu
     end else if (hit) begin
       if (acc_fault(r.at, e.acc) != FT_NONE) a.fault = 1'b1;
       else if (r.at[2] && !e.m) a.miss = 1'b1;   // a store to a page with M = 0: walk again
-      else begin a.hit = 1'b1; a.pa = pte_pa(e, r.va); a.pte_c = e.c; end
+      else begin a.hit = 1'b1; a.pa = pte_pa(e, r.va); a.pte_c = e.c; a.acc = e.acc; end
     end else begin
       a.miss = 1'b1;
     end
@@ -170,20 +173,28 @@ module srmmu
   endfunction
   /* verilator lint_on UNUSEDSIGNAL */
 
-  // Lookup: a hit index per port
-  logic        hi_hit, hd_hit;
-  logic [5:0]  hi_idx, hd_idx;
+  // The one lookup: the data side's request when it has one, else the
+  // instruction side's
+  xlat_req_t   lk;
+  logic        h_hit;
+  logic [5:0]  h_idx;
+  xlat_rsp_t   h_ans;
+  assign lk = xd_i.valid ? xd_i : xi_i;
   always_comb begin
-    hi_hit = 1'b0; hi_idx = '0;
-    hd_hit = 1'b0; hd_idx = '0;
-    for (int i = 63; i >= 0; i--) begin
-      if (tlb_hit(tlb[i], xi_i.va, ctx)) begin hi_hit = 1'b1; hi_idx = 6'(i); end
-      if (tlb_hit(tlb[i], xd_i.va, ctx)) begin hd_hit = 1'b1; hd_idx = 6'(i); end
+    h_hit = 1'b0; h_idx = '0;
+    for (int i = 63; i >= 0; i--)
+      if (tlb_hit(tlb[i], lk.va, ctx)) begin h_hit = 1'b1; h_idx = 6'(i); end
+  end
+  assign h_ans = answer(lk, h_hit, tlb[h_idx], mmu_en, bm);
+  always_comb begin
+    xd_o = '0; xi_o = '0;
+    if (xd_i.valid) begin
+      xd_o = h_ans;
+      xi_o.busy = xi_i.valid;
+    end else begin
+      xi_o = h_ans;
     end
   end
-
-  assign xi_o = answer(xi_i, hi_hit, tlb[hi_idx], mmu_en, bm);
-  assign xd_o = answer(xd_i, hd_hit, tlb[hd_idx], mmu_en, bm);
 
   // Victim: the first invalid entry, else the first unlocked entry whose
   // used bit is clear (Viking §4.11.4)
@@ -357,22 +368,17 @@ module srmmu
   // ---------------------------------------------------------------------
   // The next SFSR/SFAR: every source applied in order in one cycle
   // ---------------------------------------------------------------------
-  logic d_fault_now, i_fault_now;
-  assign d_fault_now = xd_i.valid && xd_o.fault;
-  assign i_fault_now = xi_i.valid && xi_o.fault;
+  logic lk_fault_now;
+  assign lk_fault_now = lk.valid && h_ans.fault;
 
   always_comb begin
     sfsr_n = sfsr;
     sfar_n = sfar;
     if (wd_i) sfsr_n[SF_EM] = 1'b1;
-    // permission faults on hits: data, then instruction
-    if (d_fault_now) begin
-      if (recorded(sfsr_n, acc_fault(xd_i.at, tlb[hd_idx].acc), xd_i.at)) sfar_n = xd_i.va;
-      sfsr_n = record(sfsr_n, acc_fault(xd_i.at, tlb[hd_idx].acc), xd_i.at, tlb[hd_idx].lvl, 1'b1, 1'b0);
-    end
-    if (i_fault_now) begin
-      if (recorded(sfsr_n, acc_fault(xi_i.at, tlb[hi_idx].acc), xi_i.at)) sfar_n = xi_i.va;
-      sfsr_n = record(sfsr_n, acc_fault(xi_i.at, tlb[hi_idx].acc), xi_i.at, tlb[hi_idx].lvl, 1'b1, 1'b0);
+    // a permission fault on a hit
+    if (lk_fault_now) begin
+      if (recorded(sfsr_n, acc_fault(lk.at, tlb[h_idx].acc), lk.at)) sfar_n = lk.va;
+      sfsr_n = record(sfsr_n, acc_fault(lk.at, tlb[h_idx].acc), lk.at, tlb[h_idx].lvl, 1'b1, 1'b0);
     end
     // bus errors of the sides: FT 5 with TO; FAV and the SFAR for data only
     if (berr_valid_i) begin
@@ -407,6 +413,7 @@ module srmmu
     reg_ack_o <= 1'b0;
     reg_fault_o <= 1'b0;
     si_reset_o <= 1'b0;
+    tlb_changed_o <= 1'b0;
     walk_done_o <= 1'b0;
     walk_fault_o <= 1'b0;
     walk_masked_o <= 1'b0;
@@ -432,8 +439,13 @@ module srmmu
       if (berr_valid_i) berr_masked_o <= nf && berr_no_fault_i;
 
       // used bits: a hit sets
-      if (xd_i.valid && hd_hit) used[hd_idx] <= 1'b1;
-      if (xi_i.valid && hi_hit) used[hi_idx] <= 1'b1;
+      if (lk.valid && h_hit) used[h_idx] <= 1'b1;
+
+      // translation caches outside drop on anything that changes a translation
+      tlb_changed_o <= wd_i ||
+                       (reg_go && reg_we_i && reg_is_word &&
+                        (reg_asi_i == 8'h03 || reg_asi_i == 8'h05 || reg_asi_i == 8'h06 || reg_asi_i == 8'h07 ||
+                         (reg_asi_i == 8'h04 && reg_va_i[12:8] <= 5'h02)));
 
       // ---- the walker ----
       case (ws)

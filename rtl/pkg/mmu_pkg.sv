@@ -54,8 +54,10 @@ package mmu_pkg;
     logic        hit;         // pa valid this cycle (TLB hit, MMU off, boot mode)
     logic        miss;        // walk needed
     logic        fault;       // permission fault on a hit (SFSR written this cycle)
+    logic        busy;        // no answer: the one lookup port served the data side; retry
     logic [35:0] pa;
     logic        pte_c;       // the PTE's C bit (informational; E3 caches RAM anyway)
+    logic [2:0]  acc;         // the entry's ACC (for a side's own translation cache)
   } xlat_rsp_t;
 
   // The physical address space rule for the caches (docs/arch/mmu.md §3)
