@@ -63,6 +63,17 @@ module escc_chan (
   output logic       dtr_o,
 
   // Interrupt sources, for the chip's IP bits
+  // Byte-level taps, for a host that moves whole characters (the MiSTer's
+  // HPS UART, the old core's byte streams): every character the transmitter
+  // starts is also presented as a byte; a byte offered here enters the
+  // receive FIFO as a received character (no framing or parity error) when
+  // the receiver is enabled and the FIFO has room.
+  output logic [7:0] tx_byte_o,
+  output logic       tx_byte_valid_o,
+  input  logic [7:0] rx_byte_i,
+  input  logic       rx_byte_valid_i,
+  output logic       rx_byte_ready_o,
+
   output logic       rx_cond,       // receive condition present (level)
   output logic       rx_special,    // and it is a special receive condition
   output logic       tx_ip,         // Tx IP (set/cleared here)
@@ -245,6 +256,8 @@ module escc_chan (
   logic [3:0] tx_data_n;
   assign tx_data_n = (tx_bits_sel == 2'b00) ? five_or_less(tx_buf[7:3]) : nbits(tx_bits_sel);
   assign tx_load = tx_buf_full && !tx_busy && tx_en && tx_cts_ok && tx_clk;
+  assign tx_byte_o       = tx_buf;
+  assign tx_byte_valid_o = tx_load;
 
   always_ff @(posedge clk) begin
     if (rst_any) begin
@@ -451,6 +464,16 @@ module escc_chan (
   logic rs_parity_bad;
   assign rs_parity_bad = parity_en & parity_bad_f(rs_shift, rx_data_n + 4'd1, parity_even);
 
+  // What enters the FIFO: the line receiver's character, or a byte from the
+  // byte port (the line receiver first, if both in one cycle)
+  logic       fq_push, fq_framing, fq_parity_bad;
+  logic [7:0] fq_char;
+  assign fq_push       = rs_push | (rx_byte_valid_i & rx_en);
+  assign fq_char       = rs_push ? rs_char : rx_byte_i;
+  assign fq_framing    = rs_push & rs_framing;
+  assign fq_parity_bad = rs_push & rs_parity_bad;
+  assign rx_byte_ready_o = rx_en && rx_count != 2'd3;
+
   // FIFO, errors, break
   always_ff @(posedge clk) begin
     if (rst_any) begin
@@ -475,18 +498,18 @@ module escc_chan (
       if (cmd_int_next_rx) rx_first_armed <= 1'b1;
       if (!rx_en) rx_first_armed <= 1'b1;
 
-      if (rs_push && !(rx_break && rs_break_char && rx_count != '0 && rx_fifo[rx_count-1] == 9'h100)) begin
+      if (fq_push && !(rs_push && rx_break && rs_break_char && rx_count != '0 && rx_fifo[rx_count-1] == 9'h100)) begin
         if (rx_count == 2'd3) begin
           rx_overrun <= 1'b1;                // the newest is overwritten
-          rx_fifo[2] <= {rs_framing, rs_char};
+          rx_fifo[2] <= {fq_framing, fq_char};
         end else begin
-          rx_fifo[rx_count] <= {rs_framing, rs_char};
+          rx_fifo[rx_count] <= {fq_framing, fq_char};
           rx_count <= rx_count + 2'd1;
         end
-        if (rs_parity_bad) rx_parity_err <= 1'b1;
+        if (fq_parity_bad) rx_parity_err <= 1'b1;
         // In the first-character and special-only modes the data with a
         // special condition is held until Error Reset.
-        if ((rs_parity_bad && wr1[2]) || rs_framing || rx_count == 2'd3) begin
+        if ((fq_parity_bad && wr1[2]) || fq_framing || rx_count == 2'd3) begin
           if (wr1[4:3] == 2'b01 || wr1[4:3] == 2'b11) rx_special_held <= 1'b1;
         end
       end

@@ -168,21 +168,21 @@ module m48t08
       c_year  <= r_year;
       c_stop  <= r_stop;
     end else if (tick && !c_stop) begin
-      if (c_sec != 7'h59) c_sec <= bcd_inc({1'b0, c_sec})[6:0];
+      if (c_sec != 7'h59) c_sec <= 7'(bcd_inc({1'b0, c_sec}));
       else begin
         c_sec <= '0;
-        if (c_min != 7'h59) c_min <= bcd_inc({1'b0, c_min})[6:0];
+        if (c_min != 7'h59) c_min <= 7'(bcd_inc({1'b0, c_min}));
         else begin
           c_min <= '0;
-          if (c_hour != 6'h23) c_hour <= bcd_inc({2'b0, c_hour})[5:0];
+          if (c_hour != 6'h23) c_hour <= 6'(bcd_inc({2'b0, c_hour}));
           else begin
             c_hour <= '0;
             c_day  <= (c_day == 3'd7) ? 3'd1 : c_day + 3'd1;
             if (c_date != month_last(c_month, is_leap(c_year[4], c_year[1:0])))
-              c_date <= bcd_inc({2'b0, c_date})[5:0];
+              c_date <= 6'(bcd_inc({2'b0, c_date}));
             else begin
               c_date <= 6'h01;
-              if (c_month != 5'h12) c_month <= bcd_inc({3'b0, c_month})[4:0];
+              if (c_month != 5'h12) c_month <= 5'(bcd_inc({3'b0, c_month}));
               else begin
                 c_month <= 5'h01;
                 c_year  <= (c_year == 8'h99) ? 8'h00 : bcd_inc(c_year);

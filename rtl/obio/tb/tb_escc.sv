@@ -26,10 +26,14 @@ module tb_escc;
   logic txd_a, txd_b, rts_a, dtr_a, rts_b, dtr_b, irq;
   logic rxd_a = 1, rxd_b = 1, dcd_a = 0, cts_a = 0, dcd_b = 0, cts_b = 0;
 
+  logic [7:0] tx_byte_a, tx_byte_b;
+  logic tx_byte_valid_a, tx_byte_valid_b, rx_byte_ready_a, rx_byte_ready_b;
   escc #(.CLK_HZ(CLK_HZ), .PCLK_HZ(PCLK_HZ)) dut (
     .clk, .rst, .bus_i(req), .bus_o(rsp),
     .txd_a_o(txd_a), .rxd_a_i(rxd_a), .dcd_a_i(dcd_a), .cts_a_i(cts_a), .rts_a_o(rts_a), .dtr_a_o(dtr_a),
     .txd_b_o(txd_b), .rxd_b_i(rxd_b), .dcd_b_i(dcd_b), .cts_b_i(cts_b), .rts_b_o(rts_b), .dtr_b_o(dtr_b),
+    .tx_byte_a_o(tx_byte_a), .tx_byte_valid_a_o(tx_byte_valid_a), .rx_byte_a_i(8'h00), .rx_byte_valid_a_i(1'b0), .rx_byte_ready_a_o(rx_byte_ready_a),
+    .tx_byte_b_o(tx_byte_b), .tx_byte_valid_b_o(tx_byte_valid_b), .rx_byte_b_i(8'h00), .rx_byte_valid_b_i(1'b0), .rx_byte_ready_b_o(rx_byte_ready_b),
     .irq_o(irq));
 
   task automatic cycles(input int n);

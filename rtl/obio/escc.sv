@@ -51,6 +51,19 @@ module escc
   output logic     rts_b_o,
   output logic     dtr_b_o,
 
+  // Byte-level taps of each channel (escc_chan: characters the transmitter
+  // starts; bytes to receive), for a host that moves whole characters
+  output logic [7:0] tx_byte_a_o,
+  output logic       tx_byte_valid_a_o,
+  input  logic [7:0] rx_byte_a_i,
+  input  logic       rx_byte_valid_a_i,
+  output logic       rx_byte_ready_a_o,
+  output logic [7:0] tx_byte_b_o,
+  output logic       tx_byte_valid_b_o,
+  input  logic [7:0] rx_byte_b_i,
+  input  logic       rx_byte_valid_b_i,
+  output logic       rx_byte_ready_b_o,
+
   output logic     irq_o                // INT, asserted high
 );
 
@@ -149,6 +162,8 @@ module escc
     .ptr, .wdata(wbyte), .rdata(rdata_a),
     .pclk_en, .trxc_en(pclk_en),
     .txd_o(txd_a_o), .rxd_i(rxd_a_i), .dcd_i(dcd_a_i), .cts_i(cts_a_i), .rts_o(rts_a_o), .dtr_o(dtr_a_o),
+    .tx_byte_o(tx_byte_a_o), .tx_byte_valid_o(tx_byte_valid_a_o),
+    .rx_byte_i(rx_byte_a_i), .rx_byte_valid_i(rx_byte_valid_a_i), .rx_byte_ready_o(rx_byte_ready_a_o),
     .rx_cond(rx_cond_a), .rx_special(rx_spec_a), .tx_ip(tx_ip_a), .ext_ip(ext_ip_a));
 
   escc_chan chan_b (
@@ -157,6 +172,8 @@ module escc
     .ptr, .wdata(wbyte), .rdata(rdata_b),
     .pclk_en, .trxc_en(pclk_en),
     .txd_o(txd_b_o), .rxd_i(rxd_b_i), .dcd_i(dcd_b_i), .cts_i(cts_b_i), .rts_o(rts_b_o), .dtr_o(dtr_b_o),
+    .tx_byte_o(tx_byte_b_o), .tx_byte_valid_o(tx_byte_valid_b_o),
+    .rx_byte_i(rx_byte_b_i), .rx_byte_valid_i(rx_byte_valid_b_i), .rx_byte_ready_o(rx_byte_ready_b_o),
     .rx_cond(rx_cond_b), .rx_special(rx_spec_b), .tx_ip(tx_ip_b), .ext_ip(ext_ip_b));
 
   // ---------------------------------------------------------------------
