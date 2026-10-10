@@ -80,10 +80,14 @@ module iu_sim
   iob_req_t esc_req;
   iob_rsp_t esc_rsp;
   logic txd_a, txd_b, rts_a, dtr_a, rts_b, dtr_b, irq;
+  logic [7:0] tx_byte_a, tx_byte_b;
+  logic tx_byte_valid_a, tx_byte_valid_b, rx_byte_ready_a, rx_byte_ready_b;
   escc #(.CLK_HZ(9_830_400)) u_escc (
     .clk, .rst, .bus_i(esc_req), .bus_o(esc_rsp),
     .txd_a_o(txd_a), .rxd_a_i(1'b1), .dcd_a_i(1'b1), .cts_a_i(1'b1), .rts_a_o(rts_a), .dtr_a_o(dtr_a),
     .txd_b_o(txd_b), .rxd_b_i(1'b1), .dcd_b_i(1'b1), .cts_b_i(1'b1), .rts_b_o(rts_b), .dtr_b_o(dtr_b),
+    .tx_byte_a_o(tx_byte_a), .tx_byte_valid_a_o(tx_byte_valid_a), .rx_byte_a_i(8'h00), .rx_byte_valid_a_i(1'b0), .rx_byte_ready_a_o(rx_byte_ready_a),
+    .tx_byte_b_o(tx_byte_b), .tx_byte_valid_b_o(tx_byte_valid_b), .rx_byte_b_i(8'h00), .rx_byte_valid_b_i(1'b0), .rx_byte_ready_b_o(rx_byte_ready_b),
     .irq_o(irq));
 
   logic [35:0] pa;
