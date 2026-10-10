@@ -66,7 +66,7 @@ module cpu_plomb
   logic        own_pend;
   logic [30:0] own_line;
 
-  cpu_module #(.HAS_FPU(1'b1), .RAM_MB(12'(RAM_MB))) u_cpu (
+  cpu_module #(.HAS_FPU(1'b1), .RAM_MB(12'(RAM_MB)), .SS20(1'b1), .NCPU_M1(2'd0)) u_cpu (
     .clk(clk_cpu), .rst, .mid_i(4'(MID)), .irl_i,
     .mem_req_o(rq), .mem_rsp_i(rs), .snoop_i(sn),
     .wd_reset_o, .si_reset_o, .halt_o);
