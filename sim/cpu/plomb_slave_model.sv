@@ -17,6 +17,7 @@ module plomb_slave_model
   input  logic        clk,
   input  logic        rst,
   input  logic        jitter,
+  input  logic        raw,       // reads overtake queued writes (the old core's DDR bridge does this)
 
   input  logic        pb_req,
   input  logic [31:0] pb_a,
@@ -59,10 +60,27 @@ module plomb_slave_model
   assign pb_rd   = rs[rs_r].d;
   assign pb_code = rs[rs_r].code;
 
-  // ---- serving the head of the request queue on the interconnect ----
+  // ---- serving the request queue on the interconnect ----
+  // In order, or (raw) the oldest queued read first, as in a bridge whose
+  // reads bypass its write buffer — but a write is bypassed by at most two
+  // reads, so writes still drain while the master keeps reading (a real
+  // write buffer drains on its own). A served read is marked done in place
+  // (its slot is skipped when it reaches the head).
   logic  serving;
   beat_t head;
-  assign head = rq[rq_r];
+  logic  done_slot [0:DEPTH-1];
+  int    pick;                       // the slot to serve next
+  int    sel;                        // the slot being served (latched while serving)
+  int    bypassed;                   // reads served ahead of the head write
+  always_comb begin
+    pick = rq_r;
+    if (raw && bypassed < 2) begin
+      for (int k = DEPTH - 1; k >= 0; k--) begin                // the oldest read wins (last assignment)
+        if (k < rq_n && !rq[(rq_r + k) % DEPTH].write && !done_slot[(rq_r + k) % DEPTH]) pick = (rq_r + k) % DEPTH;
+      end
+    end
+  end
+  assign head = rq[sel];
   always_comb begin
     mem_req_o       = '0;
     mem_req_o.valid = serving;
@@ -77,12 +95,19 @@ module plomb_slave_model
   assign give = pb_dreq && pb_dack;
   assign done = serving && mem_rsp_i.ack;
 
+  // The head slot may already be done (served early as a read): drop it.
+  logic drop;
+  assign drop = rq_n != 0 && done_slot[rq_r] && !(done && sel == rq_r);
+
   always_ff @(posedge clk) begin
     if (rst) begin
-      rq_w <= 0; rq_r <= 0; rq_n <= 0; rs_w <= 0; rs_r <= 0; rs_n <= 0; serving <= 1'b0;
+      rq_w <= 0; rq_r <= 0; rq_n <= 0; rs_w <= 0; rs_r <= 0; rs_n <= 0; serving <= 1'b0; bypassed <= 0; sel <= 0;
+      for (int k = 0; k < DEPTH; k++) done_slot[k] <= 1'b0;
     end else begin
+      if (done) bypassed <= (sel == rq_r) ? 0 : bypassed + 1;
       if (take) begin
         rq[rq_w] <= '{write: pb_mode[0], pa: {pb_ah, pb_a[31:2], 2'b00}, be: pb_be, d: pb_d};
+        done_slot[rq_w] <= 1'b0;
         rq_w <= (rq_w + 1) % DEPTH;
       end
       if (done) begin
@@ -91,13 +116,17 @@ module plomb_slave_model
                         code: mem_rsp_i.err ? 2'b01 : 2'b00};
           rs_w <= (rs_w + 1) % DEPTH;
         end
-        rq_r <= (rq_r + 1) % DEPTH;
+        if (sel == rq_r) rq_r <= (rq_r + 1) % DEPTH;
+        else done_slot[sel] <= 1'b1;
         serving <= 1'b0;
-      end else if (!serving && rq_n != 0 && rs_n < DEPTH - 1) begin
+      end else if (drop) begin
+        rq_r <= (rq_r + 1) % DEPTH;
+      end else if (!serving && rq_n != 0 && rs_n < DEPTH - 1 && !done_slot[pick]) begin
         serving <= 1'b1;
+        sel <= pick;
       end
       if (give) rs_r <= (rs_r + 1) % DEPTH;
-      rq_n <= rq_n + (take ? 1 : 0) - (done ? 1 : 0);
+      rq_n <= rq_n + (take ? 1 : 0) - ((done && sel == rq_r) || drop ? 1 : 0);
       rs_n <= rs_n + ((done && !head.write) ? 1 : 0) - (give ? 1 : 0);
     end
   end

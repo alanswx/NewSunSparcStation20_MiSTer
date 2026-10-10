@@ -49,10 +49,11 @@ module cpu_sim
   // must show the module only registers loaded at the other bus edge.
   // cpu_edge marks the clk cycle that ends on a module clock edge, cpu_ld
   // the one that ends on the other edge.
-  logic use_plomb, jitter;
+  logic use_plomb, jitter, raw;
   initial begin
     use_plomb = $test$plusargs("plomb") || HALF;
     jitter    = $test$plusargs("jitter");
+    raw       = $test$plusargs("raw");          // the slave lets reads overtake writes
   end
   logic ph, cpu_clk, cpu_edge, cpu_ld;
   initial ph = 0;
@@ -93,7 +94,7 @@ module cpu_sim
     .pb_req, .pb_a, .pb_ah, .pb_asi, .pb_d, .pb_be, .pb_mode, .pb_burst, .pb_cont, .pb_cache, .pb_lock, .pb_dack,
     .pb_ack, .pb_dreq, .pb_rd, .pb_code);
   plomb_slave_model u_pbs (
-    .clk, .rst, .jitter,
+    .clk, .rst, .jitter, .raw,
     .pb_req, .pb_a, .pb_ah, .pb_d, .pb_be, .pb_mode, .pb_dack,
     .pb_ack, .pb_dreq, .pb_rd, .pb_code,
     .mem_req_o(pmr), .mem_rsp_i(ms));

@@ -77,10 +77,29 @@ module plomb_master
   input  logic [31:0] pb_rd,
   input  logic [1:0]  pb_code       // 00 = OK, anything else an error
 );
-  typedef enum logic [1:0] {S_IDLE, S_RUN, S_FIN} st_t;
+  typedef enum logic [1:0] {S_IDLE, S_FENCE, S_RUN, S_FIN} st_t;
   st_t st;
 
   mem_req_t rq;                      // the request, latched at acceptance
+
+  // The write fence. A posted write is still travelling down the memory
+  // path when the requester's next read goes out, and the DDR bridge lets
+  // a read overtake it (the MMU's walker re-read a page-table word just
+  // stored and got the old one). So before the first read after one or more
+  // posted RAM writes, the shim reads the last written word back, again
+  // until the bytes it wrote come back (a read may overtake the write too),
+  // bounded; writes are performed in order, so the last one landing means
+  // all did. Device writes are not fenced (a read of a device register has
+  // side effects, and that path is short and in order).
+  logic        wfence;               // a RAM write has been posted since the last read
+  logic [35:0] fence_pa;
+  logic [31:0] fence_d;              // the last written word and its lanes
+  logic [3:0]  fence_be;
+  logic        f_issued;             // the fence read has been accepted
+  logic [5:0]  f_tries;
+  function automatic logic [31:0] lane_mask(input logic [3:0] be4);
+    return {{8{be4[3]}}, {8{be4[2]}}, {8{be4[1]}}, {8{be4[0]}}};
+  endfunction
 
   // The beats of the request: a line is eight words; a single is the high
   // word, the low word or both, as the byte enables say.
@@ -117,23 +136,24 @@ module plomb_master
   assign iss_pa = beat_pa(iss);
   assign rcv_pa = beat_pa(rcv);
 
-  logic issue;
+  logic issue, fencing;
   assign issue    = st == S_RUN && iss < n_beats;
-  assign pb_req   = issue;
-  assign pb_a     = iss_pa[31:0];
-  assign pb_ah    = iss_pa[35:32];
+  assign fencing  = st == S_FENCE && !f_issued;
+  assign pb_req   = issue || fencing;
+  assign pb_a     = fencing ? fence_pa[31:0] : iss_pa[31:0];
+  assign pb_ah    = fencing ? fence_pa[35:32] : iss_pa[35:32];
   assign pb_asi   = ASI;
   assign pb_d     = iss_hi ? rq.wdata[63:32] : rq.wdata[31:0];
-  assign pb_be    = rq.burst ? 4'hF : iss_hi ? rq.be[7:4] : rq.be[3:0];
-  assign pb_mode  = rq.write ? 2'b01 : 2'b10;   // writes are posted: the memory path never answers a WR_ACK
+  assign pb_be    = (fencing || rq.burst) ? 4'hF : iss_hi ? rq.be[7:4] : rq.be[3:0];
+  assign pb_mode  = (rq.write && !fencing) ? 2'b01 : 2'b10;   // writes are posted: the memory path never answers a WR_ACK
   assign pb_burst = 2'b00;
   assign pb_cont  = 1'b0;
-  assign pb_cache = mmu_pkg::cacheable_pa(rq.pa);
-  assign pb_lock  = rq.lock;
+  assign pb_cache = mmu_pkg::cacheable_pa(fencing ? fence_pa : rq.pa);
+  assign pb_lock  = rq.lock && !fencing;
   assign pb_dack  = 1'b1;
 
   logic        got, got_err, last, taken, last_taken;
-  assign taken      = pb_req && pb_ack;                  // a beat accepted
+  assign taken      = st == S_RUN && pb_req && pb_ack;   // a beat of the request accepted
   assign last_taken = taken && iss == n_beats - 4'd1;
   assign got        = st == S_RUN && pb_dreq && !rq.write;   // a read's response beat
   assign got_err    = pb_code != 2'b00;
@@ -161,6 +181,7 @@ module plomb_master
       st <= S_IDLE; iss <= '0; rcv <= '0; aborted <= 1'b0; err_acc <= 1'b0; fin_ack <= 1'b0;
       ack_pend <= 1'b0; err_pend <= 1'b0; rdata_pend <= '0; sn_pend <= 1'b0; sn_line <= '0;
       ack_q <= 1'b0; err_q <= 1'b0; rdata_q <= '0; hi_q <= '0; rq <= '0;
+      wfence <= 1'b0; fence_pa <= '0; fence_d <= '0; fence_be <= '0; f_issued <= 1'b0; f_tries <= '0;
     end else begin
       if (cpu_ld_i) begin                // what the requester sees for its next cycle
         ack_q <= ack_pend; err_q <= err_pend; rdata_q <= rdata_pend;
@@ -169,7 +190,20 @@ module plomb_master
       case (st)
         S_IDLE: if (req_i.valid) begin
           rq <= req_i;
-          st <= S_RUN; iss <= '0; rcv <= '0; aborted <= 1'b0; err_acc <= 1'b0;
+          st <= (!req_i.write && wfence) ? S_FENCE : S_RUN;
+          f_issued <= 1'b0; f_tries <= '0;
+          iss <= '0; rcv <= '0; aborted <= 1'b0; err_acc <= 1'b0;
+        end
+        S_FENCE: begin                   // read the last written word until it reads back as written
+          if (pb_req && pb_ack) f_issued <= 1'b1;
+          if (f_issued && pb_dreq) begin
+            f_issued <= 1'b0;
+            f_tries  <= f_tries + 6'd1;
+            if (((pb_rd ^ fence_d) & lane_mask(fence_be)) == 32'd0 || f_tries == 6'd63) begin
+              wfence <= 1'b0;
+              st <= S_RUN;
+            end
+          end
         end
         S_RUN: begin
           if (taken) begin
@@ -177,6 +211,12 @@ module plomb_master
             if (rq.write) begin              // a posted write: done when its last beat is accepted
               sn_pend <= 1'b1;
               sn_line <= iss_pa[35:5];
+              if (mmu_pkg::cacheable_pa(rq.pa) && rq.pa[35:32] == 4'h0) begin   // RAM: fence the next read
+                wfence   <= 1'b1;
+                fence_pa <= {iss_pa[35:2], 2'b00};
+                fence_d  <= pb_d;
+                fence_be <= pb_be;
+              end
               if (last_taken) begin
                 ack_pend <= 1'b1; err_pend <= 1'b0; rdata_pend <= '0;
                 fin_ack <= 1'b1;
