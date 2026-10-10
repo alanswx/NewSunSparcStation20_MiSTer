@@ -32,15 +32,44 @@ module cpu_sim
   always #5 clk = ~clk;
 
   // ---- the module ----
-  mem_req_t mr;
+  mem_req_t mr;                      // the interconnect model's side
   mem_rsp_t ms;
   snoop_t   sn;
+  mem_req_t cmr;                     // the module's side: the same, or through PLOMB with +plomb
+  mem_rsp_t cms;
+  snoop_t   csn;
   logic     wd_reset, si_reset, halt;
 
   cpu_module #(.HAS_FPU(1'b1), .RAM_MB(12'd16)) u_cpu (
     .clk, .rst, .mid_i(4'd8), .irl_i(4'd0),
-    .mem_req_o(mr), .mem_rsp_i(ms), .snoop_i(sn),
+    .mem_req_o(cmr), .mem_rsp_i(cms), .snoop_i(csn),
     .wd_reset_o(wd_reset), .si_reset_o(si_reset), .halt_o(halt));
+
+  // ---- +plomb: the hybrid's bus shim between the module and the interconnect ----
+  // (+jitter: the slave stalls acceptance and responses at random)
+  logic use_plomb, jitter;
+  initial begin use_plomb = $test$plusargs("plomb"); jitter = $test$plusargs("jitter"); end
+  mem_req_t pb_in, pmr;
+  mem_rsp_t pms;
+  snoop_t   psn;
+  logic        pb_req, pb_cont, pb_cache, pb_lock, pb_dack, pb_ack, pb_dreq;
+  logic [31:0] pb_a, pb_d, pb_rd;
+  logic [3:0]  pb_ah, pb_be;
+  logic [7:0]  pb_asi;
+  logic [1:0]  pb_mode, pb_burst, pb_code;
+  assign pb_in = use_plomb ? cmr : '0;
+  plomb_master u_pbm (
+    .clk, .rst, .req_i(pb_in), .rsp_o(pms), .snoop_o(psn),
+    .pb_req, .pb_a, .pb_ah, .pb_asi, .pb_d, .pb_be, .pb_mode, .pb_burst, .pb_cont, .pb_cache, .pb_lock, .pb_dack,
+    .pb_ack, .pb_dreq, .pb_rd, .pb_code);
+  plomb_slave_model u_pbs (
+    .clk, .rst, .jitter,
+    .pb_req, .pb_a, .pb_ah, .pb_d, .pb_be, .pb_mode, .pb_dack,
+    .pb_ack, .pb_dreq, .pb_rd, .pb_code,
+    .mem_req_o(pmr), .mem_rsp_i(ms));
+  assign mr  = use_plomb ? pmr : cmr;
+  assign cms = use_plomb ? pms : ms;
+  assign csn = use_plomb ? psn : sn;
 
   // ---- memories ----
   logic [31:0] rom [0:262143];       // 1 MB of words

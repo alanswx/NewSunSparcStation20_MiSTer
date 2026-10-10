@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# sim/cpu/run.sh [--all] [--qemu] [+plusargs...] - the CPU module (IU, FPU,
+# sim/cpu/run.sh [--all] [--qemu] [+plomb [+jitter]] [+plusargs...] - the CPU module (IU, FPU,
 # SRMMU, caches) against the CPU test suite. Builds the phase-3 subset of
 # tests/cpu as a boot ROM (src/main_cpu.S: everything but the chipset, MSI
 # and SMP tests; --all: the whole suite), runs it on the cpu_sim harness
@@ -58,7 +58,7 @@ if [ "$WD" = 0 ] && { [ "$QEMU" = 1 ] || [ ! -f "$ref" ]; }; then
     | tr -d '\r' | sed -u '/CPUTEST DONE/q' > "$ref" || true
   echo "qemu reference: $ref ($(grep -c . "$ref") lines)"
 fi
-srcs="rtl/pkg/iobus_pkg.sv rtl/pkg/sun4m_pkg.sv rtl/pkg/cpu_pkg.sv rtl/pkg/fpu_pkg.sv rtl/pkg/mem_pkg.sv rtl/pkg/mmu_pkg.sv rtl/lib/*.sv rtl/cpu/*.sv rtl/obio/escc.sv rtl/obio/escc_chan.sv rtl/obio/slavio_misc.sv rtl/obio/slavio_timer.sv sim/cpu/cpu_sim.sv"
+srcs="rtl/pkg/iobus_pkg.sv rtl/pkg/sun4m_pkg.sv rtl/pkg/cpu_pkg.sv rtl/pkg/fpu_pkg.sv rtl/pkg/mem_pkg.sv rtl/pkg/mmu_pkg.sv rtl/lib/*.sv rtl/cpu/*.sv rtl/hybrid/*.sv sim/cpu/plomb_slave_model.sv rtl/obio/escc.sv rtl/obio/escc_chan.sv rtl/obio/slavio_misc.sv rtl/obio/slavio_timer.sv sim/cpu/cpu_sim.sv"
 if ! verilator --binary --timing --timescale 1ns/1ps -Wall -Wno-DECLFILENAME -Wno-UNUSEDSIGNAL -Wno-UNUSEDPARAM \
       -Wno-WIDTHTRUNC -Wno-WIDTHEXPAND -Wno-BLKSEQ -Wno-PROCASSINIT --top-module cpu_sim --Mdir "$obj/build" -o Vcpu_sim \
       -GROM="\"$obj/rom.hex\"" $srcs > "$obj/build.log" 2>&1; then
