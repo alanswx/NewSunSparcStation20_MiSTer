@@ -33,6 +33,9 @@
 #            boot.rom puts CPU 0 in error mode (a trap with ET = 0); the
 #            machine must come back through a watchdog reset (memory kept,
 #            SFSR EM, system status WD) and print PASS (cpu.md IU-1)
+#   ord      memory ordering probes (ordtest.rom as boot.rom): what the memory
+#            shows right after stores, and t_mmu_l2_asi6's walk with the raw
+#            page-table word printed; no baseline, the log is the result
 #   kbd      the keyboard: tests/cpu/out/<target>/kbdtest.rom as boot.rom;
 #            when it prints "KBD?", keys are typed on a virtual keyboard on
 #            the MiSTer (scripts/board/uinput_keys.py: A, Stop-A, Right Alt
@@ -303,6 +306,23 @@ for t in "${TESTS[@]}"; do
         else
             log "wdog: FAIL ($(clean "$log" | tail -2 | tr '\n' ' '))"
             FAILED=$((FAILED + 1))
+        fi
+        ;;
+    ord)
+        # memory ordering probes (tests/cpu/src/ordtest.S): prints what the
+        # memory shows after stores; no baseline, the log is the result
+        python3 tests/cpu/build.py "$T" --main=ordtest > /dev/null || exit 1
+        rsh "cp $G/boot.rom /tmp/boot.rom.hwtest"
+        scp -q "${SSH_OPTS[@]}" "tests/cpu/out/$T/ordtest.rom" "$DEV:$G/boot.rom" || exit 1
+        scripts/setopt.sh console=serial > /dev/null
+        cp=$(run_capture "$log" 240 'CPUTEST DONE')
+        sleep 2; stop_capture "$cp"
+        rsh "cp /tmp/boot.rom.hwtest $G/boot.rom"
+        clean "$log" | grep -E '^(ORD|PASS|FAIL|    check|CPUTEST)' | sed 's/^/    /'
+        if clean "$log" | grep -q 'CPUTEST DONE'; then
+            log "ord: done ($(clean "$log" | grep 'CPUTEST DONE'))"
+        else
+            log "ord: no CPUTEST DONE"; FAILED=$((FAILED + 1))
         fi
         ;;
     post)
