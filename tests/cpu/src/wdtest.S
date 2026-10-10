@@ -42,8 +42,8 @@
 
 BEGIN(t_wdog, "wdog: error mode (a trap with ET = 0) comes back as a watchdog reset: SFSR EM, system status WD, memory kept, EM cleared by the read")
 #if defined(TARGET_SS20)
-        set 0xb00, %l0
-        lda [%l0] 4, %l1                /* the SFSR, not cleared */
+        set 0x1300, %l0
+        lda [%l0] 4, %l1                /* the SFSR through its non-clearing alias (Viking §4.11.11.3) */
         set SFSR_EM, %l2
         andcc %l1, %l2, %g0
         be first_boot
@@ -70,7 +70,7 @@ BEGIN(t_wdog, "wdog: error mode (a trap with ET = 0) comes back as a watchdog re
         set SFSR_EM, %l2
         and %l1, %l2, %l1
         EXPECT(%l1, SFSR_EM, 3)         /* EM was set */
-        set 0xb00, %l0
+        set 0x1300, %l0
         lda [%l0] 4, %l1
         and %l1, %l2, %l1
         EXPECT(%l1, 0, 4)               /* and the read cleared it */

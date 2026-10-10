@@ -22,7 +22,9 @@
 //             interrupt (W), bit 5 power fail pending (R).
 //   0xF00000  System Control/Status (32-bit): bit 0 SW_RST (W, 1 resets the
 //             machine), bit 1 SW_RST_STAT (R, set by a software reset), bit 2
-//             DIAG.SW (R), bit 3 RST.SW (R, set by a reset-switch reset).
+//             DIAG.SW (R), bit 3 RST.SW (R, set by a reset-switch reset),
+//             bit 4 WD (R, set by a processor's watchdog reset: Sun-4M §12
+//             "local-watchdog" in the reset search order; wdtest).
 //             Writing a 0 to a status bit clears it; a 1 has no effect.
 //
 // `rst` is every reset (POR, SW_RST, the reset switch); rst_swr_i and
@@ -36,6 +38,7 @@ module slavio_misc
   input  logic     rst,
   input  logic     rst_swr_i,         // this reset is a software reset
   input  logic     rst_switch_i,      // this reset is the reset switch
+  input  logic     wd_i,              // pulse: a processor took a watchdog reset
 
   input  iob_req_t bus_i,             // addr[23:0] within the system control space
   output iob_rsp_t bus_o,
@@ -67,7 +70,7 @@ module slavio_misc
 
   logic [2:0] aux0_rsvd;
   logic       pwr_fail;
-  logic       swr_stat, rstsw_stat;
+  logic       swr_stat, rstsw_stat, wd_stat;
 
   always_ff @(posedge clk) begin
     fd_tc_o    <= 1'b0;
@@ -79,9 +82,11 @@ module slavio_misc
       power_off_o <= 1'b0;
       pwr_fail    <= 1'b0;
       swr_stat    <= rst_swr_i;
+      wd_stat     <= 1'b0;
       rstsw_stat  <= rst_switch_i;
     end else begin
       if (pwr_fail_i) pwr_fail <= 1'b1;
+      if (wd_i) wd_stat <= 1'b1;
       if (access && bus_i.we) begin
         if (sel_leds && (bus_i.be[3] | bus_i.be[2]))
           leds_o <= bus_i.wdata[31:16];
@@ -99,6 +104,7 @@ module slavio_misc
           // bits 1 and 3: write 0 to clear
           if (bus_i.wdata[1] == 1'b0) swr_stat <= 1'b0;
           if (bus_i.wdata[3] == 1'b0) rstsw_stat <= 1'b0;
+          if (bus_i.wdata[4] == 1'b0) wd_stat <= 1'b0;
         end
       end
     end
@@ -112,7 +118,7 @@ module slavio_misc
     if (sel_leds)   rdata = {leds_o, 16'h0};
     if (sel_aux0)   rdata = {4{2'b11, fd_density_i, aux0_rsvd, 1'b0, led_o}};
     if (sel_power)  rdata = {4{2'b00, pwr_fail, 4'b0000, power_off_o}};
-    if (sel_sysctl) rdata = {28'h0, rstsw_stat, diag_sw_i, swr_stat, 1'b0};
+    if (sel_sysctl) rdata = {27'h0, wd_stat, rstsw_stat, diag_sw_i, swr_stat, 1'b0};
   end
 
   always_ff @(posedge clk) begin

@@ -9,7 +9,8 @@
 //
 // Address map (docs/arch/memory-map.md): RAM at PA 0 (16 MB); the PROM at
 // 0xF_F000_0000 (1 MB, mirrored through the 16 MB window); the ESCC at
-// 0xF_F110_0000; 0xE_0xxx_xxxx-0xE_3xxx_xxxx are empty SBus slots (bus
+// 0xF_F110_0000; the system control registers (slavio_misc) at
+// 0xF_F1{6,8,A,F}0_0000; 0xE_0xxx_xxxx-0xE_3xxx_xxxx are empty SBus slots (bus
 // error). Anything else reads 0 and takes writes.
 //
 // Plusargs: +lat=N (memory latency, default 1), +gaps (a bubble between
@@ -55,12 +56,25 @@ module cpu_sim
     .txd_b_o(txd_b), .rxd_b_i(1'b1), .dcd_b_i(1'b1), .cts_b_i(1'b1), .rts_b_o(rts_b), .dtr_b_o(dtr_b),
     .irq_o(irq));
 
+  // ---- the system control/status registers (slavio_misc, pages 6/8/A/F) ----
+  iob_req_t misc_req;
+  iob_rsp_t misc_rsp;
+  logic [15:0] leds;
+  logic led, fd_tc, power_off, pwr_irq, misc_sw_reset;
+  slavio_misc u_misc (
+    .clk, .rst, .rst_swr_i(1'b0), .rst_switch_i(1'b0), .wd_i(wd_reset),
+    .bus_i(misc_req), .bus_o(misc_rsp),
+    .leds_o(leds), .led_o(led), .fd_tc_o(fd_tc), .fd_density_i(1'b0), .power_off_o(power_off),
+    .pwr_fail_i(1'b0), .pwr_irq_o(pwr_irq), .diag_sw_i(1'b0), .sw_reset_o(misc_sw_reset));
+
   // ---- the interconnect slave ----
-  logic is_ram, is_rom, is_escc, is_sbus_empty;
+  logic is_ram, is_rom, is_escc, is_misc, is_io, is_sbus_empty;
   always_comb begin
     is_ram  = mr.pa[35:24] == 12'h000;
     is_rom  = mr.pa[35:24] == 12'hFF0;
     is_escc = mr.pa[35:20] == 16'hFF11;
+    is_misc = mr.pa[35:24] == 12'hFF1 && (mr.pa[23:20] == 4'h6 || mr.pa[23:20] == 4'h8 || mr.pa[23:20] == 4'hA || mr.pa[23:20] == 4'hF);
+    is_io   = is_escc | is_misc;
     is_sbus_empty = mr.pa[35:32] == 4'hE && mr.pa[31:30] == 2'b00;
   end
 
@@ -87,17 +101,23 @@ module cpu_sim
   assign bpa = mr.burst ? {mr.pa[35:5], beat, 3'b000} : mr.pa;
 
   // The I/O bus wants the byte address (the ESCC decodes addr[2:1]) and
-  // the lanes within the word: both from the doubleword's byte enables
-  logic [2:0] esc_off;
+  // the lanes within the word: both from the doubleword's byte enables.
+  // One request per access, to the slave the address selects.
+  logic [2:0] io_off;
+  iob_req_t io_req;
+  iob_rsp_t io_rsp;
+  assign io_rsp = is_escc ? esc_rsp : misc_rsp;
   always_comb begin
-    esc_off = 3'd0;
-    for (int i = 0; i < 8; i++) if (mr.be[i]) esc_off = 3'(7 - i);   // the first enabled byte
-    esc_req = IOB_REQ_IDLE;
-    esc_req.req   = mst == M_ESCC && !esc_rsp.ack && !esc_started;
-    esc_req.we    = mr.write;
-    esc_req.addr  = {8'h0, mr.pa[19:3], esc_off};
-    esc_req.be    = (mr.be[7:4] != 4'h0) ? mr.be[7:4] : mr.be[3:0];
-    esc_req.wdata = (mr.be[7:4] != 4'h0) ? mr.wdata[63:32] : mr.wdata[31:0];
+    io_off = 3'd0;
+    for (int i = 0; i < 8; i++) if (mr.be[i]) io_off = 3'(7 - i);    // the first enabled byte
+    io_req = IOB_REQ_IDLE;
+    io_req.req   = mst == M_ESCC && !io_rsp.ack && !esc_started;
+    io_req.we    = mr.write;
+    io_req.addr  = {4'h0, mr.pa[23:3], io_off};
+    io_req.be    = (mr.be[7:4] != 4'h0) ? mr.be[7:4] : mr.be[3:0];
+    io_req.wdata = (mr.be[7:4] != 4'h0) ? mr.wdata[63:32] : mr.wdata[31:0];
+    esc_req = io_req;  esc_req.req  = io_req.req & is_escc;  esc_req.addr = {8'h0, io_req.addr[19:0]};
+    misc_req = io_req; misc_req.req = io_req.req & is_misc;
   end
   logic esc_started;
 
@@ -113,7 +133,7 @@ module cpu_sim
             m_cnt <= lat;
             beat <= '0;
             gap_q <= 1'b0;
-            if (is_escc) begin mst <= M_ESCC; esc_started <= 1'b0; end
+            if (is_io) begin mst <= M_ESCC; esc_started <= 1'b0; end
             else mst <= M_WAIT;
           end
         end
@@ -143,11 +163,12 @@ module cpu_sim
             end
           end
         end
-        M_ESCC: begin
-          if (esc_req.req) esc_started <= 1'b1;
-          if (esc_rsp.ack) begin
+        M_ESCC: begin                         // any I/O-bus slave
+          if (io_req.req) esc_started <= 1'b1;
+          if (io_rsp.ack) begin
             ms.ack <= 1'b1;
-            ms.rdata <= {2{esc_rsp.rdata}};     // the ESCC's byte is in every lane
+            ms.rdata <= {2{io_rsp.rdata}};      // a word in both halves (the ESCC's byte in every lane)
+            if (mr.write) begin sn.valid <= 1'b1; sn.line <= mr.pa[35:5]; sn.mid <= 4'd8; end
             mst <= M_IDLE;
           end
         end
@@ -244,6 +265,6 @@ module cpu_sim
   end
 
   logic unused_ok;
-  assign unused_ok = &{1'b0, txd_a, txd_b, rts_a, dtr_a, rts_b, dtr_b, irq, halt, si_reset};
+  assign unused_ok = &{1'b0, txd_a, txd_b, rts_a, dtr_a, rts_b, dtr_b, irq, halt, si_reset, leds, led, fd_tc, power_off, pwr_irq, misc_sw_reset};
 
 endmodule

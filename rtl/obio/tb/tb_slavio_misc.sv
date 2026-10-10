@@ -21,7 +21,7 @@ module tb_slavio_misc;
   logic fd_density = 0, pwr_fail = 0, diag_sw = 0;
 
   slavio_misc dut (
-    .clk, .rst, .rst_swr_i(rst_swr), .rst_switch_i(rst_switch), .bus_i(req), .bus_o(rsp),
+    .clk, .rst, .rst_swr_i(rst_swr), .rst_switch_i(rst_switch), .wd_i(1'b0), .bus_i(req), .bus_o(rsp),
     .leds_o(leds), .led_o(led), .fd_tc_o(fd_tc), .fd_density_i(fd_density),
     .power_off_o(power_off), .pwr_fail_i(pwr_fail), .pwr_irq_o(pwr_irq),
     .diag_sw_i(diag_sw), .sw_reset_o(sw_reset));

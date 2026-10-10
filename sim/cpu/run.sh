@@ -5,16 +5,20 @@
 # and SMP tests; --all: the whole suite), runs it on the cpu_sim harness
 # under Verilator and compares the result lines with QEMU's. --qemu
 # (re)generates the QEMU reference, tests/cpu/expected/ss20-cpu-qemu.log.
+# --wd builds and runs tests/cpu/src/wdtest.S instead (error mode → the
+# watchdog reset → second boot), passing when it prints PASS and CPUTEST
+# DONE; it has no QEMU reference (QEMU has no watchdog).
 # Plusargs (+lat=N +gaps +trace +dmem +mem +from= +to=) go to the binary.
 set -u
 here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/../.." && pwd)
 obj="$here/obj"
-main=main_cpu; ALL=0; QEMU=0; PLUS=""
+main=main_cpu; ALL=0; QEMU=0; WD=0; PLUS=""
 for a in "$@"; do
   case "$a" in
     --all) ALL=1; main=main ;;
     --qemu) QEMU=1 ;;
+    --wd) WD=1; main=wdtest; PLUS="$PLUS +wd" ;;
     +*) PLUS="$PLUS $a" ;;
     *) echo "unknown argument $a" >&2; exit 2 ;;
   esac
@@ -44,20 +48,27 @@ with open(sys.argv[2], 'w') as f:
         f.write('%08x\n' % int.from_bytes(data[i:i+4], 'big'))
 PY
 ref="tests/cpu/expected/ss20-cpu-qemu.log"
-if [ "$QEMU" = 1 ] || [ ! -f "$ref" ]; then
+if [ "$WD" = 0 ] && { [ "$QEMU" = 1 ] || [ ! -f "$ref" ]; }; then
   command -v qemu-system-sparc >/dev/null || { echo "qemu-system-sparc not found" >&2; exit 1; }
   timeout 120 qemu-system-sparc -M SS-20 -cpu TI-SuperSparc-60 -m 128 -bios "$rom" -nographic \
       -serial mon:stdio -monitor none -display none </dev/null 2>/dev/null \
     | tr -d '\r' | sed -u '/CPUTEST DONE/q' > "$ref" || true
   echo "qemu reference: $ref ($(grep -c . "$ref") lines)"
 fi
-srcs="rtl/pkg/iobus_pkg.sv rtl/pkg/sun4m_pkg.sv rtl/pkg/cpu_pkg.sv rtl/pkg/fpu_pkg.sv rtl/pkg/mem_pkg.sv rtl/pkg/mmu_pkg.sv rtl/lib/*.sv rtl/cpu/*.sv rtl/obio/escc.sv rtl/obio/escc_chan.sv sim/cpu/cpu_sim.sv"
+srcs="rtl/pkg/iobus_pkg.sv rtl/pkg/sun4m_pkg.sv rtl/pkg/cpu_pkg.sv rtl/pkg/fpu_pkg.sv rtl/pkg/mem_pkg.sv rtl/pkg/mmu_pkg.sv rtl/lib/*.sv rtl/cpu/*.sv rtl/obio/escc.sv rtl/obio/escc_chan.sv rtl/obio/slavio_misc.sv sim/cpu/cpu_sim.sv"
 if ! verilator --binary --timing --timescale 1ns/1ps -Wall -Wno-DECLFILENAME -Wno-UNUSEDSIGNAL -Wno-UNUSEDPARAM \
       -Wno-WIDTHTRUNC -Wno-WIDTHEXPAND -Wno-BLKSEQ -Wno-PROCASSINIT --top-module cpu_sim --Mdir "$obj/build" -o Vcpu_sim \
       -GROM="\"$obj/rom.hex\"" $srcs > "$obj/build.log" 2>&1; then
   echo "build failed: see $obj/build.log"; grep -E '%Error|%Warning' "$obj/build.log" | head -20; exit 1
 fi
 "$obj/build/Vcpu_sim" $PLUS | tr -d '\r' | tee "$obj/run.log" | tail -3
+if [ "$WD" = 1 ]; then
+  if grep -q '^PASS wdog' "$obj/run.log" && grep -q 'CPUTEST DONE' "$obj/run.log" && ! grep -q 'ran on' "$obj/run.log"; then
+    echo "cpu_sim: wdtest PASS (error mode came back as a watchdog reset)"; exit 0
+  else
+    echo "cpu_sim: wdtest FAILED"; grep -E '^(PASS|FAIL)|WD|check|ran on' "$obj/run.log" | head; exit 1
+  fi
+fi
 # Compare the result lines: the core must FAIL nothing, and must not SKIP a
 # test QEMU passes (except the SS5-only t_mmu_swift tests). Where QEMU
 # fails or skips (its deviations, tests/cpu/README.md and
