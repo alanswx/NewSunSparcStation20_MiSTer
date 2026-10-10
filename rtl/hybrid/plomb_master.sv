@@ -24,6 +24,15 @@
 // the beats still in flight keep their fields whatever the requester does.
 // Every acknowledged write beat is announced on snoop_o with MID (the
 // instruction cache invalidates on its own stores).
+//
+// Half-rate requester: the requester may run on a clock of half this
+// frequency, phase-aligned (its edges coincide with every second edge of
+// clk). cpu_edge_i is high in the clk cycle that ends on a requester edge;
+// the requester's outputs are stable for two cycles, and everything this
+// module shows the requester (ack, data, snoops) is held until a cpu_edge
+// cycle, so the requester sees each exactly once. A request finishes only
+// in such a cycle, so the next cycle sees the requester's updated outputs.
+// At full rate cpu_edge_i is tied high and the behaviour is unchanged.
 
 module plomb_master
   import mem_pkg::*;
@@ -33,6 +42,7 @@ module plomb_master
 )(
   input  logic        clk,
   input  logic        rst,
+  input  logic        cpu_edge_i,
 
   input  mem_req_t    req_i,
   output mem_rsp_t    rsp_o,
@@ -110,20 +120,25 @@ module plomb_master
   logic        err_acc;            // a write's errors so far; a read pair's high-word error
   logic [31:0] hi_q;               // the high word of the pair being assembled
   logic        aborted;            // an error went out: the requester has dropped the request
-  logic        ack_q, err_q;
+  logic        ack_pend, err_q;    // an ack waiting for a cpu_edge cycle
   logic [63:0] rdata_q;
+  logic        sn_pend;            // a snoop waiting for a cpu_edge cycle
+  logic [30:0] sn_line;
 
-  assign rsp_o.ack   = ack_q;
-  assign rsp_o.err   = err_q;
-  assign rsp_o.rdata = rdata_q;
+  assign rsp_o.ack    = ack_pend && cpu_edge_i;
+  assign rsp_o.err    = err_q;
+  assign rsp_o.rdata  = rdata_q;
+  assign snoop_o.valid = sn_pend && cpu_edge_i;
+  assign snoop_o.line  = sn_line;
+  assign snoop_o.mid   = MID;
 
   always_ff @(posedge clk) begin
-    ack_q   <= 1'b0;
-    snoop_o <= '0;
     if (rst) begin
       st <= S_IDLE; iss <= '0; rcv <= '0; aborted <= 1'b0; err_acc <= 1'b0;
-      err_q <= 1'b0; rdata_q <= '0; hi_q <= '0; rq <= '0;
+      ack_pend <= 1'b0; sn_pend <= 1'b0; err_q <= 1'b0; rdata_q <= '0; hi_q <= '0; rq <= '0;
+      sn_line <= '0;
     end else begin
+      if (cpu_edge_i) begin ack_pend <= 1'b0; sn_pend <= 1'b0; end   // shown this cycle
       case (st)
         S_IDLE: if (req_i.valid) begin
           rq <= req_i;
@@ -135,24 +150,25 @@ module plomb_master
             rcv <= rcv + 4'd1;
             if (rq.write) begin
               err_acc <= err_acc | got_err;
-              snoop_o.valid <= 1'b1;
-              snoop_o.line  <= rcv_pa[35:5];
-              snoop_o.mid   <= MID;
+              sn_pend <= 1'b1;
+              sn_line <= rcv_pa[35:5];
               if (last) begin
-                ack_q <= 1'b1; err_q <= err_acc | got_err; rdata_q <= '0;
+                ack_pend <= 1'b1; err_q <= err_acc | got_err; rdata_q <= '0;
               end
             end else if (rcv_hi && n_beats != 4'd1) begin
               hi_q <= pb_rd; err_acc <= got_err;
             end else if (!aborted) begin
-              ack_q   <= 1'b1;
-              err_q   <= got_err | (n_beats != 4'd1 && err_acc);
-              rdata_q <= n_beats == 4'd1 ? {pb_rd, pb_rd} : {hi_q, pb_rd};
+              ack_pend <= 1'b1;
+              err_q    <= got_err | (n_beats != 4'd1 && err_acc);
+              rdata_q  <= n_beats == 4'd1 ? {pb_rd, pb_rd} : {hi_q, pb_rd};
               if (got_err || (n_beats != 4'd1 && err_acc)) aborted <= 1'b1;
             end
             if (last) st <= S_FIN;
           end
         end
-        S_FIN: st <= S_IDLE;        // the ack cycle: the requester drops or replaces its request after it
+        // The final ack is shown in a cpu_edge cycle; the requester drops or
+        // replaces its request in the cycle after that, where S_IDLE looks.
+        S_FIN: if (cpu_edge_i) st <= S_IDLE;
         default: st <= S_IDLE;
       endcase
     end

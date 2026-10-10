@@ -15,13 +15,14 @@ set -u
 here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/../.." && pwd)
 obj="$here/obj"
-main=main_cpu; ALL=0; QEMU=0; WD=0; PLUS=""
+main=main_cpu; ALL=0; QEMU=0; WD=0; PLUS=""; HALF=0
 for a in "$@"; do
   case "$a" in
     --all) ALL=1; main=main ;;
     --qemu) QEMU=1 ;;
     --wd) WD=1; main=wdtest; PLUS="$PLUS +wd" ;;
     --bench=*) WD=2; main="${a#--bench=}" ;;
+    +half) HALF=1 ;;
     +*) PLUS="$PLUS $a" ;;
     *) echo "unknown argument $a" >&2; exit 2 ;;
   esac
@@ -61,7 +62,7 @@ fi
 srcs="rtl/pkg/iobus_pkg.sv rtl/pkg/sun4m_pkg.sv rtl/pkg/cpu_pkg.sv rtl/pkg/fpu_pkg.sv rtl/pkg/mem_pkg.sv rtl/pkg/mmu_pkg.sv rtl/lib/*.sv rtl/cpu/*.sv rtl/hybrid/*.sv sim/cpu/plomb_slave_model.sv rtl/obio/escc.sv rtl/obio/escc_chan.sv rtl/obio/slavio_misc.sv rtl/obio/slavio_timer.sv sim/cpu/cpu_sim.sv"
 if ! verilator --binary --timing --timescale 1ns/1ps -Wall -Wno-DECLFILENAME -Wno-UNUSEDSIGNAL -Wno-UNUSEDPARAM \
       -Wno-WIDTHTRUNC -Wno-WIDTHEXPAND -Wno-BLKSEQ -Wno-PROCASSINIT --top-module cpu_sim --Mdir "$obj/build" -o Vcpu_sim \
-      -GROM="\"$obj/rom.hex\"" $srcs > "$obj/build.log" 2>&1; then
+      -GROM="\"$obj/rom.hex\"" -GHALF=$HALF $srcs > "$obj/build.log" 2>&1; then
   echo "build failed: see $obj/build.log"; grep -E '%Error|%Warning' "$obj/build.log" | head -20; exit 1
 fi
 "$obj/build/Vcpu_sim" $PLUS | tr -d '\r' | tee "$obj/run.log" | tail -3

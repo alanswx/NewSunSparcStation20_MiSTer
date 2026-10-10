@@ -25,6 +25,7 @@ module cpu_sim
   import mem_pkg::*;
 #(
   parameter string ROM = "tests/cpu/out/ss20/cputest.rom",
+  parameter bit     HALF   = 1'b0,
   parameter longint CYCLES = 400_000_000
 );
   logic clk, rst;
@@ -40,15 +41,39 @@ module cpu_sim
   snoop_t   csn;
   logic     wd_reset, si_reset, halt;
 
+  // HALF (run.sh: +half): the module on a clock of half the frequency (the
+  // hybrid's first board proof runs it so), through the shim. The module's
+  // clock is its own waveform, rising on every second rising edge of clk, so
+  // that both domains' flops sample pre-edge values (a clock derived from a
+  // flop would make the module see post-edge values in the simulator);
+  // cpu_edge marks the clk cycle that ends on a module clock edge.
+  logic use_plomb, jitter;
+  initial begin
+    use_plomb = $test$plusargs("plomb") || HALF;
+    jitter    = $test$plusargs("jitter");
+  end
+  logic ph, cpu_clk_h, cpu_clk, cpu_edge;
+  initial ph = 0;
+  always @(posedge clk) ph <= ~ph;                 // 1 during [5,15), [25,35), ...
+  initial begin
+    cpu_clk_h = 0; #15;                            // rises at 15, 35, ...: with clk's edges
+    forever begin cpu_clk_h = 1; #10; cpu_clk_h = 0; #10; end
+  end
+  if (HALF) begin : g_half
+    assign cpu_clk  = cpu_clk_h;
+    assign cpu_edge = ph;
+  end else begin : g_full
+    assign cpu_clk  = clk;
+    assign cpu_edge = 1'b1;
+  end
+
   cpu_module #(.HAS_FPU(1'b1), .RAM_MB(12'd16)) u_cpu (
-    .clk, .rst, .mid_i(4'd8), .irl_i(4'd0),
+    .clk(cpu_clk), .rst, .mid_i(4'd8), .irl_i(4'd0),
     .mem_req_o(cmr), .mem_rsp_i(cms), .snoop_i(csn),
     .wd_reset_o(wd_reset), .si_reset_o(si_reset), .halt_o(halt));
 
   // ---- +plomb: the hybrid's bus shim between the module and the interconnect ----
   // (+jitter: the slave stalls acceptance and responses at random)
-  logic use_plomb, jitter;
-  initial begin use_plomb = $test$plusargs("plomb"); jitter = $test$plusargs("jitter"); end
   mem_req_t pb_in, pmr;
   mem_rsp_t pms;
   snoop_t   psn;
@@ -59,7 +84,7 @@ module cpu_sim
   logic [1:0]  pb_mode, pb_burst, pb_code;
   assign pb_in = use_plomb ? cmr : '0;
   plomb_master u_pbm (
-    .clk, .rst, .req_i(pb_in), .rsp_o(pms), .snoop_o(psn),
+    .clk, .rst, .cpu_edge_i(cpu_edge), .req_i(pb_in), .rsp_o(pms), .snoop_o(psn),
     .pb_req, .pb_a, .pb_ah, .pb_asi, .pb_d, .pb_be, .pb_mode, .pb_burst, .pb_cont, .pb_cache, .pb_lock, .pb_dack,
     .pb_ack, .pb_dreq, .pb_rd, .pb_code);
   plomb_slave_model u_pbs (
