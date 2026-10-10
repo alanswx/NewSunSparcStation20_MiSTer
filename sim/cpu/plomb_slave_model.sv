@@ -86,9 +86,11 @@ module plomb_slave_model
         rq_w <= (rq_w + 1) % DEPTH;
       end
       if (done) begin
-        rs[rs_w] <= '{d: head.pa[2] ? mem_rsp_i.rdata[31:0] : mem_rsp_i.rdata[63:32],
-                      code: mem_rsp_i.err ? 2'b01 : 2'b00};
-        rs_w <= (rs_w + 1) % DEPTH;
+        if (!head.write) begin               // a posted write (mode 01) gets no response
+          rs[rs_w] <= '{d: head.pa[2] ? mem_rsp_i.rdata[31:0] : mem_rsp_i.rdata[63:32],
+                        code: mem_rsp_i.err ? 2'b01 : 2'b00};
+          rs_w <= (rs_w + 1) % DEPTH;
+        end
         rq_r <= (rq_r + 1) % DEPTH;
         serving <= 1'b0;
       end else if (!serving && rq_n != 0 && rs_n < DEPTH - 1) begin
@@ -96,7 +98,7 @@ module plomb_slave_model
       end
       if (give) rs_r <= (rs_r + 1) % DEPTH;
       rq_n <= rq_n + (take ? 1 : 0) - (done ? 1 : 0);
-      rs_n <= rs_n + (done ? 1 : 0) - (give ? 1 : 0);
+      rs_n <= rs_n + ((done && !head.write) ? 1 : 0) - (give ? 1 : 0);
     end
   end
 endmodule

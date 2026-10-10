@@ -9,13 +9,17 @@
 // the old core on the board before the new interconnect exists.
 //
 // PLOMB as used here: a request beat is accepted when req and ack are both
-// high; every accepted read, and every write with acknowledge, gets exactly
-// one response beat later (dreq high with d and code), in request order, any
-// number outstanding; this master's dack is always high. Every beat is a
-// single (burst code 00): a mem_pkg doubleword is two word beats (high word
-// first), a 32-byte line eight. Word data is big endian: be[3] is the byte
-// at a+0, carried in d[31:24], which the VHDL side maps to be(0) by position.
-// Reads carry their byte enables too (the I/O devices decode with them).
+// high; every accepted read gets exactly one response beat later (dreq high
+// with d and code), in request order, any number outstanding; this master's
+// dack is always high. Writes are plain (mode 01) and posted: the old core's
+// memory path performs them but never answers a WR_ACK (the whole-machine
+// simulation showed the first store hanging on it), so a write is complete
+// when its last beat is accepted, and store errors are not reported (the
+// CPU does not trap on them anyway). Every beat is a single (burst code
+// 00): a mem_pkg doubleword is two word beats (high word first), a 32-byte
+// line eight. Word data is big endian: be[3] is the byte at a+0, carried in
+// d[31:24], which the VHDL side maps to be(0) by position. Reads carry
+// their byte enables too (the I/O devices decode with them).
 //
 // Responses: a pair of words makes one mem_pkg beat (error if either word
 // failed); a lone word is returned in both halves. After an error has been
@@ -111,21 +115,24 @@ module plomb_master
   assign pb_asi   = ASI;
   assign pb_d     = iss_hi ? rq.wdata[63:32] : rq.wdata[31:0];
   assign pb_be    = rq.burst ? 4'hF : iss_hi ? rq.be[7:4] : rq.be[3:0];
-  assign pb_mode  = {1'b1, rq.write};
+  assign pb_mode  = rq.write ? 2'b01 : 2'b10;   // writes are posted: the memory path never answers a WR_ACK
   assign pb_burst = 2'b00;
   assign pb_cont  = 1'b0;
   assign pb_cache = mmu_pkg::cacheable_pa(rq.pa);
   assign pb_lock  = rq.lock;
   assign pb_dack  = 1'b1;
 
-  logic        got, got_err, last;
-  assign got     = st == S_RUN && pb_dreq;
-  assign got_err = pb_code != 2'b00;
-  assign last    = got && rcv == n_beats - 4'd1;
+  logic        got, got_err, last, taken, last_taken;
+  assign taken      = pb_req && pb_ack;                  // a beat accepted
+  assign last_taken = taken && iss == n_beats - 4'd1;
+  assign got        = st == S_RUN && pb_dreq && !rq.write;   // a read's response beat
+  assign got_err    = pb_code != 2'b00;
+  assign last       = got && rcv == n_beats - 4'd1;
 
   logic        err_acc;            // a write's errors so far; a read pair's high-word error
   logic [31:0] hi_q;               // the high word of the pair being assembled
   logic        aborted;            // an error went out: the requester has dropped the request
+  logic        fin_ack;            // the final beat issued an ack (S_FIN waits until it is shown)
   logic        ack_pend, err_pend; // an ack waiting for the next load
   logic [63:0] rdata_pend;
   logic        ack_q, err_q;       // the registers the requester sees (loaded on cpu_ld_i)
@@ -141,7 +148,7 @@ module plomb_master
 
   always_ff @(posedge clk) begin
     if (rst) begin
-      st <= S_IDLE; iss <= '0; rcv <= '0; aborted <= 1'b0; err_acc <= 1'b0;
+      st <= S_IDLE; iss <= '0; rcv <= '0; aborted <= 1'b0; err_acc <= 1'b0; fin_ack <= 1'b0;
       ack_pend <= 1'b0; err_pend <= 1'b0; rdata_pend <= '0; sn_pend <= 1'b0; sn_line <= '0;
       ack_q <= 1'b0; err_q <= 1'b0; rdata_q <= '0; hi_q <= '0; rq <= '0;
     end else begin
@@ -155,32 +162,40 @@ module plomb_master
           st <= S_RUN; iss <= '0; rcv <= '0; aborted <= 1'b0; err_acc <= 1'b0;
         end
         S_RUN: begin
-          if (pb_req && pb_ack) iss <= iss + 4'd1;
+          if (taken) begin
+            iss <= iss + 4'd1;
+            if (rq.write) begin              // a posted write: done when its last beat is accepted
+              sn_pend <= 1'b1;
+              sn_line <= iss_pa[35:5];
+              if (last_taken) begin
+                ack_pend <= 1'b1; err_pend <= 1'b0; rdata_pend <= '0;
+                fin_ack <= 1'b1;
+                st <= S_FIN;
+              end
+            end
+          end
           if (got) begin
             rcv <= rcv + 4'd1;
-            if (rq.write) begin
-              err_acc <= err_acc | got_err;
-              sn_pend <= 1'b1;
-              sn_line <= rcv_pa[35:5];
-              if (last) begin
-                ack_pend <= 1'b1; err_pend <= err_acc | got_err; rdata_pend <= '0;
-              end
-            end else if (rcv_hi && n_beats != 4'd1) begin
+            fin_ack <= 1'b0;
+            if (rcv_hi && n_beats != 4'd1) begin
               hi_q <= pb_rd; err_acc <= got_err;
             end else if (!aborted) begin
               ack_pend   <= 1'b1;
               err_pend   <= got_err | (n_beats != 4'd1 && err_acc);
               rdata_pend <= n_beats == 4'd1 ? {pb_rd, pb_rd} : {hi_q, pb_rd};
+              fin_ack    <= 1'b1;
               if (got_err || (n_beats != 4'd1 && err_acc)) aborted <= 1'b1;
             end
             if (last) st <= S_FIN;
           end
         end
-        // Leave when the final ack is being shown in a cycle that ends on a
-        // requester edge (or at such an edge if no ack is owed): the
-        // requester drops or replaces its request after that edge, and the
-        // bus side sees the change one cycle later, where S_IDLE looks.
-        S_FIN: if (cpu_edge_i && (ack_q || aborted)) st <= S_IDLE;
+        // Leave once the final ack has been loaded into the register the
+        // requester sees (not an earlier beat's: the pending one is consumed
+        // first) and the cycle ends on a requester edge — or at such an edge
+        // if no ack is owed. The requester drops or replaces its request
+        // after that edge, and the bus side sees the change a cycle later,
+        // where S_IDLE looks; leaving earlier re-accepted the old request.
+        S_FIN: if (cpu_edge_i && !ack_pend && (ack_q || !fin_ack)) st <= S_IDLE;
         default: st <= S_IDLE;
       endcase
     end
