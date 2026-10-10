@@ -261,18 +261,31 @@ module cpu_module
     ut_use = i_xlat_now && mcntl[MC_EN] && !mcntl[MC_BM] && ut_hit &&
              acc_fault({1'b0, 1'b1, i_supv_now}, ut_acc_hit) == FT_NONE;
   end
-  logic ut_fill;
+  // The fill happens one cycle after the MMU's answer, from a registered
+  // copy of it: fetch address → the TLB's CAM → PTE mux → the entry was the
+  // module's longest path. A translation change in between drops the fill.
+  logic        ut_fill, ut_fill_q;
+  logic [19:0] ut_fill_vtag;
+  logic [23:0] ut_fill_ppn;
+  logic [2:0]  ut_fill_acc;
   assign ut_fill = i_xlat_now && !ut_use && xi_r.hit && !xi_r.busy && mcntl[MC_EN] && !mcntl[MC_BM];
   always_ff @(posedge clk) begin
+    ut_fill_vtag <= i_va_now[31:12];
+    ut_fill_ppn  <= xi_r.pa[35:12];
+    ut_fill_acc  <= xi_r.acc;
     if (rst || tlb_changed) begin
       for (int k = 0; k < UT; k++) ut_v[k] <= 1'b0;
       ut_wp <= '0;
-    end else if (ut_fill) begin
-      ut_v[ut_wp] <= 1'b1;
-      ut_vtag[ut_wp] <= i_va_now[31:12];
-      ut_ppn[ut_wp] <= xi_r.pa[35:12];
-      ut_acc[ut_wp] <= xi_r.acc;
-      ut_wp <= ut_wp + 3'd1;
+      ut_fill_q <= 1'b0;
+    end else begin
+      ut_fill_q <= ut_fill;
+      if (ut_fill_q) begin
+        ut_v[ut_wp]    <= 1'b1;
+        ut_vtag[ut_wp] <= ut_fill_vtag;
+        ut_ppn[ut_wp]  <= ut_fill_ppn;
+        ut_acc[ut_wp]  <= ut_fill_acc;
+        ut_wp <= ut_wp + 3'd1;
+      end
     end
   end
 

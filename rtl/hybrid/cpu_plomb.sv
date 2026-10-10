@@ -8,12 +8,13 @@
 // core.
 //
 // Two clocks: clk is the bus clock (the old core's system clock), clk_cpu
-// the CPU's — the same clock, or one of half its frequency whose edges
-// coincide with every second edge of clk (the hybrid's first proof of the
-// CPU runs it at half rate: its one-cycle paths do not meet 55 MHz yet).
-// cpu_edge_i is high in the clk cycle that ends on a clk_cpu edge (tied high
-// at full rate); plomb_master and the snoop queue use it to show the CPU
-// each ack and snoop exactly once.
+// the CPU's — the same clock, or one of half its frequency made by a toggle
+// flop, whose edges fall on every second edge of clk (a little after them:
+// the hybrid's first proof of the CPU runs it so, since its one-cycle paths
+// do not meet 55 MHz yet). Everything shown to the CPU is a register loaded
+// when cpu_ld_i is high (the bus cycle ending on the edge between two CPU
+// edges) and held for a whole CPU cycle; cpu_edge_i is high in the bus cycle
+// that ends on a CPU edge. At full rate both are tied high.
 //
 // The caches snoop two sources: the module's own acknowledged write beats
 // (from plomb_master, with MID) and the write beats the I/O master gets
@@ -31,6 +32,7 @@ module cpu_plomb
   input  logic        clk,
   input  logic        clk_cpu,
   input  logic        cpu_edge_i,
+  input  logic        cpu_ld_i,
   input  logic        rst,
   input  logic [3:0]  irl_i,
 
@@ -60,7 +62,9 @@ module cpu_plomb
 );
   mem_req_t rq;
   mem_rsp_t rs;
-  snoop_t   own_sn, sn;
+  snoop_t   sn;
+  logic        own_pend;
+  logic [30:0] own_line;
 
   cpu_module #(.HAS_FPU(1'b1), .RAM_MB(12'(RAM_MB))) u_cpu (
     .clk(clk_cpu), .rst, .mid_i(4'(MID)), .irl_i,
@@ -68,23 +72,25 @@ module cpu_plomb
     .wd_reset_o, .si_reset_o, .halt_o);
 
   plomb_master #(.MID(4'(MID))) u_pb (
-    .clk, .rst, .cpu_edge_i, .req_i(rq), .rsp_o(rs), .snoop_o(own_sn),
+    .clk, .rst, .cpu_edge_i, .cpu_ld_i, .req_i(rq), .rsp_o(rs),
+    .sn_pend_o(own_pend), .sn_line_o(own_line),
     .pb_req, .pb_a, .pb_ah, .pb_asi, .pb_d, .pb_be, .pb_mode, .pb_burst,
     .pb_cont, .pb_cache, .pb_lock, .pb_dack,
     .pb_ack, .pb_dreq, .pb_rd, .pb_code);
 
-  // ---- the DMA snoop queue (bus clock; one pop per CPU cycle) ----
+  // ---- the DMA snoop queue (bus clock) and the snoop register the CPU sees ----
   logic [30:0] dq [0:3];                 // lines (pa[35:5])
   logic [30:0] last_line;
   logic [1:0]  wp, rp;
   logic [2:0]  n;
   logic        push, pop;
   assign push = dma_wr_i && n != 3'd4 && !(n != 3'd0 && last_line == dma_a_i[35:5]);
-  assign pop  = n != 3'd0 && cpu_edge_i && !own_sn.valid;
+  assign pop  = cpu_ld_i && !own_pend && n != 3'd0;
 
   always_ff @(posedge clk) begin
     if (rst) begin
       wp <= '0; rp <= '0; n <= '0; last_line <= '0;
+      sn <= '0;
     end else begin
       if (push) begin
         dq[wp]    <= dma_a_i[35:5];
@@ -93,15 +99,11 @@ module cpu_plomb
       end
       if (pop) rp <= rp + 2'd1;
       n <= n + {2'd0, push} - {2'd0, pop};
-    end
-  end
-
-  always_comb begin
-    sn = own_sn;
-    if (pop) begin
-      sn.valid = 1'b1;
-      sn.line  = dq[rp];
-      sn.mid   = 4'd0;
+      if (cpu_ld_i) begin
+        sn.valid <= own_pend || n != 3'd0;
+        sn.line  <= own_pend ? own_line : dq[rp];
+        sn.mid   <= own_pend ? 4'(MID) : 4'd0;
+      end
     end
   end
 endmodule

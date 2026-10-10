@@ -43,28 +43,28 @@ module cpu_sim
 
   // HALF (run.sh: +half): the module on a clock of half the frequency (the
   // hybrid's first board proof runs it so), through the shim. The module's
-  // clock is its own waveform, rising on every second rising edge of clk, so
-  // that both domains' flops sample pre-edge values (a clock derived from a
-  // flop would make the module see post-edge values in the simulator);
-  // cpu_edge marks the clk cycle that ends on a module clock edge.
+  // clock is a toggle flop, as in the hybrid: in the simulator the module
+  // then evaluates after the bus domain's registers have updated, which is
+  // what the flop-made clock's insertion delay does in hardware — the shim
+  // must show the module only registers loaded at the other bus edge.
+  // cpu_edge marks the clk cycle that ends on a module clock edge, cpu_ld
+  // the one that ends on the other edge.
   logic use_plomb, jitter;
   initial begin
     use_plomb = $test$plusargs("plomb") || HALF;
     jitter    = $test$plusargs("jitter");
   end
-  logic ph, cpu_clk_h, cpu_clk, cpu_edge;
+  logic ph, cpu_clk, cpu_edge, cpu_ld;
   initial ph = 0;
-  always @(posedge clk) ph <= ~ph;                 // 1 during [5,15), [25,35), ...
-  initial begin
-    cpu_clk_h = 0; #15;                            // rises at 15, 35, ...: with clk's edges
-    forever begin cpu_clk_h = 1; #10; cpu_clk_h = 0; #10; end
-  end
+  always @(posedge clk) ph <= ~ph;
   if (HALF) begin : g_half
-    assign cpu_clk  = cpu_clk_h;
-    assign cpu_edge = ph;
+    assign cpu_clk  = ph;                  // rises at the end of a ph = 0 cycle
+    assign cpu_edge = ~ph;
+    assign cpu_ld   = ph;
   end else begin : g_full
     assign cpu_clk  = clk;
     assign cpu_edge = 1'b1;
+    assign cpu_ld   = 1'b1;
   end
 
   cpu_module #(.HAS_FPU(1'b1), .RAM_MB(12'd16)) u_cpu (
@@ -83,8 +83,13 @@ module cpu_sim
   logic [7:0]  pb_asi;
   logic [1:0]  pb_mode, pb_burst, pb_code;
   assign pb_in = use_plomb ? cmr : '0;
+  logic        psn_pend;
+  logic [30:0] psn_line;
+  always_ff @(posedge clk)                 // the snoop register the module sees (as cpu_plomb builds it)
+    if (cpu_ld) begin psn.valid <= psn_pend; psn.line <= psn_line; psn.mid <= 4'd8; end
   plomb_master u_pbm (
-    .clk, .rst, .cpu_edge_i(cpu_edge), .req_i(pb_in), .rsp_o(pms), .snoop_o(psn),
+    .clk, .rst, .cpu_edge_i(cpu_edge), .cpu_ld_i(cpu_ld), .req_i(pb_in), .rsp_o(pms),
+    .sn_pend_o(psn_pend), .sn_line_o(psn_line),
     .pb_req, .pb_a, .pb_ah, .pb_asi, .pb_d, .pb_be, .pb_mode, .pb_burst, .pb_cont, .pb_cache, .pb_lock, .pb_dack,
     .pb_ack, .pb_dreq, .pb_rd, .pb_code);
   plomb_slave_model u_pbs (
