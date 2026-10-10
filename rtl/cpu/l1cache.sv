@@ -9,8 +9,10 @@
 //               no write-allocate; ignores its own module's snoops (it
 //               updates its line on a write hit instead)
 // Physically tagged (PA[35:12]); the set index is within the page offset.
-// Data and tags in RAM (a lookup read port and a write/read port), the
-// valid/MRU/lock bits in flops.
+// Data, tags (with the valid bits and the D-cache's D/S image bits) and
+// the per-set MRU/lock words are all in RAM, each with a lookup read port
+// and a second port for fills, snoops, diagnostics and the flash sweeps;
+// nothing is indexed dynamically in flops.
 //
 // From: the Viking (TMS390Z50) user documentation §4.7 (I-cache: 5-way,
 //   64-byte lines with two valid bits, replacement by MRU history and lock
@@ -22,13 +24,15 @@
 //
 // The CPU side holds req_i until done_o; a read hit answers in the cycle
 // after the request (the compare cycle) and the next request may be
-// presented in that same cycle. A cacheable read fills on a miss
-// (a 32-byte burst) and answers after the last beat; a write goes to
-// memory and updates a hit line; an atomic drops the line and does a
-// locked read then the write; an uncacheable access is a single beat.
-// A snoop or line invalidation reads the set's tags on the second RAM
-// port and clears the matching valid bit(s); a snoop that hits a line
-// being filled stops that fill from being validated.
+// presented in that same cycle. A cacheable read fills on a miss (a 32-byte
+// burst) and answers after the last beat; a write goes to memory and
+// updates a hit line; an atomic drops the line and does a locked read then
+// the write; an uncacheable access is a single beat. A snoop or line
+// invalidation reads the set's tags on the second port and clears the
+// matching valid bit; a snoop that hits a line being filled stops that
+// fill from being validated. A flash clear sweeps the tag (or lock) words
+// of every set, two cycles a set, with the CPU side held off meanwhile
+// (flash_busy_o).
 
 module l1cache
   import mmu_pkg::*;
@@ -58,9 +62,10 @@ module l1cache
   input  logic [35:5] inval_line_i,
   input  mem_pkg::snoop_t snoop_i,
 
-  // Flash clear: valid+MRU bits, lock bits
+  // Flash clear: valid+MRU bits, lock bits (a sweep; busy meanwhile)
   input  logic        flash_v_i,
   input  logic        flash_l_i,
+  output logic        flash_busy_o,
 
   // Diagnostic access (ASI 0x0C-0x0F), held until done
   input  logic        diag_req_i,
@@ -80,15 +85,16 @@ module l1cache
   localparam int SETS    = ICACHE ? 64 : 128;
   localparam int SET_LSB = ICACHE ? 6 : 5;       // line offset bits
   localparam int SET_W   = ICACHE ? 6 : 7;
-  localparam int SUB     = ICACHE ? 2 : 1;        // valid bits per line
-  localparam int VW      = SET_W + (ICACHE ? 1 : 0);   // valid-bit index width
-  localparam int WW      = ICACHE ? 3 : 2;              // way index width
+  localparam int WW      = ICACHE ? 3 : 2;       // way index width
+
+  // The tag word: [23:0] PA[35:12]; I-cache [24] V of half-line 0, [25] V of
+  // half-line 1; D-cache [24] V, [25] D, [26] S (image bits, never set here)
+  localparam logic [31:0] TAG_VMASK = ICACHE ? 32'h0300_0000 : 32'h0100_0000;
+  // The set word: [7:0] lock bits, [15:8] MRU bits (bit n = way n)
 
   // ---------------------------------------------------------------------
   // Storage
   // ---------------------------------------------------------------------
-  // data: 512 doublewords per way, addressed by pa[11:3] (set and
-  // doubleword); tags: one 32-bit word per set per way: {6'b0, D, S, tag[23:0]}
   logic [8:0]        da_addr, db_addr;
   logic              db_we;
   logic [7:0]        db_be;
@@ -98,11 +104,14 @@ module l1cache
   logic [WAYS-1:0]   db_we_way;
 
   logic [SET_W-1:0]  ta_addr, tb_addr;
-  logic              tb_we;
-  logic [31:0]       tb_wdata;
+  logic [WAYS-1:0]   tb_we_way;
+  logic [31:0]       tb_wdata [WAYS];
   logic [31:0]       ta_rdata [WAYS];
   logic [31:0]       tb_rdata [WAYS];
-  logic [WAYS-1:0]   tb_we_way;
+
+  logic [SET_W-1:0]  sa_addr, sb_addr;
+  logic              sb_we;
+  logic [15:0]       sb_wdata, sa_rdata, sb_rdata;
 
   genvar w;
   generate
@@ -114,18 +123,26 @@ module l1cache
       ram_2r1w_be #(.AW(SET_W), .BYTES(4)) u_tag (
         .clk,
         .a_addr(ta_addr), .a_rdata(ta_rdata[w]),
-        .b_addr(tb_addr), .b_we(tb_we & tb_we_way[w]), .b_be(4'hF), .b_wdata(tb_wdata), .b_rdata(tb_rdata[w]));
+        .b_addr(tb_addr), .b_we(tb_we_way[w]), .b_be(4'hF), .b_wdata(tb_wdata[w]), .b_rdata(tb_rdata[w]));
     end
   endgenerate
-
-  logic [(SETS*SUB)-1:0] vbits [WAYS];
-  logic [WAYS-1:0]       mru [SETS];
-  logic [WAYS-1:0]       lck [SETS];
+  ram_2r1w_be #(.AW(SET_W), .BYTES(2)) u_stag (
+    .clk,
+    .a_addr(sa_addr), .a_rdata(sa_rdata),
+    .b_addr(sb_addr), .b_we(sb_we), .b_be(2'b11), .b_wdata(sb_wdata), .b_rdata(sb_rdata));
 
   /* verilator lint_off UNUSEDSIGNAL */
-  function automatic logic [VW-1:0] vidx(input logic [35:0] pa);
-    if (ICACHE) return {pa[11:6], pa[5]};
-    else return pa[11:5];
+  // the valid bit of a tag word for the (half-)line at pa
+  function automatic logic tag_v(input logic [31:0] word, input logic [35:0] pa);
+    if (ICACHE) return pa[5] ? word[25] : word[24];
+    else return word[24];
+  endfunction
+  function automatic logic tag_any_v(input logic [31:0] word);
+    return |(word & TAG_VMASK);
+  endfunction
+  function automatic logic [31:0] vbit_of(input logic [35:0] pa);
+    if (ICACHE) return pa[5] ? 32'h0200_0000 : 32'h0100_0000;
+    else return 32'h0100_0000;
   endfunction
   /* verilator lint_on UNUSEDSIGNAL */
 
@@ -144,7 +161,8 @@ module l1cache
   logic [1:0]  fill_beat;
   logic [63:0] fill_data;        // the demand doubleword
   logic        fill_err, fill_snooped;
-  logic [WW-1:0]  fill_way;
+  logic [WW-1:0] fill_way;
+  logic [31:0] fill_tag_start, fill_tag_end;   // the victim's tag word at the start and at the end of the fill
   logic        st_hit_written;
   logic        single_lock;
 
@@ -153,42 +171,56 @@ module l1cache
   // Tag compare in S_LOOKUP (port A outputs are from the accept cycle)
   logic [WAYS-1:0] hit_way;
   logic            hit;
-  logic [WW-1:0]      hit_idx;
+  logic [WW-1:0]   hit_idx;
   always_comb begin
     hit_way = '0;
     for (int i = 0; i < WAYS; i++)
-      hit_way[i] = (ta_rdata[i][23:0] == r_pa[35:12]) && vbits[i][vidx(r_pa)];
+      hit_way[i] = (ta_rdata[i][23:0] == r_pa[35:12]) && tag_v(ta_rdata[i], r_pa);
     hit = |hit_way;
     hit_idx = '0;
     for (int i = WAYS - 1; i >= 0; i--) if (hit_way[i]) hit_idx = WW'(i);
   end
-  // A way holding the same tag (for the I-cache: the other half-line valid)
+  // A way holding the same tag with a valid half-line (I-cache: the fill joins it)
   logic [WAYS-1:0] tag_way;
   logic            tag_present;
-  logic [WW-1:0]      tag_idx;
+  logic [WW-1:0]   tag_idx;
   always_comb begin
     tag_way = '0;
-    for (int i = 0; i < WAYS; i++) begin
-      if (ICACHE) tag_way[i] = (ta_rdata[i][23:0] == r_pa[35:12]) && (vbits[i][VW'({r_pa[11:6], 1'b0})] || vbits[i][VW'({r_pa[11:6], 1'b1})]);
-      else tag_way[i] = 1'b0;
-    end
+    for (int i = 0; i < WAYS; i++)
+      tag_way[i] = ICACHE && (ta_rdata[i][23:0] == r_pa[35:12]) && tag_any_v(ta_rdata[i]);
     tag_present = |tag_way;
     tag_idx = '0;
     for (int i = WAYS - 1; i >= 0; i--) if (tag_way[i]) tag_idx = WW'(i);
   end
+
+  // The set's lock and MRU bits (port A, read in the accept cycle)
+  logic [WAYS-1:0] cur_lck, cur_mru;
+  assign cur_lck = sa_rdata[WAYS-1:0];
+  assign cur_mru = sa_rdata[8 +: WAYS];
 
   // The victim: an unlocked way with no valid (half-)line, else the
   // highest unlocked way without history (Viking fills line 4 first)
   logic [WW-1:0] victim;
   always_comb begin
     victim = '0;
-    for (int i = 0; i < WAYS; i++) if (!lck[r_set][i] && !mru[r_set][i]) victim = WW'(i);
-    for (int i = 0; i < WAYS; i++) begin
-      if (!lck[r_set][i] && (ICACHE ? !(vbits[i][VW'({r_set, 1'b0})] || vbits[i][VW'({r_set, 1'b1})]) : !vbits[i][VW'(r_set)]))
-        victim = WW'(i);
-    end
-    if (ICACHE && tag_present) victim = tag_idx;
+    for (int i = 0; i < WAYS; i++) if (!cur_lck[i] && !cur_mru[i]) victim = WW'(i);
+    for (int i = 0; i < WAYS; i++) if (!cur_lck[i] && !tag_any_v(ta_rdata[i])) victim = WW'(i);
+    if (tag_present) victim = tag_idx;
   end
+
+  // The MRU word after a use of `way`: set its bit; when every way is used
+  // or locked, the others' history goes (Viking §4.7.2)
+  function automatic logic [15:0] mru_after(input logic [WAYS-1:0] mru, input logic [WAYS-1:0] lck, input logic [WW-1:0] way);
+    logic [WAYS-1:0] onehot, n;
+    logic [15:0] word;
+    onehot = WAYS'(1) << way;
+    n = mru | onehot;
+    if (&(n | lck)) n = onehot | (mru & lck);
+    word = '0;
+    word[WAYS-1:0] = lck;
+    word[8 +: WAYS] = n;
+    return word;
+  endfunction
 
   // ---------------------------------------------------------------------
   // Snoop / invalidation queue
@@ -208,13 +240,34 @@ module l1cache
     sq_in2   = {1'b0, snoop_i.line};
     sq_pushes = {1'b0, sq_push} + {1'b0, sq_push2};
   end
-  typedef enum logic [1:0] {Q_IDLE, Q_READ, Q_CMP} qstate_t;
+  typedef enum logic [1:0] {Q_IDLE, Q_CMP, Q_WRITE} qstate_t;
   qstate_t     qs;
   logic [31:0] q_cur;
   logic [SET_W-1:0] q_set;
   assign q_set = q_cur[6 -: SET_W];           // line[11:SET_LSB]: line bit k is q_cur[k-5]
-  logic [VW-1:0] q_vidx;
-  assign q_vidx = q_cur[VW-1:0];              // I: {line[11:6], line[5]}; D: line[11:5]
+  logic [35:0] q_pa;                          // the line as an address, for the valid bit
+  assign q_pa = {q_cur[30:0], 5'b00000};
+  logic [WAYS-1:0] q_match;
+  logic            q_any;
+  logic [WW-1:0]   q_idx;
+  always_comb begin
+    q_match = '0;
+    for (int i = 0; i < WAYS; i++) q_match[i] = (tb_rdata[i][23:0] == q_cur[30:7]) && tag_v(tb_rdata[i], q_pa);
+    q_any = |q_match;
+    q_idx = '0;
+    for (int i = WAYS - 1; i >= 0; i--) if (q_match[i]) q_idx = WW'(i);
+  end
+  logic [WW-1:0] q_way_q;
+  logic [31:0]   q_word_q;
+
+  // ---------------------------------------------------------------------
+  // The flash sweeps (valid + MRU, or locks): two cycles a set
+  // ---------------------------------------------------------------------
+  typedef enum logic [1:0] {F_IDLE, F_READ, F_WRITE} fstate_t;
+  fstate_t          fs;
+  logic             f_kind_l;                 // 1: the lock sweep
+  logic [SET_W-1:0] f_set;
+  assign flash_busy_o = fs != F_IDLE;
 
   // ---------------------------------------------------------------------
   // Diagnostic decode
@@ -240,6 +293,16 @@ module l1cache
   end
   typedef enum logic [1:0] {D_IDLE, D_READ, D_DONE} dstate_t;
   dstate_t ds;
+  // the PTAG image word to write, from the doubleword of the stda
+  logic [31:0] dg_tag_word;
+  assign dg_tag_word = ICACHE ? {6'd0, diag_wdata_i[57], diag_wdata_i[56], diag_wdata_i[23:0]}
+                              : {5'd0, diag_wdata_i[40], diag_wdata_i[48], diag_wdata_i[56], diag_wdata_i[23:0]};
+  logic [15:0] dg_set_word;
+  always_comb begin
+    dg_set_word = '0;
+    dg_set_word[WAYS-1:1] = diag_wdata_i[1 +: WAYS-1];    // lock bits; bit 0 fixed 0
+    dg_set_word[8 +: WAYS] = diag_wdata_i[8 +: WAYS];     // MRU bits
+  end
 
   // ---------------------------------------------------------------------
   // Port scheduling
@@ -247,16 +310,23 @@ module l1cache
   // Port A (lookup): the request's index in the accept cycle (from the VA)
   assign da_addr = idx_i;
   assign ta_addr = idx_i[8 -: SET_W];
+  assign sa_addr = idx_i[8 -: SET_W];
 
   logic fill_beat_now;             // a fill beat arrives this cycle
   assign fill_beat_now = st == S_FILL && mem_rsp_i.ack && !mem_rsp_i.err;
   logic st_hit_now;                // a write hit updates the line this cycle
   assign st_hit_now = st == S_WRITE_WAIT && hit && !st_hit_written && r_cacheable;
-  logic dg_data_go, dg_tag_go, snoop_go, fill_tag_go;
-  assign fill_tag_go = st == S_FILL_START;
-  assign snoop_go    = qs == Q_IDLE && sq_count != 4'd0 && !fill_tag_go;
-  assign dg_data_go  = ds == D_IDLE && diag_req_i && !diag_tag_i && !fill_beat_now && !st_hit_now;
-  assign dg_tag_go   = ds == D_IDLE && diag_req_i && diag_tag_i && !fill_tag_go && !snoop_go;
+  logic fill_tag_go, fill_end_go, atomic_inval_go, snoop_rd_go, snoop_wr_go, flash_go, dg_tag_go, dg_data_go, mru_go;
+  assign fill_tag_go     = st == S_FILL_START;
+  assign fill_end_go     = st == S_DONE && !fill_err && !fill_snooped;
+  assign atomic_inval_go = st == S_LOOKUP && r_atomic && hit;
+  assign snoop_wr_go     = qs == Q_WRITE;
+  assign flash_go        = fs != F_IDLE && !fill_tag_go && !fill_end_go && !atomic_inval_go && !snoop_wr_go;
+  assign snoop_rd_go     = qs == Q_IDLE && sq_count != 4'd0 && !fill_tag_go && !fill_end_go && !atomic_inval_go && fs == F_IDLE;
+  assign dg_tag_go       = ds == D_IDLE && diag_req_i && diag_tag_i && !fill_tag_go && !fill_end_go && !atomic_inval_go &&
+                           !snoop_wr_go && !snoop_rd_go && fs == F_IDLE;
+  assign dg_data_go      = ds == D_IDLE && diag_req_i && !diag_tag_i && !fill_beat_now && !st_hit_now;
+  assign mru_go          = (st == S_LOOKUP && !r_atomic && hit) || fill_end_go;
 
   // data port B
   always_comb begin
@@ -271,19 +341,50 @@ module l1cache
     end
   end
 
-  // tag port B
+  // tag port B: fill start/end, an atomic's invalidation, a snoop's read
+  // and invalidation, the flash sweep, the diagnostics
   always_comb begin
-    tb_we = 1'b0; tb_addr = '0; tb_wdata = '0; tb_we_way = '0;
+    tb_addr = '0; tb_we_way = '0;
+    for (int i = 0; i < WAYS; i++) tb_wdata[i] = '0;
     if (fill_tag_go) begin
-      tb_we = 1'b1; tb_addr = r_set; tb_wdata = {8'd0, r_pa[35:12]}; tb_we_way[fill_way] = 1'b1;
-    end else if (snoop_go) begin
+      tb_addr = r_set; tb_we_way[fill_way] = 1'b1; tb_wdata[fill_way] = fill_tag_start;
+    end else if (fill_end_go) begin
+      tb_addr = r_set; tb_we_way[fill_way] = 1'b1; tb_wdata[fill_way] = fill_tag_end;
+    end else if (atomic_inval_go) begin
+      tb_addr = r_set; tb_we_way[hit_idx] = 1'b1; tb_wdata[hit_idx] = ta_rdata[hit_idx] & ~vbit_of(r_pa);
+    end else if (snoop_wr_go) begin
+      tb_addr = q_set; tb_we_way[q_way_q] = 1'b1; tb_wdata[q_way_q] = q_word_q;
+    end else if (flash_go) begin
+      tb_addr = f_set;
+      if (fs == F_WRITE && !f_kind_l) begin
+        tb_we_way = '1;
+        for (int i = 0; i < WAYS; i++) tb_wdata[i] = tb_rdata[i] & ~TAG_VMASK;
+      end
+    end else if (snoop_rd_go) begin
       tb_addr = sq_line[sq_rd][6 -: SET_W];
     end else if (dg_tag_go) begin
       tb_addr = dg_set;
       if (diag_we_i && dg_t == 2'd2 && dg_way_ok) begin
-        tb_we = 1'b1; tb_we_way[dg_way] = 1'b1;
-        tb_wdata = ICACHE ? {8'd0, diag_wdata_i[23:0]} : {6'd0, diag_wdata_i[48], diag_wdata_i[40], diag_wdata_i[23:0]};
+        tb_we_way[dg_way] = 1'b1; tb_wdata[dg_way] = dg_tag_word;
       end
+    end
+  end
+
+  // set-word port B: the MRU update of a hit or a fill, the flash sweep, the diagnostics
+  always_comb begin
+    sb_we = 1'b0; sb_addr = '0; sb_wdata = '0;
+    if (mru_go) begin
+      sb_we = 1'b1; sb_addr = r_set;
+      sb_wdata = mru_after(cur_mru, cur_lck, (st == S_DONE) ? fill_way : hit_idx);
+    end else if (fs != F_IDLE) begin
+      sb_addr = f_set;
+      if (fs == F_WRITE) begin
+        sb_we = 1'b1;
+        sb_wdata = f_kind_l ? (sb_rdata & 16'hFF00) : (sb_rdata & 16'h00FF);
+      end
+    end else if (dg_tag_go) begin
+      sb_addr = dg_set;
+      if (diag_we_i && dg_t == 2'd1 && dg_way_ok) begin sb_we = 1'b1; sb_wdata = dg_set_word; end
     end
   end
 
@@ -323,7 +424,7 @@ module l1cache
   // ---------------------------------------------------------------------
   // A read hit answers in its compare cycle, and the next request is taken
   // in that cycle (one lookup per cycle on hits); everything else answers
-  // from the registered done/rdata/err
+  // from the registered done/rdata/err. Nothing is taken during a flash sweep.
   logic        done_q, err_q;
   logic [63:0] rdata_q;
   logic        hit_now;
@@ -332,7 +433,7 @@ module l1cache
   assign rdata_o = hit_now ? da_rdata[hit_idx] : rdata_q;
   assign err_o   = hit_now ? 1'b0 : err_q;
   logic accept;
-  assign accept = req_i && !done_q && (st == S_IDLE || hit_now);
+  assign accept = req_i && !done_q && (st == S_IDLE || hit_now) && fs == F_IDLE && !flash_v_i && !flash_l_i;
 
   always_ff @(posedge clk) begin
     done_q <= 1'b0;
@@ -341,12 +442,12 @@ module l1cache
       st <= S_IDLE;
       r_we <= 1'b0; r_atomic <= 1'b0; r_cacheable <= 1'b0; r_pa <= '0; r_be <= '0; r_wdata <= '0;
       fill_beat <= '0; fill_data <= '0; fill_err <= 1'b0; fill_snooped <= 1'b0; fill_way <= '0;
+      fill_tag_start <= '0; fill_tag_end <= '0;
       st_hit_written <= 1'b0; single_lock <= 1'b0;
       rdata_q <= '0; err_q <= 1'b0;
-      for (int i = 0; i < WAYS; i++) vbits[i] <= '0;
-      for (int i = 0; i < SETS; i++) begin mru[i] <= '0; lck[i] <= '0; end
       sq_wr <= '0; sq_rd <= '0; sq_count <= '0;
-      qs <= Q_IDLE; q_cur <= '0;
+      qs <= Q_IDLE; q_cur <= '0; q_way_q <= '0; q_word_q <= '0;
+      fs <= F_IDLE; f_kind_l <= 1'b0; f_set <= '0;
       ds <= D_IDLE; diag_rdata_o <= '0;
     end else begin
       // ---- the request ----
@@ -354,32 +455,24 @@ module l1cache
         S_IDLE: ;                         // a request is taken below
 
         S_LOOKUP: begin
-          // the tags and data of the accept cycle are out
+          // the tags, data and set word of the accept cycle are out
           if (r_atomic) begin
-            if (hit) vbits[hit_idx][vidx(r_pa)] <= 1'b0;     // the line goes; memory has the truth
-            st <= S_ATOMIC_RD;
+            st <= S_ATOMIC_RD;            // the line goes (tag port B); memory has the truth
           end else if (hit) begin
-            st <= S_IDLE;                 // the answer is combinational (hit_now)
-            // history: this way most recently used
-            mru[r_set][hit_idx] <= 1'b1;
-            if (&(mru[r_set] | lck[r_set] | (WAYS'(1) << hit_idx))) begin
-              for (int i = 0; i < WAYS; i++) if (WW'(i) != hit_idx && !lck[r_set][i]) mru[r_set][i] <= 1'b0;
-            end
+            st <= S_IDLE;                 // the answer is combinational (hit_now); the MRU word is written
           end else begin
             fill_way <= victim;
+            // the victim's tag word: the other half-line's valid bit kept when
+            // the way already holds this tag (I-cache), else nothing valid
+            fill_tag_start <= {8'd0, r_pa[35:12]} |
+                              ((tag_present && tag_idx == victim) ? (ta_rdata[victim] & TAG_VMASK & ~vbit_of(r_pa)) : 32'd0);
+            fill_tag_end   <= {8'd0, r_pa[35:12]} |
+                              ((tag_present && tag_idx == victim) ? (ta_rdata[victim] & TAG_VMASK) : 32'd0) | vbit_of(r_pa);
             st <= S_FILL_START;
           end
         end
         S_FILL_START: begin
-          // the victim's tag is written now (port B); its old contents go
-          if (ICACHE) begin
-            if (!(tag_present && tag_idx == fill_way)) begin
-              vbits[fill_way][VW'({r_set, 1'b0})] <= 1'b0;
-              vbits[fill_way][VW'({r_set, 1'b1})] <= 1'b0;
-            end
-          end else begin
-            vbits[fill_way][VW'(r_set)] <= 1'b0;
-          end
+          // the victim's tag is written now (port B, not yet valid for this half-line)
           fill_beat <= 2'd0;
           st <= S_FILL;
         end
@@ -395,14 +488,8 @@ module l1cache
               (inval_i && inval_line_i == r_pa[35:5])) fill_snooped <= 1'b1;
         end
         S_DONE: begin
-          // validate (unless an error or a snoop said no) and answer
-          if (!fill_err && !fill_snooped) begin
-            vbits[fill_way][vidx(r_pa)] <= 1'b1;
-            mru[r_set][fill_way] <= 1'b1;
-            if (&(mru[r_set] | lck[r_set] | (WAYS'(1) << fill_way))) begin
-              for (int i = 0; i < WAYS; i++) if (WW'(i) != fill_way && !lck[r_set][i]) mru[r_set][i] <= 1'b0;
-            end
-          end
+          // validate (the tag word with the valid bit, and the MRU word,
+          // written now unless an error or a snoop said no) and answer
           rdata_q <= fill_data;
           err_q <= fill_err;
           done_q <= 1'b1;
@@ -455,7 +542,7 @@ module l1cache
         else st <= S_LOOKUP;
       end
 
-      // ---- the snoop queue ----
+      // ---- the snoop queue: read the set's tags, compare, clear the valid bit ----
       if (sq_push && sq_push2) begin
         sq_line[sq_wr] <= sq_in1; sq_line[sq_wr + 3'd1] <= sq_in2;
         sq_wr <= sq_wr + 3'd2;
@@ -463,10 +550,10 @@ module l1cache
         sq_line[sq_wr] <= sq_push ? sq_in1 : sq_in2;
         sq_wr <= sq_wr + 3'd1;
       end
-      sq_count <= sq_count + {2'd0, sq_pushes} - {3'd0, snoop_go};
+      sq_count <= sq_count + {2'd0, sq_pushes} - {3'd0, snoop_rd_go};
       case (qs)
         Q_IDLE: begin
-          if (snoop_go) begin
+          if (snoop_rd_go) begin
             q_cur <= sq_line[sq_rd];
             sq_rd <= sq_rd + 3'd1;
             qs <= Q_CMP;
@@ -474,45 +561,48 @@ module l1cache
         end
         Q_CMP: begin
           // the tags of the set are on port B now
-          for (int i = 0; i < WAYS; i++)
-            if (tb_rdata[i][23:0] == q_cur[30:7]) vbits[i][q_vidx] <= 1'b0;   // line[35:12] = q_cur[30:7]
-          qs <= Q_IDLE;
+          if (q_any) begin
+            q_way_q <= q_idx;
+            q_word_q <= tb_rdata[q_idx] & ~vbit_of(q_pa);
+            qs <= Q_WRITE;
+          end else begin
+            qs <= Q_IDLE;
+          end
         end
+        Q_WRITE: qs <= Q_IDLE;            // the word is written this cycle (snoop_wr_go)
         default: qs <= Q_IDLE;
       endcase
 
-      // ---- flash clears ----
-      if (flash_v_i) begin
-        for (int i = 0; i < WAYS; i++) vbits[i] <= '0;
-        for (int i = 0; i < SETS; i++) mru[i] <= '0;
-      end
-      if (flash_l_i) begin
-        for (int i = 0; i < SETS; i++) lck[i] <= '0;
-      end
+      // ---- the flash sweeps ----
+      case (fs)
+        F_IDLE: begin
+          if (flash_v_i || flash_l_i) begin
+            f_kind_l <= flash_l_i && !flash_v_i;
+            f_set <= '0;
+            fs <= F_READ;
+          end
+        end
+        F_READ: begin
+          if (flash_go) fs <= F_WRITE;    // the set's words are read this cycle
+        end
+        F_WRITE: begin
+          if (flash_go) begin             // and written back now, else read again
+            f_set <= f_set + 1'b1;
+            if (f_set == SET_W'(SETS - 1)) fs <= F_IDLE;
+            else fs <= F_READ;
+          end else begin
+            fs <= F_READ;
+          end
+        end
+        default: fs <= F_IDLE;
+      endcase
 
       // ---- diagnostics ----
       case (ds)
         D_IDLE: begin
           if (dg_data_go || dg_tag_go) begin
-            if (diag_we_i) begin
-              // the RAM write is on port B this cycle; the flop fields now
-              if (diag_tag_i && dg_way_ok) begin
-                if (dg_t == 2'd2) begin
-                  if (ICACHE) begin
-                    vbits[dg_way][VW'({dg_set, 1'b0})] <= diag_wdata_i[56];
-                    vbits[dg_way][VW'({dg_set, 1'b1})] <= diag_wdata_i[57];
-                  end else begin
-                    vbits[dg_way][VW'(dg_set)] <= diag_wdata_i[56];
-                  end
-                end else if (dg_t == 2'd1) begin
-                  mru[dg_set] <= diag_wdata_i[8 +: WAYS];
-                  lck[dg_set] <= {diag_wdata_i[1 +: WAYS-1], 1'b0};
-                end
-              end
-              ds <= D_DONE;
-            end else begin
-              ds <= D_READ;
-            end
+            if (diag_we_i) ds <= D_DONE;  // the RAM write is on port B this cycle
+            else ds <= D_READ;
           end
         end
         D_READ: begin
@@ -521,12 +611,12 @@ module l1cache
           if (!dg_way_ok) diag_rdata_o <= '0;
           else if (!diag_tag_i) diag_rdata_o <= db_rdata[dg_way];
           else if (dg_t == 2'd2) begin
-            if (ICACHE) diag_rdata_o <= {6'd0, vbits[dg_way][VW'({dg_set, 1'b1})], vbits[dg_way][VW'({dg_set, 1'b0})], 32'd0, tb_rdata[dg_way][23:0]};
-            else diag_rdata_o <= {7'd0, vbits[dg_way][VW'(dg_set)], 7'd0, tb_rdata[dg_way][25], 7'd0, tb_rdata[dg_way][24], 8'd0, 8'd0, tb_rdata[dg_way][23:0]};
+            if (ICACHE) diag_rdata_o <= {6'd0, tb_rdata[dg_way][25], tb_rdata[dg_way][24], 32'd0, tb_rdata[dg_way][23:0]};
+            else diag_rdata_o <= {7'd0, tb_rdata[dg_way][24], 7'd0, tb_rdata[dg_way][25], 7'd0, tb_rdata[dg_way][26], 8'd0, 8'd0, tb_rdata[dg_way][23:0]};
           end else if (dg_t == 2'd1) begin
-            diag_rdata_o <= {32'd0, 19'd0, 13'd0};
-            diag_rdata_o[8 +: WAYS] <= mru[dg_set];
-            diag_rdata_o[1 +: WAYS-1] <= lck[dg_set][WAYS-1:1];
+            diag_rdata_o <= '0;
+            diag_rdata_o[8 +: WAYS] <= sb_rdata[8 +: WAYS];
+            diag_rdata_o[1 +: WAYS-1] <= sb_rdata[WAYS-1:1];
           end
           ds <= D_DONE;
         end
@@ -540,6 +630,6 @@ module l1cache
   end
 
   logic unused_ok;
-  assign unused_ok = &{1'b0, q_set, q_cur[31], r_pa[2:0], diag_va_i[29], diag_va_i[25:12], diag_va_i[2:0]};
+  assign unused_ok = &{1'b0, q_cur[31], r_pa[2:0], diag_va_i[29], diag_va_i[25:12], diag_va_i[2:0], sa_rdata, sb_rdata};
 
 endmodule

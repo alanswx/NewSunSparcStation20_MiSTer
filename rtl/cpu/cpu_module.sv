@@ -124,6 +124,7 @@ module cpu_module
   logic        ic_inval, dc_inval;
   logic [35:5] inval_line;
   logic        ic_flash_v, ic_flash_l, dc_flash_v, dc_flash_l;
+  logic        ic_flash_busy, dc_flash_busy;
   logic        ic_dg_req, ic_dg_done, dc_dg_req, dc_dg_done;
   logic [63:0] ic_dg_rdata, dc_dg_rdata;
   mem_req_t    mem_i, mem_d;
@@ -134,7 +135,7 @@ module cpu_module
     .req_i(ic_req), .we_i(1'b0), .atomic_i(1'b0), .cacheable_i(ic_cacheable), .pa_i(ic_pa), .idx_i(ic_idx), .be_i(8'hFF), .wdata_i(64'd0),
     .done_o(ic_done), .rdata_o(ic_rdata), .err_o(ic_err),
     .inval_i(ic_inval), .inval_line_i(inval_line), .snoop_i,
-    .flash_v_i(ic_flash_v), .flash_l_i(ic_flash_l),
+    .flash_v_i(ic_flash_v), .flash_l_i(ic_flash_l), .flash_busy_o(ic_flash_busy),
     .diag_req_i(ic_dg_req), .diag_we_i(dmr.write), .diag_tag_i(!dmr.asi[0]), .diag_va_i(dmr.va), .diag_wdata_i(diag_wdata),
     .diag_done_o(ic_dg_done), .diag_rdata_o(ic_dg_rdata),
     .mem_req_o(mem_i), .mem_rsp_i(mem_i_r));
@@ -159,7 +160,7 @@ module cpu_module
     .req_i(dc_req), .we_i(dc_we), .atomic_i(dc_atomic), .cacheable_i(dc_cacheable), .pa_i(dc_pa), .idx_i(dc_idx), .be_i(dc_be), .wdata_i(dc_wdata),
     .done_o(dc_done), .rdata_o(dc_rdata), .err_o(dc_err),
     .inval_i(dc_inval_any), .inval_line_i(dc_inval_line), .snoop_i,
-    .flash_v_i(dc_flash_v), .flash_l_i(dc_flash_l),
+    .flash_v_i(dc_flash_v), .flash_l_i(dc_flash_l), .flash_busy_o(dc_flash_busy),
     .diag_req_i(dc_dg_req), .diag_we_i(dmr.write), .diag_tag_i(!dmr.asi[0]), .diag_va_i(dmr.va), .diag_wdata_i(diag_wdata),
     .diag_done_o(dc_dg_done), .diag_rdata_o(dc_dg_rdata),
     .mem_req_o(mem_d), .mem_rsp_i(mem_d_r));
@@ -338,7 +339,8 @@ module cpu_module
   /* verilator lint_on UNUSEDSIGNAL */
 
   typedef enum logic [3:0] {
-    D_IDLE, D_XLAT, D_WALK, D_WALK_WAIT, D_CACHE, D_REG, D_DIAG_I, D_DIAG_D, D_FLUSH_XLAT, D_FLUSH_WALK, D_FLUSH_WAIT
+    D_IDLE, D_XLAT, D_WALK, D_WALK_WAIT, D_CACHE, D_REG, D_DIAG_I, D_DIAG_D, D_FLUSH_XLAT, D_FLUSH_WALK, D_FLUSH_WAIT,
+    D_FLASH
   } dstate_t;
   dstate_t     ds;
   logic        d_normal, d_bypass, d_flushasi;
@@ -475,10 +477,13 @@ module cpu_module
               else dms_q.ack <= 1'b1;
             end else if (dmr.asi == 8'h36 || dmr.asi == 8'h37) begin
               if (dmr.write) begin
+                // the sweep runs; the store completes when it is over
                 if (dmr.asi[0]) begin dc_flash_v <= !dmr.va[31]; dc_flash_l <= dmr.va[31]; end
                 else            begin ic_flash_v <= !dmr.va[31]; ic_flash_l <= dmr.va[31]; end
+                ds <= D_FLASH;
+              end else begin
+                dms_q.ack <= 1'b1;
               end
-              dms_q.ack <= 1'b1;
             end else if (dmr.asi == 8'h38) begin
               dms_q.ack <= 1'b1;
               if (dmr.size != 2'd3) dms_q.fault <= 2'd1;
@@ -573,6 +578,12 @@ module cpu_module
         end
         D_FLUSH_WAIT: begin
           if (wk_owner == 2'd0) ds <= D_FLUSH_XLAT;
+        end
+        D_FLASH: begin
+          if (!ic_flash_busy && !dc_flash_busy && !ic_flash_v && !ic_flash_l && !dc_flash_v && !dc_flash_l) begin
+            dms_q.ack <= 1'b1;
+            ds <= D_IDLE;
+          end
         end
         default: ds <= D_IDLE;
       endcase
