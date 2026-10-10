@@ -376,11 +376,16 @@ module cpu_module
     return dmr.va[2] ? {32'd0, d[31:0]} : {32'd0, d[63:32]};
   endfunction
 
-  // Bus errors: reported when the cache says so
-  assign be_valid = ds == D_CACHE && dc_done && dc_err;
-  assign be_at    = d_at;
-  assign be_va    = dmr.va;
-  assign be_no_fault = d_no_fault;
+  // Bus errors: reported when a cache says so (the data side first)
+  // a plain store is posted: its error is the chipset's to report (AFSR,
+  // a level-15 interrupt), never a trap here; atomics are reads too
+  logic d_berr, i_berr;
+  assign d_berr = ds == D_CACHE && dc_done && dc_err && !(dmr.write && !dmr.atomic);
+  assign i_berr = is == I_CACHE && ic_done && ic_err;
+  assign be_valid = d_berr | i_berr;
+  assign be_at    = d_berr ? d_at : i_at;
+  assign be_va    = d_berr ? dmr.va : i_va;
+  assign be_no_fault = d_berr ? d_no_fault : 1'b0;
 
   logic d_masked;                 // NF masks this access's faults
   assign d_masked = nf && d_no_fault;
@@ -480,7 +485,7 @@ module cpu_module
           if (dc_done) begin
             dms.ack <= 1'b1;
             dms.rdata <= lanes_rdata(dmr.size, d_pa[2:0], dc_rdata);
-            if (dc_err && !d_masked) dms.fault <= 2'd2;
+            if (dc_err && !d_masked && !(dmr.write && !dmr.atomic)) dms.fault <= 2'd2;
             ds <= D_IDLE;
           end
         end

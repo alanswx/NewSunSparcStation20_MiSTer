@@ -158,7 +158,8 @@ module cpu_sim
 
   // ---- cycle count, stop rules ----
   longint cyc;
-  logic [63:0] last8;                // the last eight ttya bytes
+  logic [95:0] last12;               // the last twelve ttya bytes
+  logic        done_seen;            // "CPUTEST DONE" went by: stop at the end of its line
   logic quiet;
   initial quiet = $test$plusargs("dmem") || $test$plusargs("trace") || $test$plusargs("mem");
   logic keep_wd;
@@ -166,7 +167,7 @@ module cpu_sim
   longint budget;
   initial if (!$value$plusargs("cycles=%d", budget)) budget = CYCLES;
   initial begin
-    cyc = 0; last8 = '0;
+    cyc = 0; last12 = '0; done_seen = 1'b0;
     repeat (4) @(posedge clk);
     rst = 0;
   end
@@ -174,11 +175,12 @@ module cpu_sim
     cyc <= cyc + 1;
     if (u_escc.dat_wr_a) begin
       if (!quiet) begin $write("%c", u_escc.wbyte); $fflush(); end
-      last8 <= {last8[55:0], u_escc.wbyte};
-    end
-    if (last8[63:0] == {"S", "T", " ", "D", "O", "N", "E", "\n"} || last8[55:0] == {"T", " ", "D", "O", "N", "E", "\r"}) begin
-      $display("\ncpu_sim: done after %0d cycles", cyc);
-      $finish;
+      last12 <= {last12[87:0], u_escc.wbyte};
+      if ({last12[87:0], u_escc.wbyte} == "CPUTEST DONE") done_seen <= 1'b1;
+      if (done_seen && u_escc.wbyte == 8'h0A) begin
+        $display("\ncpu_sim: done after %0d cycles", cyc);
+        $finish;
+      end
     end
     if (wd_reset && !keep_wd) begin
       $display("\ncpu_sim: watchdog reset (error mode) at cycle %0d", cyc);
