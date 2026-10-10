@@ -53,7 +53,13 @@ stalled access).
 
 A lookup port takes `{valid, va, at}` (AT as in the SFSR: bit 2 store,
 bit 1 instruction, bit 0 supervisor) and the ASI's rule, and answers in
-the same cycle on a TLB hit with `{pa, cacheable_pte, fault}` or `miss`;
+the same cycle on a TLB hit with `{pa, acc, fault}` or `miss`. The TLB
+has **one** CAM: the data side's request is served when it has one and
+the instruction side is told `busy` and retries; the instruction side
+keeps an eight-entry micro-TLB of the pages it translated (VA tag, PPN,
+ACC; the permission re-checked on each use, a failing one going to the
+MMU so that the fault is recorded), dropped on `tlb_changed` (a flush, an
+ASI 5/6/7 write, a CTX/CTPR/MCNTL write, the watchdog);
 on a miss the side asks the walker (`walk_req`) and waits for
 `walk_done` (success → the entry is in the TLB, retry the lookup; fault →
 the SFSR is written, return the fault to the IU).
@@ -96,11 +102,18 @@ the SFSR is written, return the fault to the IU).
 ## 3. The caches
 
 Both: physically tagged, index within the page offset (way size 4 KB),
-BRAM for data and tags, flops for the valid, MRU and lock bits (so a
-flash clear is one cycle and a fill's validation is one flop). Lookup:
-cycle 0 index the RAMs with the VA (the index bits are the page offset)
-while the TLB translates; cycle 1 compare the tags with the PA → hit and
-the doubleword. Replacement: Viking's limited-history LRU on the MRU
+everything in block RAM: the data, the tag words (PA[35:12] with the valid
+bit(s) and the D-cache's D/S image bits), and a per-set word with the MRU
+and lock bits — nothing indexed dynamically in flops (a first version
+with the valid/MRU/lock bits in flops cost four times the logic). A flash
+clear is therefore a sweep, two cycles a set, read-modify-write of the
+tag words (the PTAG's tag survives, as the POST checks) or of the lock
+bits, with the CPU side held off (`flash_busy`; the data side completes
+the flash store when the sweep ends). Lookup: cycle 0 index the RAMs with
+the VA (the index bits are the page offset) while the TLB translates;
+cycle 1 compare the tags with the PA → hit and the doubleword, answered
+in that cycle; the next request is taken in the same cycle, so hits run
+one per cycle. Replacement: Viking's limited-history LRU on the MRU
 bits with lock bits (mmu-notes §3.1); `cacheable = enable && (PA in RAM
 space 0 below 512 MB, or in the PROM 0xF_F000_0000-0xF_F0FF_FFFF)`.
 
