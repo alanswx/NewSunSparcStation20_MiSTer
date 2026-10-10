@@ -118,6 +118,7 @@ module cpu_module
   // ---------------------------------------------------------------------
   logic        ic_req, ic_done, ic_err;
   logic [35:0] ic_pa;
+  logic [8:0]  ic_idx;
   logic        ic_cacheable;
   logic [63:0] ic_rdata;
   logic        ic_inval, dc_inval;
@@ -130,7 +131,7 @@ module cpu_module
 
   l1cache #(.ICACHE(1'b1)) u_ic (
     .clk, .rst, .enable_i(ie), .mid_i,
-    .req_i(ic_req), .we_i(1'b0), .atomic_i(1'b0), .cacheable_i(ic_cacheable), .pa_i(ic_pa), .be_i(8'hFF), .wdata_i(64'd0),
+    .req_i(ic_req), .we_i(1'b0), .atomic_i(1'b0), .cacheable_i(ic_cacheable), .pa_i(ic_pa), .idx_i(ic_idx), .be_i(8'hFF), .wdata_i(64'd0),
     .done_o(ic_done), .rdata_o(ic_rdata), .err_o(ic_err),
     .inval_i(ic_inval), .inval_line_i(inval_line), .snoop_i,
     .flash_v_i(ic_flash_v), .flash_l_i(ic_flash_l),
@@ -140,6 +141,7 @@ module cpu_module
 
   logic        dc_req, dc_we, dc_atomic, dc_cacheable, dc_done, dc_err;
   logic [35:0] dc_pa;
+  logic [8:0]  dc_idx;
   logic [7:0]  dc_be;
   logic [63:0] dc_wdata, dc_rdata;
 
@@ -154,7 +156,7 @@ module cpu_module
 
   l1cache #(.ICACHE(1'b0)) u_dc (
     .clk, .rst, .enable_i(de), .mid_i,
-    .req_i(dc_req), .we_i(dc_we), .atomic_i(dc_atomic), .cacheable_i(dc_cacheable), .pa_i(dc_pa), .be_i(dc_be), .wdata_i(dc_wdata),
+    .req_i(dc_req), .we_i(dc_we), .atomic_i(dc_atomic), .cacheable_i(dc_cacheable), .pa_i(dc_pa), .idx_i(dc_idx), .be_i(dc_be), .wdata_i(dc_wdata),
     .done_o(dc_done), .rdata_o(dc_rdata), .err_o(dc_err),
     .inval_i(dc_inval_any), .inval_line_i(dc_inval_line), .snoop_i,
     .flash_v_i(dc_flash_v), .flash_l_i(dc_flash_l),
@@ -210,57 +212,85 @@ module cpu_module
   end
 
   // ---------------------------------------------------------------------
-  // The instruction side
+  // The instruction side: the IU's request is translated in the cycle it
+  // is made and the cache indexed at once; a cache hit answers in the
+  // next cycle, in which the IU's next request is taken, so that fetches
+  // run one per cycle on hits.
   // ---------------------------------------------------------------------
   typedef enum logic [2:0] {I_IDLE, I_XLAT, I_WALK, I_WALK_WAIT, I_CACHE} istate_t;
   istate_t     is;
   logic [31:0] i_va;
   logic        i_supv;
+  logic [35:0] ic_pa_q;
+  logic        ic_cacheable_q;
+  ifetch_rsp_t ifs_q;
+
+  logic        i_new, i_xlat_now, i_hit_now;
+  logic [31:0] i_va_now;
+  logic        i_supv_now;
+  assign i_new      = ifr.valid && (is == I_IDLE || (is == I_CACHE && ic_done));
+  assign i_xlat_now = i_new || is == I_XLAT;
+  assign i_va_now   = i_new ? ifr.va : i_va;
+  assign i_supv_now = i_new ? ifr.supv : i_supv;
   at_t         i_at;
   assign i_at = {1'b0, 1'b1, i_supv};
 
   always_comb begin
     xi = '0;
-    xi.valid = is == I_XLAT;
-    xi.va = i_va;
-    xi.at = i_at;
+    xi.valid = i_xlat_now;
+    xi.va = i_va_now;
+    xi.at = {1'b0, 1'b1, i_supv_now};
     xi.no_fault = 1'b0;
-    wk_req_i = is == I_XLAT && xi_r.miss && wk_owner == 2'd0;
+    wk_req_i = i_xlat_now && xi_r.miss && wk_owner == 2'd0;
   end
-  assign ic_req = is == I_CACHE;
+  assign i_hit_now    = i_xlat_now && xi_r.hit;
+  assign ic_req       = i_hit_now || (is == I_CACHE && !ic_done);
+  assign ic_pa        = i_hit_now ? xi_r.pa : ic_pa_q;
+  assign ic_cacheable = i_hit_now ? cacheable_pa(xi_r.pa) : ic_cacheable_q;
+  assign ic_idx       = i_hit_now ? i_va_now[11:3] : ic_pa_q[11:3];
+
+  // The response: a cache answer the cycle it comes, a fault from the register
+  always_comb begin
+    ifs = ifs_q;
+    if (is == I_CACHE && ic_done) begin
+      ifs.valid = 1'b1;
+      ifs.inst  = ic_pa_q[2] ? ic_rdata[31:0] : ic_rdata[63:32];
+      ifs.fault = ic_err ? 2'd2 : 2'd0;
+    end
+  end
 
   always_ff @(posedge clk) begin
-    ifs <= '0;
+    ifs_q <= '0;
     if (iu_rst) begin
       is <= I_IDLE;
       i_va <= '0; i_supv <= 1'b0;
-      ic_pa <= '0; ic_cacheable <= 1'b0;
+      ic_pa_q <= '0; ic_cacheable_q <= 1'b0;
     end else begin
       case (is)
-        I_IDLE: begin
-          if (ifr.valid) begin
-            i_va <= ifr.va;
-            i_supv <= ifr.supv;
-            is <= I_XLAT;
-          end
-        end
-        I_XLAT: begin
-          if (xi_r.hit) begin
-            ic_pa <= xi_r.pa;
-            ic_cacheable <= cacheable_pa(xi_r.pa);
-            is <= I_CACHE;
-          end else if (xi_r.fault) begin
-            ifs.valid <= 1'b1; ifs.fault <= 2'd1;
-            is <= I_IDLE;
-          end else if (wk_req_i) begin
-            is <= I_WALK;
+        I_IDLE, I_CACHE, I_XLAT: begin
+          if (is == I_CACHE && !ic_done) begin
+            // waiting for the cache
+          end else if (i_xlat_now) begin
+            if (i_new) begin i_va <= ifr.va; i_supv <= ifr.supv; end
+            if (xi_r.hit) begin
+              ic_pa_q <= xi_r.pa;
+              ic_cacheable_q <= cacheable_pa(xi_r.pa);
+              is <= I_CACHE;
+            end else if (xi_r.fault) begin
+              ifs_q.valid <= 1'b1; ifs_q.fault <= 2'd1;
+              is <= I_IDLE;
+            end else if (wk_req_i) begin
+              is <= I_WALK;
+            end else begin
+              is <= I_WALK_WAIT;          // the walker is busy for the data side
+            end
           end else begin
-            is <= I_WALK_WAIT;            // the walker is busy for the data side
+            is <= I_IDLE;
           end
         end
         I_WALK: begin
           if (wk_done && wk_owner == 2'd2) begin
-            if (wk_fault) begin ifs.valid <= 1'b1; ifs.fault <= 2'd1; is <= I_IDLE; end
+            if (wk_fault) begin ifs_q.valid <= 1'b1; ifs_q.fault <= 2'd1; is <= I_IDLE; end
             else is <= I_XLAT;
           end else if (wk_owner != 2'd2) begin
             is <= I_WALK_WAIT;            // the data side took the walker
@@ -268,14 +298,6 @@ module cpu_module
         end
         I_WALK_WAIT: begin
           if (wk_owner == 2'd0) is <= I_XLAT;
-        end
-        I_CACHE: begin
-          if (ic_done) begin
-            ifs.valid <= 1'b1;
-            ifs.inst <= ic_pa[2] ? ic_rdata[31:0] : ic_rdata[63:32];
-            ifs.fault <= ic_err ? 2'd2 : 2'd0;
-            is <= I_IDLE;
-          end
         end
         default: is <= I_IDLE;
       endcase
@@ -340,25 +362,32 @@ module cpu_module
   assign d_at       = {dmr.write | dmr.atomic, ~dmr.asi[1], dmr.asi[0]};
   assign d_no_fault = dmr.asi != 8'h09;
 
-  // The MMU lookup of the data side
+  // The MMU lookup of the data side: in the cycle the IU's request arrives
+  // (a normal ASI), on the retry after a walk, and for a line flush
+  dmem_rsp_t   dms_q;                   // the registered part of the answer
+  logic        d_new, d_bypass_now, d_hit_now;
+  assign d_new        = ds == D_IDLE && dmr.valid && !dms_q.ack && d_normal;
+  assign d_bypass_now = ds == D_IDLE && dmr.valid && !dms_q.ack && d_bypass;
   always_comb begin
     xd = '0;
     xd.va = dmr.va;
-    if (ds == D_XLAT) begin
+    if (d_new || ds == D_XLAT) begin
       xd.valid = 1'b1; xd.at = d_at; xd.no_fault = d_no_fault;
     end else if (ds == D_FLUSH_XLAT) begin
       xd.valid = 1'b1; xd.at = AT_LD_SD; xd.no_fault = 1'b1;
     end
-    wk_req_d = (ds == D_XLAT || ds == D_FLUSH_XLAT) && xd_r.miss && wk_owner == 2'd0;
+    wk_req_d = xd.valid && xd_r.miss && wk_owner == 2'd0;
   end
+  assign d_hit_now = (d_new || ds == D_XLAT) && xd_r.hit;
 
-  // Requests to the blocks
-  assign dc_req   = ds == D_CACHE;
+  // Requests to the blocks: the cache in the translation's cycle
+  assign dc_req   = d_hit_now || d_bypass_now || (ds == D_CACHE && !dc_done);
   assign dc_we    = dmr.write;
   assign dc_atomic = dmr.atomic;
-  assign dc_pa    = d_pa;
-  assign dc_cacheable = d_cacheable;
-  assign dc_be    = lanes_be(dmr.size, d_pa[2:0]);
+  assign dc_pa    = d_hit_now ? xd_r.pa : d_bypass_now ? {dmr.asi[3:0], dmr.va} : d_pa;
+  assign dc_cacheable = d_hit_now ? cacheable_pa(xd_r.pa) : d_bypass_now ? 1'b0 : d_cacheable;
+  assign dc_idx   = (d_hit_now || d_bypass_now) ? dmr.va[11:3] : d_pa[11:3];
+  assign dc_be    = lanes_be(dmr.size, dc_pa[2:0]);     // from the PA of this cycle, not the latched one
   assign dc_wdata = lanes_wdata(dmr.size, dmr.wdata);
   assign rg_valid = ds == D_REG;
   assign rg_we    = dmr.write;
@@ -390,8 +419,18 @@ module cpu_module
   logic d_masked;                 // NF masks this access's faults
   assign d_masked = nf && d_no_fault;
 
+  // The answer to the IU: the cache's in its own cycle, the rest registered
+  always_comb begin
+    dms = dms_q;
+    if (ds == D_CACHE && dc_done) begin
+      dms.ack = 1'b1;
+      dms.rdata = lanes_rdata(dmr.size, d_pa[2:0], dc_rdata);
+      dms.fault = (dc_err && !d_masked && !(dmr.write && !dmr.atomic)) ? 2'd2 : 2'd0;
+    end
+  end
+
   always_ff @(posedge clk) begin
-    dms <= '0;
+    dms_q <= '0;
     ic_inval <= 1'b0; dc_inval <= 1'b0;
     ic_flash_v <= 1'b0; ic_flash_l <= 1'b0; dc_flash_v <= 1'b0; dc_flash_l <= 1'b0;
     if (rst) begin
@@ -405,9 +444,21 @@ module cpu_module
     end else begin
       case (ds)
         D_IDLE: begin
-          if (dmr.valid && !dms.ack) begin
+          if (dmr.valid && !dms_q.ack) begin
             if (d_normal) begin
-              ds <= D_XLAT;
+              // translated this cycle (d_new): as D_XLAT
+              if (xd_r.hit) begin
+                d_pa <= xd_r.pa;
+                d_cacheable <= cacheable_pa(xd_r.pa);
+                ds <= D_CACHE;
+              end else if (xd_r.fault) begin
+                dms_q.ack <= 1'b1;
+                if (!d_masked) dms_q.fault <= 2'd1;
+              end else if (wk_req_d) begin
+                ds <= D_WALK;
+              end else begin
+                ds <= D_WALK_WAIT;
+              end
             end else if (d_bypass) begin
               d_pa <= {dmr.asi[3:0], dmr.va};
               d_cacheable <= 1'b0;
@@ -417,38 +468,38 @@ module cpu_module
             end else if (dmr.asi[7:2] == 6'b000011) begin           // 0x0C-0x0F
               // doubleword, or a word (the suite's tag-clearing loops: the
               // other word of the image is written as 0)
-              if (dmr.size[1] == 1'b0) begin dms.ack <= 1'b1; dms.fault <= 2'd1; end
+              if (dmr.size[1] == 1'b0) begin dms_q.ack <= 1'b1; dms_q.fault <= 2'd1; end
               else ds <= dmr.asi[1] ? D_DIAG_D : D_DIAG_I;
             end else if (d_flushasi) begin
               if (dmr.write) ds <= D_FLUSH_XLAT;
-              else dms.ack <= 1'b1;
+              else dms_q.ack <= 1'b1;
             end else if (dmr.asi == 8'h36 || dmr.asi == 8'h37) begin
               if (dmr.write) begin
                 if (dmr.asi[0]) begin dc_flash_v <= !dmr.va[31]; dc_flash_l <= dmr.va[31]; end
                 else            begin ic_flash_v <= !dmr.va[31]; ic_flash_l <= dmr.va[31]; end
               end
-              dms.ack <= 1'b1;
+              dms_q.ack <= 1'b1;
             end else if (dmr.asi == 8'h38) begin
-              dms.ack <= 1'b1;
-              if (dmr.size != 2'd3) dms.fault <= 2'd1;
+              dms_q.ack <= 1'b1;
+              if (dmr.size != 2'd3) dms_q.fault <= 2'd1;
               else begin
                 case (dmr.va[9:8])
-                  2'd0: begin dms.rdata <= {28'd0, bk_val};  if (dmr.write) bk_val <= dmr.wdata[35:0]; end
-                  2'd1: begin dms.rdata <= {28'd0, bk_mask}; if (dmr.write) bk_mask <= dmr.wdata[35:0]; end
-                  2'd2: begin dms.rdata <= {57'd0, bk_ctl};  if (dmr.write) bk_ctl <= dmr.wdata[6:0]; end
-                  default: begin dms.rdata <= {60'd0, bk_sts}; if (dmr.write) bk_sts <= dmr.wdata[3:0]; else bk_sts <= '0; end
+                  2'd0: begin dms_q.rdata <= {28'd0, bk_val};  if (dmr.write) bk_val <= dmr.wdata[35:0]; end
+                  2'd1: begin dms_q.rdata <= {28'd0, bk_mask}; if (dmr.write) bk_mask <= dmr.wdata[35:0]; end
+                  2'd2: begin dms_q.rdata <= {57'd0, bk_ctl};  if (dmr.write) bk_ctl <= dmr.wdata[6:0]; end
+                  default: begin dms_q.rdata <= {60'd0, bk_sts}; if (dmr.write) bk_sts <= dmr.wdata[3:0]; else bk_sts <= '0; end
                 endcase
               end
             end else if (dmr.asi == 8'h49) begin
-              dms.ack <= 1'b1; dms.rdata <= {32'd0, ctrv}; if (dmr.write) ctrv <= dmr.wdata[31:0];
+              dms_q.ack <= 1'b1; dms_q.rdata <= {32'd0, ctrv}; if (dmr.write) ctrv <= dmr.wdata[31:0];
             end else if (dmr.asi == 8'h4A) begin
-              dms.ack <= 1'b1; dms.rdata <= {62'd0, ctrc}; if (dmr.write) ctrc <= dmr.wdata[1:0];
+              dms_q.ack <= 1'b1; dms_q.rdata <= {62'd0, ctrc}; if (dmr.write) ctrc <= dmr.wdata[1:0];
             end else if (dmr.asi == 8'h4B) begin
-              dms.ack <= 1'b1; dms.rdata <= {62'd0, ctrs}; if (dmr.write) ctrs <= dmr.wdata[1:0];
+              dms_q.ack <= 1'b1; dms_q.rdata <= {62'd0, ctrs}; if (dmr.write) ctrs <= dmr.wdata[1:0];
             end else if (dmr.asi == 8'h4C) begin
-              dms.ack <= 1'b1; dms.rdata <= {51'd0, action}; if (dmr.write) action <= dmr.wdata[12:0];
+              dms_q.ack <= 1'b1; dms_q.rdata <= {51'd0, action}; if (dmr.write) action <= dmr.wdata[12:0];
             end else begin
-              dms.ack <= 1'b1;                                   // reserved: 0
+              dms_q.ack <= 1'b1;                                   // reserved: 0
             end
           end
         end
@@ -458,8 +509,8 @@ module cpu_module
             d_cacheable <= cacheable_pa(xd_r.pa);
             ds <= D_CACHE;
           end else if (xd_r.fault) begin
-            dms.ack <= 1'b1;
-            if (!d_masked) dms.fault <= 2'd1;
+            dms_q.ack <= 1'b1;
+            if (!d_masked) dms_q.fault <= 2'd1;
             ds <= D_IDLE;
           end else if (wk_req_d) begin
             ds <= D_WALK;
@@ -470,8 +521,8 @@ module cpu_module
         D_WALK: begin
           if (wk_done && wk_owner == 2'd1) begin
             if (wk_fault) begin
-              dms.ack <= 1'b1;
-              if (!wk_masked) dms.fault <= 2'd1;
+              dms_q.ack <= 1'b1;
+              if (!wk_masked) dms_q.fault <= 2'd1;
               ds <= D_IDLE;
             end else ds <= D_XLAT;
           end else if (wk_owner != 2'd1) begin
@@ -482,36 +533,31 @@ module cpu_module
           if (wk_owner == 2'd0) ds <= D_XLAT;
         end
         D_CACHE: begin
-          if (dc_done) begin
-            dms.ack <= 1'b1;
-            dms.rdata <= lanes_rdata(dmr.size, d_pa[2:0], dc_rdata);
-            if (dc_err && !d_masked && !(dmr.write && !dmr.atomic)) dms.fault <= 2'd2;
-            ds <= D_IDLE;
-          end
+          if (dc_done) ds <= D_IDLE;      // the answer is combinational
         end
         D_REG: begin
           if (rg_ack) begin
-            dms.ack <= 1'b1;
-            dms.rdata <= {32'd0, rg_rdata};
-            if (rg_fault) dms.fault <= 2'd1;
+            dms_q.ack <= 1'b1;
+            dms_q.rdata <= {32'd0, rg_rdata};
+            if (rg_fault) dms_q.fault <= 2'd1;
             ds <= D_IDLE;
           end
         end
         D_DIAG_I: begin
-          if (ic_dg_done) begin dms.ack <= 1'b1; dms.rdata <= diag_rd(ic_dg_rdata); ds <= D_IDLE; end
+          if (ic_dg_done) begin dms_q.ack <= 1'b1; dms_q.rdata <= diag_rd(ic_dg_rdata); ds <= D_IDLE; end
         end
         D_DIAG_D: begin
-          if (dc_dg_done) begin dms.ack <= 1'b1; dms.rdata <= diag_rd(dc_dg_rdata); ds <= D_IDLE; end
+          if (dc_dg_done) begin dms_q.ack <= 1'b1; dms_q.rdata <= diag_rd(dc_dg_rdata); ds <= D_IDLE; end
         end
         D_FLUSH_XLAT: begin
           if (xd_r.hit) begin
             inval_line <= xd_r.pa[35:5];
             dc_inval <= !dmr.asi[3];          // 0x10-0x14 both caches, 0x18-0x1C the I-cache
             ic_inval <= 1'b1;
-            dms.ack <= 1'b1;
+            dms_q.ack <= 1'b1;
             ds <= D_IDLE;
           end else if (xd_r.fault) begin
-            dms.ack <= 1'b1;                  // an unmapped page: nothing to flush
+            dms_q.ack <= 1'b1;                  // an unmapped page: nothing to flush
             ds <= D_IDLE;
           end else if (wk_req_d) begin
             ds <= D_FLUSH_WALK;
@@ -521,7 +567,7 @@ module cpu_module
         end
         D_FLUSH_WALK: begin
           if (wk_done && wk_owner == 2'd1) begin
-            if (wk_fault) begin dms.ack <= 1'b1; ds <= D_IDLE; end
+            if (wk_fault) begin dms_q.ack <= 1'b1; ds <= D_IDLE; end
             else ds <= D_FLUSH_XLAT;
           end else if (wk_owner != 2'd1) ds <= D_FLUSH_WAIT;
         end

@@ -20,7 +20,9 @@
 //   §7.3 (write-invalidate coherence); tests/cpu (t_cache*, t_cache_diag,
 //   t_flash_clear, t_selfmod, t_cache_fill_words) as the acceptance tests.
 //
-// The CPU side holds req_i until done_o. A cacheable read fills on a miss
+// The CPU side holds req_i until done_o; a read hit answers in the cycle
+// after the request (the compare cycle) and the next request may be
+// presented in that same cycle. A cacheable read fills on a miss
 // (a 32-byte burst) and answers after the last beat; a write goes to
 // memory and updates a hit line; an atomic drops the line and does a
 // locked read then the write; an uncacheable access is a single beat.
@@ -44,6 +46,7 @@ module l1cache
   input  logic        atomic_i,
   input  logic        cacheable_i,
   input  logic [35:0] pa_i,
+  input  logic [8:0]  idx_i,         // = the VA's [11:3]: the RAM index, so that it does not wait for the TLB
   input  logic [7:0]  be_i,
   input  logic [63:0] wdata_i,
   output logic        done_o,
@@ -241,9 +244,9 @@ module l1cache
   // ---------------------------------------------------------------------
   // Port scheduling
   // ---------------------------------------------------------------------
-  // Port A (lookup): the request's index in the accept cycle
-  assign da_addr = pa_i[11:3];
-  assign ta_addr = pa_i[11:SET_LSB];
+  // Port A (lookup): the request's index in the accept cycle (from the VA)
+  assign da_addr = idx_i;
+  assign ta_addr = idx_i[8 -: SET_W];
 
   logic fill_beat_now;             // a fill beat arrives this cycle
   assign fill_beat_now = st == S_FILL && mem_rsp_i.ack && !mem_rsp_i.err;
@@ -318,18 +321,28 @@ module l1cache
   // ---------------------------------------------------------------------
   // State
   // ---------------------------------------------------------------------
+  // A read hit answers in its compare cycle, and the next request is taken
+  // in that cycle (one lookup per cycle on hits); everything else answers
+  // from the registered done/rdata/err
+  logic        done_q, err_q;
+  logic [63:0] rdata_q;
+  logic        hit_now;
+  assign hit_now = st == S_LOOKUP && !r_atomic && hit;
+  assign done_o  = done_q | hit_now;
+  assign rdata_o = hit_now ? da_rdata[hit_idx] : rdata_q;
+  assign err_o   = hit_now ? 1'b0 : err_q;
   logic accept;
-  assign accept = st == S_IDLE && req_i && !done_o;
+  assign accept = req_i && !done_q && (st == S_IDLE || hit_now);
 
   always_ff @(posedge clk) begin
-    done_o <= 1'b0;
+    done_q <= 1'b0;
     diag_done_o <= 1'b0;
     if (rst) begin
       st <= S_IDLE;
       r_we <= 1'b0; r_atomic <= 1'b0; r_cacheable <= 1'b0; r_pa <= '0; r_be <= '0; r_wdata <= '0;
       fill_beat <= '0; fill_data <= '0; fill_err <= 1'b0; fill_snooped <= 1'b0; fill_way <= '0;
       st_hit_written <= 1'b0; single_lock <= 1'b0;
-      rdata_o <= '0; err_o <= 1'b0;
+      rdata_q <= '0; err_q <= 1'b0;
       for (int i = 0; i < WAYS; i++) vbits[i] <= '0;
       for (int i = 0; i < SETS; i++) begin mru[i] <= '0; lck[i] <= '0; end
       sq_wr <= '0; sq_rd <= '0; sq_count <= '0;
@@ -338,28 +351,15 @@ module l1cache
     end else begin
       // ---- the request ----
       case (st)
-        S_IDLE: begin
-          if (accept) begin
-            r_we <= we_i; r_atomic <= atomic_i; r_cacheable <= cacheable_i && enable_i;
-            r_pa <= pa_i; r_be <= be_i; r_wdata <= wdata_i;
-            err_o <= 1'b0;
-            st_hit_written <= 1'b0;
-            fill_err <= 1'b0; fill_snooped <= 1'b0;
-            if (atomic_i) st <= S_LOOKUP;
-            else if (!(cacheable_i && enable_i)) begin single_lock <= 1'b0; st <= S_SINGLE; end
-            else if (we_i) st <= S_WRITE_WAIT;
-            else st <= S_LOOKUP;
-          end
-        end
+        S_IDLE: ;                         // a request is taken below
+
         S_LOOKUP: begin
           // the tags and data of the accept cycle are out
           if (r_atomic) begin
             if (hit) vbits[hit_idx][vidx(r_pa)] <= 1'b0;     // the line goes; memory has the truth
             st <= S_ATOMIC_RD;
           end else if (hit) begin
-            rdata_o <= da_rdata[hit_idx];
-            done_o <= 1'b1;
-            st <= S_IDLE;
+            st <= S_IDLE;                 // the answer is combinational (hit_now)
             // history: this way most recently used
             mru[r_set][hit_idx] <= 1'b1;
             if (&(mru[r_set] | lck[r_set] | (WAYS'(1) << hit_idx))) begin
@@ -403,44 +403,57 @@ module l1cache
               for (int i = 0; i < WAYS; i++) if (WW'(i) != fill_way && !lck[r_set][i]) mru[r_set][i] <= 1'b0;
             end
           end
-          rdata_o <= fill_data;
-          err_o <= fill_err;
-          done_o <= 1'b1;
+          rdata_q <= fill_data;
+          err_q <= fill_err;
+          done_q <= 1'b1;
           st <= S_IDLE;
         end
         S_WRITE_WAIT: begin
           // the write is on the port; the hit line (tags from the accept cycle) is updated once
           if (st_hit_now) st_hit_written <= 1'b1;
           if (mem_rsp_i.ack) begin
-            err_o <= mem_rsp_i.err;
-            done_o <= 1'b1;
+            err_q <= mem_rsp_i.err;
+            done_q <= 1'b1;
             st <= S_IDLE;
           end
         end
         S_SINGLE: begin
           if (mem_rsp_i.ack) begin
-            rdata_o <= mem_rsp_i.rdata;
-            err_o <= mem_rsp_i.err;
-            done_o <= 1'b1;
+            rdata_q <= mem_rsp_i.rdata;
+            err_q <= mem_rsp_i.err;
+            done_q <= 1'b1;
             st <= S_IDLE;
           end
         end
         S_ATOMIC_RD: begin
           if (mem_rsp_i.ack) begin
-            rdata_o <= mem_rsp_i.rdata;
-            err_o <= mem_rsp_i.err;
+            rdata_q <= mem_rsp_i.rdata;
+            err_q <= mem_rsp_i.err;
             st <= mem_rsp_i.err ? S_IDLE : S_ATOMIC_WR;
-            if (mem_rsp_i.err) done_o <= 1'b1;
+            if (mem_rsp_i.err) done_q <= 1'b1;
           end
         end
         S_ATOMIC_WR: begin
           if (mem_rsp_i.ack) begin
-            done_o <= 1'b1;
+            done_q <= 1'b1;
             st <= S_IDLE;
           end
         end
         default: st <= S_IDLE;
       endcase
+
+      // Taking a request (in S_IDLE, or in the cycle a read hit answers)
+      if (accept) begin
+        r_we <= we_i; r_atomic <= atomic_i; r_cacheable <= cacheable_i && enable_i;
+        r_pa <= pa_i; r_be <= be_i; r_wdata <= wdata_i;
+        err_q <= 1'b0;
+        st_hit_written <= 1'b0;
+        fill_err <= 1'b0; fill_snooped <= 1'b0;
+        if (atomic_i) st <= S_LOOKUP;
+        else if (!(cacheable_i && enable_i)) begin single_lock <= 1'b0; st <= S_SINGLE; end
+        else if (we_i) st <= S_WRITE_WAIT;
+        else st <= S_LOOKUP;
+      end
 
       // ---- the snoop queue ----
       if (sq_push && sq_push2) begin
