@@ -94,9 +94,19 @@ module plomb_master
     if (rq.burst) return ~i[0];
     return i == 4'd0 && has_hi;
   endfunction
+  // A beat's address is the exact byte address of its first enabled byte:
+  // the old core's devices decode the register from a[2:1] (the ESCC) or
+  // a[1:0], not from the byte enables.
+  function automatic logic [1:0] first_byte(input logic [3:0] nib);   // nib[3] is byte 0
+    if (nib[3]) return 2'd0;
+    if (nib[2]) return 2'd1;
+    if (nib[1]) return 2'd2;
+    return 2'd3;
+  endfunction
   function automatic logic [35:0] beat_pa(input logic [3:0] i);
     if (rq.burst) return {rq.pa[35:5], i[2:0], 2'b00};
-    return {rq.pa[35:3], ~beat_is_hi(i), 2'b00};
+    if (beat_is_hi(i)) return {rq.pa[35:3], 1'b0, first_byte(rq.be[7:4])};
+    return {rq.pa[35:3], 1'b1, first_byte(rq.be[3:0])};
   endfunction
 
   logic [3:0]  iss, rcv;             // beats issued, responses received
