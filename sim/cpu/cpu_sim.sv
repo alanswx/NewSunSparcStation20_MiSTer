@@ -86,10 +86,19 @@ module cpu_sim
   assign pb_in = use_plomb ? cmr : '0;
   logic        psn_pend;
   logic [30:0] psn_line;
-  always_ff @(posedge clk)                 // the snoop register the module sees (as cpu_plomb builds it)
-    if (cpu_ld) begin psn.valid <= psn_pend; psn.line <= psn_line; psn.mid <= 4'd8; end
-  plomb_master u_pbm (
-    .clk, .rst, .cpu_edge_i(cpu_edge), .cpu_ld_i(cpu_ld), .req_i(pb_in), .rsp_o(pms),
+  snoop_t   psn_b;                         // the snoop register the shim side builds (as cpu_plomb does)
+  always_ff @(posedge clk)
+    if (cpu_ld) begin psn_b.valid <= psn_pend; psn_b.line <= psn_line; psn_b.mid <= 4'd8; end
+  // cpu_plomb's CPU-domain registers on both directions (FIN_EDGES 3)
+  mem_req_t pb_in_q;
+  mem_rsp_t pms_b;
+  always_ff @(posedge cpu_clk) begin
+    pb_in_q <= pb_in;
+    pms     <= pms_b;
+    psn     <= psn_b;
+  end
+  plomb_master #(.FIN_EDGES(3)) u_pbm (
+    .clk, .rst, .cpu_edge_i(cpu_edge), .cpu_ld_i(cpu_ld), .req_i(pb_in_q), .rsp_o(pms_b),
     .sn_pend_o(psn_pend), .sn_line_o(psn_line),
     .pb_req, .pb_a, .pb_ah, .pb_asi, .pb_d, .pb_be, .pb_mode, .pb_burst, .pb_cont, .pb_cache, .pb_lock, .pb_dack,
     .pb_ack, .pb_dreq, .pb_rd, .pb_code);

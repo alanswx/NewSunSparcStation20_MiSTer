@@ -60,18 +60,31 @@ module cpu_plomb
   input  logic [31:0] pb_rd,
   input  logic [1:0]  pb_code
 );
-  mem_req_t rq;
-  mem_rsp_t rs;
-  snoop_t   sn;
+  // The module's memory port passes through a register in the CPU clock
+  // domain in both directions: its request before the shim, the shim's
+  // response and the snoop before the module. The paths between the two
+  // clock domains are then register to register (one bus period minus the
+  // CPU clock's insertion delay is all they get); the module's own logic
+  // has its whole cycle. One CPU cycle more per transfer; the shim's
+  // FIN_EDGES is 3 accordingly.
+  mem_req_t rq_cpu, rq;
+  mem_rsp_t rs, rs_cpu;
+  snoop_t   sn, sn_cpu;
   logic        own_pend;
   logic [30:0] own_line;
 
+  always_ff @(posedge clk_cpu) begin
+    rq     <= rq_cpu;
+    rs_cpu <= rs;
+    sn_cpu <= sn;
+  end
+
   cpu_module #(.HAS_FPU(1'b1), .RAM_MB(12'(RAM_MB)), .SS20(1'b1), .NCPU_M1(2'd0)) u_cpu (
     .clk(clk_cpu), .rst, .mid_i(4'(MID)), .irl_i,
-    .mem_req_o(rq), .mem_rsp_i(rs), .snoop_i(sn),
+    .mem_req_o(rq_cpu), .mem_rsp_i(rs_cpu), .snoop_i(sn_cpu),
     .wd_reset_o, .si_reset_o, .halt_o);
 
-  plomb_master #(.MID(4'(MID))) u_pb (
+  plomb_master #(.MID(4'(MID)), .FIN_EDGES(3)) u_pb (
     .clk, .rst, .cpu_edge_i, .cpu_ld_i, .req_i(rq), .rsp_o(rs),
     .sn_pend_o(own_pend), .sn_line_o(own_line),
     .pb_req, .pb_a, .pb_ah, .pb_asi, .pb_d, .pb_be, .pb_mode, .pb_burst,

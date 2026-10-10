@@ -46,7 +46,12 @@ module plomb_master
   import mem_pkg::*;
 #(
   parameter logic [3:0] MID = 4'd8,
-  parameter logic [7:0] ASI = 8'h20
+  parameter logic [7:0] ASI = 8'h20,
+  // Requester edges from the final ack being shown until the requester's
+  // outputs seen here reflect its reaction: 1 when the requester is wired
+  // directly; 3 when its request and this module's response each pass
+  // through a register in the requester's clock domain (cpu_plomb).
+  parameter int         FIN_EDGES = 1
 )(
   input  logic        clk,
   input  logic        rst,
@@ -163,6 +168,8 @@ module plomb_master
   logic [31:0] hi_q;               // the high word of the pair being assembled
   logic        aborted;            // an error went out: the requester has dropped the request
   logic        fin_ack;            // the final beat issued an ack (S_FIN waits until it is shown)
+  logic        fin_seen;           // ... and it has been shown: counting the requester edges after it
+  logic [2:0]  fin_cnt;
   logic        ack_pend, err_pend; // an ack waiting for the next load
   logic [63:0] rdata_pend;
   logic        ack_q, err_q;       // the registers the requester sees (loaded on cpu_ld_i)
@@ -179,6 +186,7 @@ module plomb_master
   always_ff @(posedge clk) begin
     if (rst) begin
       st <= S_IDLE; iss <= '0; rcv <= '0; aborted <= 1'b0; err_acc <= 1'b0; fin_ack <= 1'b0;
+      fin_seen <= 1'b0; fin_cnt <= '0;
       ack_pend <= 1'b0; err_pend <= 1'b0; rdata_pend <= '0; sn_pend <= 1'b0; sn_line <= '0;
       ack_q <= 1'b0; err_q <= 1'b0; rdata_q <= '0; hi_q <= '0; rq <= '0;
       wfence <= 1'b0; fence_pa <= '0; fence_d <= '0; fence_be <= '0; f_issued <= 1'b0; f_tries <= '0;
@@ -241,11 +249,18 @@ module plomb_master
         end
         // Leave once the final ack has been loaded into the register the
         // requester sees (not an earlier beat's: the pending one is consumed
-        // first) and the cycle ends on a requester edge — or at such an edge
-        // if no ack is owed. The requester drops or replaces its request
-        // after that edge, and the bus side sees the change a cycle later,
-        // where S_IDLE looks; leaving earlier re-accepted the old request.
-        S_FIN: if (cpu_edge_i && !ack_pend && (ack_q || !fin_ack)) st <= S_IDLE;
+        // first) and FIN_EDGES requester edges have passed (the first being
+        // the one that ends the cycle showing it) — or at once if no ack is
+        // owed. The requester drops or replaces its request after the edge
+        // it sees the ack on, and the bus side sees the change a cycle after
+        // that, where S_IDLE looks; leaving earlier re-accepted the old request.
+        S_FIN: if (cpu_edge_i && (fin_seen || (!ack_pend && (ack_q || !fin_ack)))) begin
+          if (fin_cnt == 3'(FIN_EDGES - 1) || !fin_ack) begin
+            st <= S_IDLE; fin_cnt <= '0; fin_seen <= 1'b0;
+          end else begin
+            fin_cnt <= fin_cnt + 3'd1; fin_seen <= 1'b1;
+          end
+        end
         default: st <= S_IDLE;
       endcase
     end
