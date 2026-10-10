@@ -29,18 +29,25 @@ module ram_tdp_be #(
 
   logic [3:0][7:0] mem [2**AW];
 
+  // One statement per byte, as in Quartus's byte-enabled true dual-port
+  // template: with a for loop Quartus 17 does not infer the RAM and then
+  // reports multiple constant drivers for the two ports
   always_ff @(posedge clk) begin
     if (a_we) begin
-      for (int i = 0; i < 4; i++)
-        if (a_be[i]) mem[a_addr][i] <= a_wdata[8*i +: 8];
+      if (a_be[0]) mem[a_addr][0] <= a_wdata[7:0];
+      if (a_be[1]) mem[a_addr][1] <= a_wdata[15:8];
+      if (a_be[2]) mem[a_addr][2] <= a_wdata[23:16];
+      if (a_be[3]) mem[a_addr][3] <= a_wdata[31:24];
     end
     a_rdata <= mem[a_addr];
   end
 
   always_ff @(posedge clk) begin
     if (b_we) begin
-      for (int i = 0; i < 4; i++)
-        if (b_be[i]) mem[b_addr][i] <= b_wdata[8*i +: 8];
+      if (b_be[0]) mem[b_addr][0] <= b_wdata[7:0];
+      if (b_be[1]) mem[b_addr][1] <= b_wdata[15:8];
+      if (b_be[2]) mem[b_addr][2] <= b_wdata[23:16];
+      if (b_be[3]) mem[b_addr][3] <= b_wdata[31:24];
     end
     b_rdata <= mem[b_addr];
   end
