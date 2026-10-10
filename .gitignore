@@ -77,3 +77,6 @@ rtl/tb/obj/
 
 # IU harness builds
 sim/iu/obj/
+# simulation builds and logs
+sim/*/obj/
+sim/*/obj_run.txt

@@ -136,7 +136,7 @@ One access at a time from the IU (`dmem_req`, held until `ack`). By ASI:
 | 0x04 | the registers (§0); non-word → fault 1 with CS |
 | 0x05, 0x07 | read 0; a write drops the TLBs |
 | 0x06 | the TLB image (word only) |
-| 0x0C-0x0F | cache diagnostics (doubleword only, else fault 1 with CS) |
+| 0x0C-0x0F | cache diagnostics: doubleword, or a word in its half (the suite's `mmu_off` clears tags with `sta`); else fault 1 |
 | 0x10-0x14, 0x18-0x1C | store: line flush; load: 0 |
 | 0x20-0x2F | bypass: PA = {ASI[3:0], VA}, uncached, no R/M, atomics allowed |
 | 0x30-0x32 | read 0, write ignored (store buffer: none) |

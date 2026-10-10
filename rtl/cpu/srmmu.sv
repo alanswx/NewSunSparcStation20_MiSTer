@@ -242,7 +242,6 @@ module srmmu
   typedef enum logic [2:0] {W_IDLE, W_READ, W_WAIT, W_WRITE, W_WRITE_WAIT, W_DONE} wstate_t;
   wstate_t     ws;
   logic        w_probe;        // this walk is a probe
-  logic        w_inst;         // for the instruction side
   logic [2:0]  w_ptype;        // probe type
   logic [31:0] w_va;
   at_t         w_at;
@@ -253,7 +252,9 @@ module srmmu
   logic [31:0] w_result;       // the probe's answer
   logic        w_fault;
   logic        probe_done;
-  assign walk_owner_o = (ws != W_IDLE && !w_probe) ? (w_inst ? 2'd2 : 2'd1) : 2'd0;
+  // the owner of the running walk, held through the cycle of walk_done_o
+  logic [1:0]  w_owner;
+  assign walk_owner_o = w_owner;
 
   // the word within the doubleword the port returns
   logic [31:0] mem_word;
@@ -417,9 +418,9 @@ module srmmu
       for (int i = 0; i < 64; i++) tlb[i] <= '0;
       used <= '0;
       ws <= W_IDLE;
-      w_probe <= 1'b0; w_inst <= 1'b0; w_ptype <= '0; w_va <= '0; w_at <= '0; w_no_fault <= 1'b0;
+      w_probe <= 1'b0; w_ptype <= '0; w_va <= '0; w_at <= '0; w_no_fault <= 1'b0;
       w_level <= '0; w_addr <= '0; w_entry <= '0; w_result <= '0; w_fault <= 1'b0;
-      probe_done <= 1'b0;
+      probe_done <= 1'b0; w_owner <= 2'd0;
     end else begin
       sfsr <= sfsr_n;
       sfar <= sfar_n;
@@ -437,9 +438,10 @@ module srmmu
       case (ws)
         W_IDLE: begin
           if (!reg_valid_i) probe_done <= 1'b0;   // an abandoned probe (watchdog)
+          w_owner <= 2'd0;
           if (walk_req_d_i || walk_req_i_i) begin
             w_probe <= 1'b0;
-            w_inst <= !walk_req_d_i;
+            w_owner <= walk_req_d_i ? 2'd1 : 2'd2;
             w_va <= walk_req_d_i ? xd_i.va : xi_i.va;
             w_at <= walk_req_d_i ? xd_i.at : xi_i.at;
             w_no_fault <= walk_req_d_i ? xd_i.no_fault : xi_i.no_fault;

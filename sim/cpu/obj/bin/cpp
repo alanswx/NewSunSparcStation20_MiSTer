@@ -1,2 +1,0 @@
-#!/bin/sh
-exec "/opt/homebrew/opt/llvm/bin/clang" -E "$@"

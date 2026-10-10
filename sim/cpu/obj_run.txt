@@ -1,1 +1,0 @@
-3748 ALU vectors, 63 stubs -> /Users/alans/dev2/NewSunSparcStation20_MiSTer/tests/cpu/src/gen/alu_vec.S

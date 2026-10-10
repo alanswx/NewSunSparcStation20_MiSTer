@@ -134,7 +134,7 @@ module cpu_module
     .done_o(ic_done), .rdata_o(ic_rdata), .err_o(ic_err),
     .inval_i(ic_inval), .inval_line_i(inval_line), .snoop_i,
     .flash_v_i(ic_flash_v), .flash_l_i(ic_flash_l),
-    .diag_req_i(ic_dg_req), .diag_we_i(dmr.write), .diag_tag_i(!dmr.asi[0]), .diag_va_i(dmr.va), .diag_wdata_i(dmr.wdata),
+    .diag_req_i(ic_dg_req), .diag_we_i(dmr.write), .diag_tag_i(!dmr.asi[0]), .diag_va_i(dmr.va), .diag_wdata_i(diag_wdata),
     .diag_done_o(ic_dg_done), .diag_rdata_o(ic_dg_rdata),
     .mem_req_o(mem_i), .mem_rsp_i(mem_i_r));
 
@@ -149,7 +149,7 @@ module cpu_module
     .done_o(dc_done), .rdata_o(dc_rdata), .err_o(dc_err),
     .inval_i(dc_inval), .inval_line_i(inval_line), .snoop_i,
     .flash_v_i(dc_flash_v), .flash_l_i(dc_flash_l),
-    .diag_req_i(dc_dg_req), .diag_we_i(dmr.write), .diag_tag_i(!dmr.asi[0]), .diag_va_i(dmr.va), .diag_wdata_i(dmr.wdata),
+    .diag_req_i(dc_dg_req), .diag_we_i(dmr.write), .diag_tag_i(!dmr.asi[0]), .diag_va_i(dmr.va), .diag_wdata_i(diag_wdata),
     .diag_done_o(dc_dg_done), .diag_rdata_o(dc_dg_rdata),
     .mem_req_o(mem_d), .mem_rsp_i(mem_d_r));
 
@@ -358,6 +358,13 @@ module cpu_module
   assign rg_size  = dmr.size;
   assign ic_dg_req = ds == D_DIAG_I;
   assign dc_dg_req = ds == D_DIAG_D;
+  // a diagnostic access as a doubleword, or a word in its half
+  logic [63:0] diag_wdata;
+  assign diag_wdata = (dmr.size == 2'd3) ? dmr.wdata : (dmr.va[2] ? {32'd0, dmr.wdata[31:0]} : {dmr.wdata[31:0], 32'd0});
+  function automatic logic [63:0] diag_rd(input logic [63:0] d);
+    if (dmr.size == 2'd3) return d;
+    return dmr.va[2] ? {32'd0, d[31:0]} : {32'd0, d[63:32]};
+  endfunction
 
   // Bus errors: reported when the cache says so
   assign be_valid = ds == D_CACHE && dc_done && dc_err;
@@ -393,7 +400,9 @@ module cpu_module
             end else if (dmr.asi >= 8'h03 && dmr.asi <= 8'h07) begin
               ds <= D_REG;
             end else if (dmr.asi[7:2] == 6'b000011) begin           // 0x0C-0x0F
-              if (dmr.size != 2'd3) begin dms.ack <= 1'b1; dms.fault <= 2'd1; end
+              // doubleword, or a word (the suite's tag-clearing loops: the
+              // other word of the image is written as 0)
+              if (dmr.size[1] == 1'b0) begin dms.ack <= 1'b1; dms.fault <= 2'd1; end
               else ds <= dmr.asi[1] ? D_DIAG_D : D_DIAG_I;
             end else if (d_flushasi) begin
               if (dmr.write) ds <= D_FLUSH_XLAT;
@@ -474,10 +483,10 @@ module cpu_module
           end
         end
         D_DIAG_I: begin
-          if (ic_dg_done) begin dms.ack <= 1'b1; dms.rdata <= ic_dg_rdata; ds <= D_IDLE; end
+          if (ic_dg_done) begin dms.ack <= 1'b1; dms.rdata <= diag_rd(ic_dg_rdata); ds <= D_IDLE; end
         end
         D_DIAG_D: begin
-          if (dc_dg_done) begin dms.ack <= 1'b1; dms.rdata <= dc_dg_rdata; ds <= D_IDLE; end
+          if (dc_dg_done) begin dms.ack <= 1'b1; dms.rdata <= diag_rd(dc_dg_rdata); ds <= D_IDLE; end
         end
         D_FLUSH_XLAT: begin
           if (xd_r.hit) begin

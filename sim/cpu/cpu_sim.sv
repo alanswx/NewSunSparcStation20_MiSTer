@@ -190,6 +190,14 @@ module cpu_sim
     end
   end
 
+  // ---- +escc: the transmitter of channel A whenever its status is read ----
+  always_ff @(posedge clk) begin
+    if ($test$plusargs("escc") && esc_rsp.ack && !mr.write)
+      $display("%8d  escc rd addr=%05x rdata=%02x | A: tx_busy=%0d buf_full=%0d tx_en=%0d cts_ok=%0d wr5=%02x brg=%0d",
+               cyc, esc_req.addr[19:0], esc_rsp.rdata[7:0], u_escc.chan_a.tx_busy, u_escc.chan_a.tx_buf_full,
+               u_escc.chan_a.tx_en, u_escc.chan_a.tx_cts_ok, u_escc.chan_a.wr5, u_escc.chan_a.tx_clk);
+  end
+
   // ---- +trace: every instruction as it commits, and the traps ----
   logic trace;
   initial trace = $test$plusargs("trace");
