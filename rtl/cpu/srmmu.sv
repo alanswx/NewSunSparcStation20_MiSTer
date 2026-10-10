@@ -322,30 +322,31 @@ module srmmu
   assign img_entry = reg_va_i[17:12];
   assign img_sel   = reg_va_i[10:8];
 
+  logic [31:0] reg_rdata;          // the value before this access's side effects
   always_comb begin
-    reg_rdata_o = 32'd0;
+    reg_rdata = 32'd0;
     if (reg_asi_i == 8'h04) begin
       case (reg_va_i[12:8])
-        5'h00: reg_rdata_o = mcntl;
-        5'h01: reg_rdata_o = ctpr;
-        5'h02: reg_rdata_o = {16'd0, ctx};
-        5'h03, 5'h13: reg_rdata_o = {14'd0, sfsr};
-        5'h04, 5'h14: reg_rdata_o = sfar;
-        5'h07: reg_rdata_o = {29'd0, wd_flag, 2'b00};
-        5'h0D: reg_rdata_o = sysconf_i;
-        5'h10: reg_rdata_o = trcr;
-        default: reg_rdata_o = 32'd0;
+        5'h00: reg_rdata = mcntl;
+        5'h01: reg_rdata = ctpr;
+        5'h02: reg_rdata = {16'd0, ctx};
+        5'h03, 5'h13: reg_rdata = {14'd0, sfsr};
+        5'h04, 5'h14: reg_rdata = sfar;
+        5'h07: reg_rdata = {29'd0, wd_flag, 2'b00};
+        5'h0D: reg_rdata = sysconf_i;
+        5'h10: reg_rdata = trcr;
+        default: reg_rdata = 32'd0;
       endcase
     end else if (reg_asi_i == 8'h06) begin
       case (img_sel)
-        3'd0: reg_rdata_o = {tlb[img_entry].vtag, 12'd0};
-        3'd1: reg_rdata_o = {16'd0, tlb[img_entry].ctx};
-        3'd2: reg_rdata_o = tlb_pte_image(tlb[img_entry]);
-        3'd3: reg_rdata_o = {31'd0, tlb[img_entry].lock};
-        default: reg_rdata_o = 32'd0;
+        3'd0: reg_rdata = {tlb[img_entry].vtag, 12'd0};
+        3'd1: reg_rdata = {16'd0, tlb[img_entry].ctx};
+        3'd2: reg_rdata = tlb_pte_image(tlb[img_entry]);
+        3'd3: reg_rdata = {31'd0, tlb[img_entry].lock};
+        default: reg_rdata = 32'd0;
       endcase
     end else if (reg_asi_i == 8'h03) begin
-      reg_rdata_o = w_result;
+      reg_rdata = w_result;
     end
   end
 
@@ -414,7 +415,7 @@ module srmmu
       mcntl <= MCNTL_RESET;
       ctpr <= '0; ctx <= '0; trcr <= '0;
       sfsr <= '0; sfar <= '0;
-      wd_flag <= 1'b0;
+      wd_flag <= 1'b0; reg_rdata_o <= '0;
       for (int i = 0; i < 64; i++) tlb[i] <= '0;
       used <= '0;
       ws <= W_IDLE;
@@ -525,6 +526,7 @@ module srmmu
 
       // ---- register accesses ----
       if (reg_go) begin
+        reg_rdata_o <= reg_rdata;              // captured before a read-clear takes effect
         if (reg_asi_i == 8'h03) begin
           if (reg_we_i) begin
             if (reg_is_word) begin

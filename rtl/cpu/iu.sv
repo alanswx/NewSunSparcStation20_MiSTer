@@ -202,10 +202,21 @@ module iu
   logic        take_annul;
   assign take_npc_eff = (redirect && take_pc == slot_pc) ? redirect_target : take_npc;
   assign take_annul   = f_annul_next | (annul_slot && take_pc == slot_pc) | (take_from_buf & f_buf_annul);
+  // A fetch that faulted enters the pipe and will trap: no more fetches
+  // until its trap flushes, so that a second fault on the same page is not
+  // recorded over the first (SFSR.OW; Solaris reads OW as "re-probe" and
+  // loops: t_mmu_ifault)
+  logic ifault_hold;
+  always_ff @(posedge clk) begin
+    if (rst || flush) ifault_hold <= 1'b0;
+    else if (rsp_valid && ifetch_rsp_i.fault != 2'd0) ifault_hold <= 1'b1;
+  end
+
   // Issue a new fetch when nothing is outstanding (or its response arrives
   // now) and the buffer will be free
   assign can_issue = ~error & ~flush & (~f_pending | ifetch_rsp_i.valid) & (~f_have | f_take) &
-                     ~(rsp_valid & ~f_take);   // the response goes to the buffer: wait
+                     ~(rsp_valid & ~f_take) &   // the response goes to the buffer: wait
+                     ~ifault_hold & ~(rsp_valid & (ifetch_rsp_i.fault != 2'd0));
 
   assign ifetch_req_o.valid = can_issue;
   assign ifetch_req_o.va    = f_pc;

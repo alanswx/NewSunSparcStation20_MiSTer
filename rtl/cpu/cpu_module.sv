@@ -143,11 +143,20 @@ module cpu_module
   logic [7:0]  dc_be;
   logic [63:0] dc_wdata, dc_rdata;
 
+  // The walker's R/M writes are this module's own, which the D-cache does
+  // not take from the snoop broadcast: drop the line they hit explicitly
+  logic        walk_wr_ack;
+  logic        dc_inval_any;
+  logic [35:5] dc_inval_line;
+  assign walk_wr_ack   = owner == 2'd1 && mem_rsp_i.ack && mem_w.write;
+  assign dc_inval_any  = dc_inval | walk_wr_ack;
+  assign dc_inval_line = walk_wr_ack ? mem_w.pa[35:5] : inval_line;
+
   l1cache #(.ICACHE(1'b0)) u_dc (
     .clk, .rst, .enable_i(de), .mid_i,
     .req_i(dc_req), .we_i(dc_we), .atomic_i(dc_atomic), .cacheable_i(dc_cacheable), .pa_i(dc_pa), .be_i(dc_be), .wdata_i(dc_wdata),
     .done_o(dc_done), .rdata_o(dc_rdata), .err_o(dc_err),
-    .inval_i(dc_inval), .inval_line_i(inval_line), .snoop_i,
+    .inval_i(dc_inval_any), .inval_line_i(dc_inval_line), .snoop_i,
     .flash_v_i(dc_flash_v), .flash_l_i(dc_flash_l),
     .diag_req_i(dc_dg_req), .diag_we_i(dmr.write), .diag_tag_i(!dmr.asi[0]), .diag_va_i(dmr.va), .diag_wdata_i(diag_wdata),
     .diag_done_o(dc_dg_done), .diag_rdata_o(dc_dg_rdata),
@@ -191,10 +200,11 @@ module cpu_module
       locked_q <= 1'b0;
     end else begin
       owner_q <= owner;
-      // a locked read keeps the port for the owner until its write completes
+      // a locked read keeps the port for the owner until its write completes;
+      // a failed read has no write to wait for (an atomic to an empty slot)
       if (mem_req_o.valid && mem_rsp_i.ack) begin
-        if (mem_req_o.lock && !mem_req_o.write) locked_q <= 1'b1;
-        else if (mem_req_o.write) locked_q <= 1'b0;
+        if (mem_req_o.lock && !mem_req_o.write && !mem_rsp_i.err) locked_q <= 1'b1;
+        else if (mem_req_o.write || mem_rsp_i.err) locked_q <= 1'b0;
       end
     end
   end
