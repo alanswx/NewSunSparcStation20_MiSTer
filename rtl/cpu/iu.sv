@@ -924,6 +924,46 @@ module iu
     if (!$value$plusargs("ctrace_from=%d", ct_from)) ct_from = -1;
     if (!$value$plusargs("ctrace_to=%d", ct_to)) ct_to = -1;
   end
+  // +ctrace_ring_pc=HEX: keep the last CT_RING commits and print them when
+  // a trap is taken at that PC (once); +ctrace_ring_tt=HEX narrows it to a tt
+  localparam int CT_RING = 30000;
+  logic [31:0] cr_pc [CT_RING], cr_inst [CT_RING], cr_val [CT_RING], cr_y [CT_RING];
+  logic [7:0]  cr_rd [CT_RING];
+  logic [3:0]  cr_icc [CT_RING];
+  logic [2:0]  cr_cwp [CT_RING];
+  logic        cr_trap [CT_RING];
+  longint      cr_cyc [CT_RING];
+  int          cr_n, cr_i;
+  logic [31:0] ring_pc;
+  int          ring_tt;
+  logic        ring_on, ring_done;
+  initial begin
+    cr_n = 0; ring_done = 1'b0;
+    ring_on = $value$plusargs("ctrace_ring_pc=%h", ring_pc);
+    if (!$value$plusargs("ctrace_ring_tt=%h", ring_tt)) ring_tt = -1;
+  end
+  always_ff @(posedge clk) begin
+    if (ring_on && !ring_done && w_valid && !w_stall) begin
+      cr_pc[cr_n % CT_RING] <= w_pc; cr_inst[cr_n % CT_RING] <= w_inst;
+      cr_val[cr_n % CT_RING] <= rf_we ? rf_wdata : 32'hxxxxxxxx; cr_rd[cr_n % CT_RING] <= rf_we ? {3'd0, rf_rd} : 8'hff;
+      cr_icc[cr_n % CT_RING] <= icc; cr_y[cr_n % CT_RING] <= y; cr_cwp[cr_n % CT_RING] <= cwp;
+      cr_trap[cr_n % CT_RING] <= w_trap; cr_cyc[cr_n % CT_RING] <= ct_cyc;
+      cr_n <= cr_n + 1;
+      if (w_trap && w_pc == ring_pc && (ring_tt < 0 || w_tt == 8'(ring_tt))) begin
+        ring_done <= 1'b1;
+        $display("ctring: trap tt=%02x at pc=%08x, cycle %0d; the last %0d commits:", w_tt, w_pc, ct_cyc, cr_n < CT_RING ? cr_n : CT_RING);
+        for (int k = (cr_n < CT_RING ? 0 : cr_n - CT_RING); k < cr_n; k++) begin
+          cr_i = k % CT_RING;
+          if (cr_rd[cr_i] == 8'hff)
+            $display("ct %0d pc=%08x i=%08x%s rd=0(-)=00000000 icc=%x y=%08x cwp=%0d", cr_cyc[cr_i], cr_pc[cr_i], cr_inst[cr_i], cr_trap[cr_i] ? " TRAP" : "", cr_icc[cr_i], cr_y[cr_i], cr_cwp[cr_i]);
+          else
+            $display("ct %0d pc=%08x i=%08x%s rd=%0d=%08x icc=%x y=%08x cwp=%0d", cr_cyc[cr_i], cr_pc[cr_i], cr_inst[cr_i], cr_trap[cr_i] ? " TRAP" : "", cr_rd[cr_i], cr_val[cr_i], cr_icc[cr_i], cr_y[cr_i], cr_cwp[cr_i]);
+        end
+        $display("ctring: end");
+        $fflush();
+      end
+    end
+  end
   always_ff @(posedge clk) begin
     ct_cyc <= ct_cyc + 1;
     if (ct_from >= 0 && ct_cyc >= ct_from && ct_cyc <= ct_to && w_valid && !w_stall)
