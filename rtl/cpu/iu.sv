@@ -915,6 +915,7 @@ module iu
   end
 
 `ifndef SYNTHESIS
+  // synthesis translate_off
   // +ctrace_from=N +ctrace_to=M (IU clock cycles): every instruction leaving
   // W (or trapping there), with the register it writes, ICC and Y
   longint ct_cyc, ct_from, ct_to;
@@ -929,6 +930,7 @@ module iu
       $display("ct %0d pc=%08x i=%08x%s%s rd=%0d%s=%08x icc=%x y=%08x cwp=%0d", ct_cyc, w_pc, w_inst,
                w_trap ? " TRAP" : "", w_second ? " 2nd" : "", rf_rd, rf_we ? "" : "(-)", rf_wdata, icc, y, cwp);
   end
+  // synthesis translate_on
 `endif
 
   // Architectural state updates
