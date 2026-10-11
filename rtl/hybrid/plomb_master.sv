@@ -26,9 +26,10 @@
 // reported the requester has dropped the request, so the remaining responses
 // of a line are drained silently. The request is latched at acceptance, so
 // the beats still in flight keep their fields whatever the requester does.
-// Every acknowledged write beat is announced as a pending snoop (sn_pend_o,
-// sn_line_o) for the wrapper to show the CPU (the instruction cache
-// invalidates on its own stores).
+// Every accepted write beat is announced for one cycle (sn_valid_o,
+// sn_line_o) to the wrapper's snoop queue (the instruction cache
+// invalidates on its own stores); when that queue is nearly full
+// (sn_full_i) write beats wait.
 //
 // Half-rate requester: the requester may run on a clock of half this
 // frequency whose edges fall on every second edge of clk — a clock made by
@@ -60,8 +61,9 @@ module plomb_master
 
   input  mem_req_t    req_i,
   output mem_rsp_t    rsp_o,
-  output logic        sn_pend_o,      // an own write beat was acknowledged: a snoop to show at the next load
+  output logic        sn_valid_o,     // an own write beat was accepted this cycle: its line, for the snoop queue
   output logic [30:0] sn_line_o,
+  input  logic        sn_full_i,      // the snoop queue cannot take another own write: hold write beats
 
   // master -> slave (type_plomb_w without req/dack semantics changed)
   output logic        pb_req,
@@ -142,7 +144,7 @@ module plomb_master
   assign rcv_pa = beat_pa(rcv);
 
   logic issue, fencing;
-  assign issue    = st == S_RUN && iss < n_beats;
+  assign issue    = st == S_RUN && iss < n_beats && !(rq.write && sn_full_i);   // a write waits for a snoop slot
   assign fencing  = st == S_FENCE && !f_issued;
   assign pb_req   = issue || fencing;
   assign pb_a     = fencing ? fence_pa[31:0] : iss_pa[31:0];
@@ -174,26 +176,24 @@ module plomb_master
   logic [63:0] rdata_pend;
   logic        ack_q, err_q;       // the registers the requester sees (loaded on cpu_ld_i)
   logic [63:0] rdata_q;
-  logic        sn_pend;            // a snoop waiting for the next load
-  logic [30:0] sn_line;
 
   assign rsp_o.ack   = ack_q;
   assign rsp_o.err   = err_q;
   assign rsp_o.rdata = rdata_q;
-  assign sn_pend_o   = sn_pend;
-  assign sn_line_o   = sn_line;
+  assign sn_valid_o  = taken && rq.write;
+  assign sn_line_o   = iss_pa[35:5];
 
   always_ff @(posedge clk) begin
     if (rst) begin
       st <= S_IDLE; iss <= '0; rcv <= '0; aborted <= 1'b0; err_acc <= 1'b0; fin_ack <= 1'b0;
       fin_seen <= 1'b0; fin_cnt <= '0;
-      ack_pend <= 1'b0; err_pend <= 1'b0; rdata_pend <= '0; sn_pend <= 1'b0; sn_line <= '0;
+      ack_pend <= 1'b0; err_pend <= 1'b0; rdata_pend <= '0;
       ack_q <= 1'b0; err_q <= 1'b0; rdata_q <= '0; hi_q <= '0; rq <= '0;
       wfence <= 1'b0; fence_pa <= '0; fence_d <= '0; fence_be <= '0; f_issued <= 1'b0; f_tries <= '0;
     end else begin
       if (cpu_ld_i) begin                // what the requester sees for its next cycle
         ack_q <= ack_pend; err_q <= err_pend; rdata_q <= rdata_pend;
-        ack_pend <= 1'b0; sn_pend <= 1'b0;
+        ack_pend <= 1'b0;
       end
       case (st)
         S_IDLE: if (req_i.valid) begin
@@ -217,8 +217,6 @@ module plomb_master
           if (taken) begin
             iss <= iss + 4'd1;
             if (rq.write) begin              // a posted write: done when its last beat is accepted
-              sn_pend <= 1'b1;
-              sn_line <= iss_pa[35:5];
               if (mmu_pkg::cacheable_pa(rq.pa) && rq.pa[35:32] == 4'h0) begin   // RAM: fence the next read
                 wfence   <= 1'b1;
                 fence_pa <= {iss_pa[35:2], 2'b00};

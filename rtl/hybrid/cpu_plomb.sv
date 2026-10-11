@@ -70,7 +70,7 @@ module cpu_plomb
   mem_req_t rq_cpu, rq;
   mem_rsp_t rs, rs_cpu;
   snoop_t   sn, sn_cpu;
-  logic        own_pend;
+  logic        own_valid, sn_full;
   logic [30:0] own_line;
 
   always_ff @(posedge clk_cpu) begin
@@ -86,37 +86,15 @@ module cpu_plomb
 
   plomb_master #(.MID(4'(MID)), .FIN_EDGES(3)) u_pb (
     .clk, .rst, .cpu_edge_i, .cpu_ld_i, .req_i(rq), .rsp_o(rs),
-    .sn_pend_o(own_pend), .sn_line_o(own_line),
+    .sn_valid_o(own_valid), .sn_line_o(own_line), .sn_full_i(sn_full),
     .pb_req, .pb_a, .pb_ah, .pb_asi, .pb_d, .pb_be, .pb_mode, .pb_burst,
     .pb_cont, .pb_cache, .pb_lock, .pb_dack,
     .pb_ack, .pb_dreq, .pb_rd, .pb_code);
 
-  // ---- the DMA snoop queue (bus clock) and the snoop register the CPU sees ----
-  logic [30:0] dq [0:3];                 // lines (pa[35:5])
-  logic [30:0] last_line;
-  logic [1:0]  wp, rp;
-  logic [2:0]  n;
-  logic        push, pop;
-  assign push = dma_wr_i && n != 3'd4 && !(n != 3'd0 && last_line == dma_a_i[35:5]);
-  assign pop  = cpu_ld_i && !own_pend && n != 3'd0;
-
-  always_ff @(posedge clk) begin
-    if (rst) begin
-      wp <= '0; rp <= '0; n <= '0; last_line <= '0;
-      sn <= '0;
-    end else begin
-      if (push) begin
-        dq[wp]    <= dma_a_i[35:5];
-        last_line <= dma_a_i[35:5];
-        wp        <= wp + 2'd1;
-      end
-      if (pop) rp <= rp + 2'd1;
-      n <= n + {2'd0, push} - {2'd0, pop};
-      if (cpu_ld_i) begin
-        sn.valid <= own_pend || n != 3'd0;
-        sn.line  <= own_pend ? own_line : dq[rp];
-        sn.mid   <= own_pend ? 4'(MID) : 4'd0;
-      end
-    end
-  end
+  // ---- the snoops: own and DMA write beats, one per CPU cycle ----
+  snoop_queue #(.DEPTH(16), .OWN_MID(4'(MID)), .DMA_MID(4'd0)) u_snq (
+    .clk, .rst, .ld_i(cpu_ld_i),
+    .own_valid_i(own_valid), .own_line_i(own_line),
+    .dma_valid_i(dma_wr_i), .dma_line_i(dma_a_i[35:5]),
+    .full_o(sn_full), .snoop_o(sn));
 endmodule
