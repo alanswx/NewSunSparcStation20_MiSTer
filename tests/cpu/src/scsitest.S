@@ -817,6 +817,122 @@ BEGIN(t_scsi_read0, "scsi: READ(10) at t3: blocks 0-15 one by one, 16-31 by 8, m
 9:
 END
 
+/* The same reads seen through the D-cache: with the MMU off a plain load
+ * of RAM is cached (E3), so the buffer's lines, cached by a load before
+ * each READ(10), must be dropped by the DMA's snoops -- or the CPU reads
+ * the previous block. OpenBIOS reads its DMA buffer this way; on the board
+ * the NetBSD loader got stale blocks (2026-10-10). */
+check_block_c:
+        save %sp, -96, %sp
+        set DATABUF, %l0
+        add %l0, %i2, %l0
+        ld [%l0], %l1
+        set 0x53435349, %l2             /* 'SCSI' */
+        cmp %l1, %l2
+        bne 9f
+        mov 1, %l3
+        ld [%l0 + 4], %l1
+        cmp %l1, %i1
+        bne 9f
+        mov 2, %l3
+        ld [%l0 + 8], %l1
+        cmp %l1, %i0
+        bne 9f
+        mov 3, %l3
+        set 0xa5a5a5a5, %l5
+        sll %i0, 8, %l6
+1:      sll %l3, 2, %l4
+        ld [%l0 + %l4], %l1
+        or %l6, %l3, %l2
+        xor %l2, %l5, %l2
+        cmp %l1, %l2
+        bne 9f
+        add %l3, 1, %l3
+        cmp %l3, 128
+        bl 1b
+        nop
+        ret
+        restore %g0, 0, %o0
+9:      ret
+        restore %l3, 0, %o0
+
+/* read_check_c(id %i0, tag %i1, lba %i2, count %i3, mode %i4): as
+ * read_check, with the buffer's lines loaded (cached) before the READ and
+ * the blocks checked through the cache */
+read_check_c:
+        save %sp, -96, %sp
+        set DATABUF, %l0
+        sll %i3, 9, %l1
+        add %l0, %l1, %l1
+1:      ld [%l0], %g0
+        add %l0, 32, %l0
+        cmp %l0, %l1
+        blu 1b
+        nop
+        mov %i0, %o0
+        mov 0x28, %o1
+        mov %i2, %o2
+        mov %i3, %o3
+        call rw10
+        mov %i4, %o4
+        tst %o0
+        bne,a 9f
+        add %o0, 0x100, %i0
+        clr %l0
+2:      add %i2, %l0, %o0
+        mov %i1, %o1
+        call check_block_c
+        sll %l0, 9, %o2
+        tst %o0
+        bne 8f
+        add %l0, 1, %l0
+        cmp %l0, %i3
+        bl 2b
+        nop
+        ret
+        restore %g0, 0, %o0
+8:      sub %l0, 1, %l0
+        sll %l0, 12, %l0
+        add %o0, %l0, %o0
+        add %o0, 0x200, %i0
+9:      ret
+        restore
+
+BEGIN(t_scsi_read0_cached, "scsi: READ(10) at t3 seen through the D-cache (the buffer cached before each read): blocks 0-31 one by one, 32-47 by 8, mode 0")
+        mov 3, %o0
+        call target_blocks
+        nop
+        tst %o0
+        bne 1f
+        mov 1, %l0
+        ba 9f
+        st %l0, [%g7 + V_SKIP]
+1:      clr %l1                         /* lba */
+2:      mov 3, %o0
+        set TAG_HD0, %o1
+        mov %l1, %o2
+        mov 1, %o3
+        call read_check_c
+        clr %o4
+        EXPECT(%o0, 0, 1)
+        add %l1, 1, %l1
+        cmp %l1, 32
+        bl 2b
+        nop
+3:      mov 3, %o0
+        set TAG_HD0, %o1
+        mov %l1, %o2
+        mov 8, %o3
+        call read_check_c
+        clr %o4
+        EXPECT(%o0, 0, 2)
+        add %l1, 8, %l1
+        cmp %l1, 48
+        bl 3b
+        nop
+9:
+END
+
 /* The two-disk case: t3 and t1 in turn, as an OS with two disks does. */
 BEGIN(t_scsi_two0, "scsi: t3 and t1 in turn, 16 reads each, with TUR in between, mode 0")
         mov 1, %o0
