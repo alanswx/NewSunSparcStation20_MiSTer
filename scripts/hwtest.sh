@@ -124,7 +124,7 @@ while [ $# -gt 0 ]; do
         --obp) OBP=$1; shift ;;
         --nvram) NVRAM=$1; shift ;;
         --minutes) MINUTES=$1; shift ;;
-        cpu|netbsd|solaris|solaris-obp|scsi|post|brk|kbd|wdog|ord) TESTS+=("$a") ;;
+        cpu|netbsd|solaris|solaris-obp|scsi|post|brk|kbd|wdog|ord|ordfull) TESTS+=("$a") ;;
         net-netbsd|net-solaris|net-solaris-obp|obp-testnet|idprom-obp|hotplug|wb|speed|boottime|audio-solaris|audio-solaris-obp|audio-netbsd|audio-obp|cd|cd-obp|cdaudio|nextstep|nextstep-obp|nextstep-install|nextstep-install-obp|stress) TESTS+=("$a") ;;
         all) TESTS+=(cpu scsi brk kbd wdog netbsd solaris net-netbsd net-solaris cd nextstep)
              [ -n "$OBP" ] && TESTS+=(solaris-obp post net-solaris-obp obp-testnet idprom-obp audio-obp cd-obp nextstep-obp) ;;
@@ -308,12 +308,14 @@ for t in "${TESTS[@]}"; do
             FAILED=$((FAILED + 1))
         fi
         ;;
-    ord)
-        # memory ordering probes (tests/cpu/src/ordtest.S): prints what the
-        # memory shows after stores; no baseline, the log is the result
-        python3 tests/cpu/build.py "$T" --main=ordtest > /dev/null || exit 1
+    ord|ordfull)
+        # memory ordering probes (tests/cpu/src/ordtest.S, or ordfull.S: the
+        # whole suite then the instrumented walk): prints what the memory
+        # shows after stores; no baseline, the log is the result
+        m=ordtest; [ "$t" = ordfull ] && m=ordfull
+        python3 tests/cpu/build.py "$T" --main=$m > /dev/null || exit 1
         rsh "cp $G/boot.rom /tmp/boot.rom.hwtest"
-        scp -q "${SSH_OPTS[@]}" "tests/cpu/out/$T/ordtest.rom" "$DEV:$G/boot.rom" || exit 1
+        scp -q "${SSH_OPTS[@]}" "tests/cpu/out/$T/$m.rom" "$DEV:$G/boot.rom" || exit 1
         scripts/setopt.sh console=serial > /dev/null
         cp=$(run_capture "$log" 240 'CPUTEST DONE')
         sleep 2; stop_capture "$cp"
