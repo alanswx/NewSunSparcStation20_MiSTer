@@ -124,7 +124,7 @@ while [ $# -gt 0 ]; do
         --obp) OBP=$1; shift ;;
         --nvram) NVRAM=$1; shift ;;
         --minutes) MINUTES=$1; shift ;;
-        cpu|netbsd|solaris|solaris-obp|scsi|post|brk|kbd|wdog) TESTS+=("$a") ;;
+        cpu|netbsd|solaris|solaris-obp|scsi|post|brk|kbd|wdog|ord) TESTS+=("$a") ;;
         net-netbsd|net-solaris|net-solaris-obp|obp-testnet|idprom-obp|hotplug|wb|speed|boottime|audio-solaris|audio-solaris-obp|audio-netbsd|audio-obp|cd|cd-obp|cdaudio|nextstep|nextstep-obp|nextstep-install|nextstep-install-obp|stress) TESTS+=("$a") ;;
         all) TESTS+=(cpu scsi brk kbd wdog netbsd solaris net-netbsd net-solaris cd nextstep)
              [ -n "$OBP" ] && TESTS+=(solaris-obp post net-solaris-obp obp-testnet idprom-obp audio-obp cd-obp nextstep-obp) ;;
