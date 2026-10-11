@@ -43,6 +43,7 @@ while off < 0x1fd8:
 # shorten the last (free) partition to end there and fix its checksum
 # (packages/nvram.c nvpart_checksum: a byte sum with an end-around carry).
 END = 0x1f50
+VARS = b"boot-device=disk\0auto-boot?=true\0output-device=ttya\0input-device=ttya\0\0"
 def checksum(h):
     v = h[0]
     for i in range(2, 16):
@@ -57,6 +58,18 @@ while True:
         break
     off += ln * 16
 assert b[off] == 0x7f, "the last partition is not the free one"
+# QEMU 11 leaves the system partition empty: give it the variables the
+# board tests rely on, growing it to hold them (16-byte units), and move
+# the free partition up behind it
+sysoff = 0
+assert b[sysoff] == 0x70
+sysdata = sysoff + 16
+need = (16 + len(VARS) + 15) // 16
+b[sysdata:sysoff + need * 16] = VARS + bytes(need * 16 - 16 - len(VARS))
+b[sysoff + 2], b[sysoff + 3] = need >> 8, need & 0xff
+b[sysoff + 1] = checksum(b[sysoff:sysoff + 16])
+off = sysoff + need * 16
+b[off:off + 16] = bytes([0x7f, 0, 0, 0]) + b"free" + bytes(8)
 newlen = (END - off) // 16
 b[off + 2], b[off + 3] = newlen >> 8, newlen & 0xff
 b[off + 1] = checksum(b[off:off + 16])
