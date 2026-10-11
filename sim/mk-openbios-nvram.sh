@@ -15,6 +15,7 @@
 # or mount it on the MiSTer for the OpenBIOS tests.
 set -euo pipefail
 OUT="${1:?usage: $0 OUT.nvr}"
+case "$OUT" in /*) ;; *) OUT="$PWD/$OUT" ;; esac
 command -v qemu-system-sparc >/dev/null || { echo "qemu-system-sparc not found" >&2; exit 1; }
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
@@ -37,8 +38,32 @@ while off < 0x1fd8:
         break
     print(f"partition @{off:04x}: sig={sig:02x} len={ln * 16} name={bytes(b[off + 4:off + 16]).rstrip(b'\0').decode()}")
     off += ln * 16
-b[0x1fd8:0x1fe8] = bytes(16)   # the IDPROM: blank, for the core's built-in one
-b[0x1ff8:0x2000] = bytes(8)    # the clock registers
+# This repo's OpenBIOS (drivers/obio.c) keeps 0x1f50-0x1fd7 for a one-shot
+# reboot command and wants the partition walk to end exactly at 0x1f50:
+# shorten the last (free) partition to end there and fix its checksum
+# (packages/nvram.c nvpart_checksum: a byte sum with an end-around carry).
+END = 0x1f50
+def checksum(h):
+    v = h[0]
+    for i in range(2, 16):
+        v += h[i]
+        if v > 255:
+            v = (v - 256 + 1) & 0xff
+    return v
+off = 0
+while True:
+    ln = (b[off + 2] << 8) | b[off + 3]
+    if off + ln * 16 >= END or b[off + ln * 16] == 0:
+        break
+    off += ln * 16
+assert b[off] == 0x7f, "the last partition is not the free one"
+newlen = (END - off) // 16
+b[off + 2], b[off + 3] = newlen >> 8, newlen & 0xff
+b[off + 1] = checksum(b[off:off + 16])
+b[END:0x1fd8] = bytes(0x1fd8 - END)   # the reboot-command area
+b[0x1fd8:0x1fe8] = bytes(16)         # the IDPROM: blank, for the core's built-in one
+b[0x1ff8:0x2000] = bytes(8)          # the clock registers
+print(f"free partition @{off:04x} now {newlen * 16} bytes, ends at {END:#x}; checksum {b[off + 1]:02x}")
 open(sys.argv[2], "wb").write(bytes(b))
 print("wrote", sys.argv[2])
 PY
