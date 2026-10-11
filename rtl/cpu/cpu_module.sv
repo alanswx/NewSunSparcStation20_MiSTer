@@ -519,7 +519,11 @@ module cpu_module
                 ds <= D_CACHE;
               end else if (xd_r.fault) begin
                 dms_q.ack <= 1'b1;
-                if (!d_masked) dms_q.fault <= 2'd1;
+                if (!d_masked) begin dms_q.fault <= 2'd1;
+`ifndef SYNTHESIS
+                $display("%0t cpu_module: data fault (%s) va=%08x asi=%02x write=%0d acc=%0d nf=%0d masked=%0d", $time, "permission", dmr.va, dmr.asi, dmr.write, xd_r.acc, nf, d_masked);
+`endif
+                end
               end else if (wk_req_d) begin
                 ds <= D_WALK;
               end else begin
@@ -534,7 +538,11 @@ module cpu_module
             end else if (dmr.asi[7:2] == 6'b000011) begin           // 0x0C-0x0F
               // doubleword, or a word (the suite's tag-clearing loops: the
               // other word of the image is written as 0)
-              if (dmr.size[1] == 1'b0) begin dms_q.ack <= 1'b1; dms_q.fault <= 2'd1; end
+              if (dmr.size[1] == 1'b0) begin dms_q.ack <= 1'b1; dms_q.fault <= 2'd1;
+`ifndef SYNTHESIS
+                $display("%0t cpu_module: data fault (%s) va=%08x asi=%02x write=%0d acc=%0d nf=%0d masked=%0d", $time, "diagnostic size", dmr.va, dmr.asi, dmr.write, xd_r.acc, nf, d_masked);
+`endif
+              end
               else ds <= dmr.asi[1] ? D_DIAG_D : D_DIAG_I;
             end else if (d_flushasi) begin
               if (dmr.write) ds <= D_FLUSH_XLAT;
@@ -579,7 +587,11 @@ module cpu_module
             ds <= D_CACHE;
           end else if (xd_r.fault) begin
             dms_q.ack <= 1'b1;
-            if (!d_masked) dms_q.fault <= 2'd1;
+            if (!d_masked) begin dms_q.fault <= 2'd1;
+`ifndef SYNTHESIS
+                $display("%0t cpu_module: data fault (%s) va=%08x asi=%02x write=%0d acc=%0d nf=%0d masked=%0d", $time, "permission", dmr.va, dmr.asi, dmr.write, xd_r.acc, nf, d_masked);
+`endif
+                end
             ds <= D_IDLE;
           end else if (wk_req_d) begin
             ds <= D_WALK;
@@ -591,7 +603,11 @@ module cpu_module
           if (wk_done && wk_owner == 2'd1) begin
             if (wk_fault) begin
               dms_q.ack <= 1'b1;
-              if (!wk_masked) dms_q.fault <= 2'd1;
+              if (!wk_masked) begin dms_q.fault <= 2'd1;
+`ifndef SYNTHESIS
+                $display("%0t cpu_module: data fault (%s) va=%08x asi=%02x write=%0d acc=%0d nf=%0d masked=%0d", $time, "walk", dmr.va, dmr.asi, dmr.write, xd_r.acc, nf, d_masked);
+`endif
+                end
               ds <= D_IDLE;
             end else ds <= D_XLAT;
           end else if (wk_owner != 2'd1) begin
@@ -608,7 +624,11 @@ module cpu_module
           if (rg_ack) begin
             dms_q.ack <= 1'b1;
             dms_q.rdata <= {32'd0, rg_rdata};
-            if (rg_fault) dms_q.fault <= 2'd1;
+            if (rg_fault) begin dms_q.fault <= 2'd1;
+`ifndef SYNTHESIS
+                $display("%0t cpu_module: data fault (%s) va=%08x asi=%02x write=%0d acc=%0d nf=%0d masked=%0d", $time, "mmu register", dmr.va, dmr.asi, dmr.write, xd_r.acc, nf, d_masked);
+`endif
+                end
             ds <= D_IDLE;
           end
         end
