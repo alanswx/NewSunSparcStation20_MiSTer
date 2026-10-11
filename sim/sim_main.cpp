@@ -502,6 +502,8 @@ static void usage() {
         "  --l2tlb             OSD L2TLB On (the MMU's 128-entry second-level TLB,\n"
         "                      used when software also sets MCNTL bit 6)\n"
         "  --frame FILE.ppm    save the last complete video frame at the end\n"
+        "  --ram-fill BYTE     every RAM byte starts as BYTE (default 0; the board's DDR holds\n"
+        "                      leftovers, which OpenBIOS's (undefined-defer) relies on)\n"
         "  --ddr-stress        random DDR waitrequest\n"
         "  --ddr-gaps          random bubbles between the beats of a DDR read burst\n"
         "  --sd-latency N      cycles from a block request to hps_io's ack (default 40;\n"
@@ -531,6 +533,7 @@ int main(int argc, char **argv) {
     uint64_t max_cycles = 200000000ull, trace_from = 0, ddr_log = 0;
     int dl_gap = 32;
     uint64_t ddr_log_from = 0;
+    int ram_fill = -1;            // --ram-fill: every RAM byte starts as this (the board's DDR holds leftovers; the sim's is zeros)
     bool readonly = false, video = false, noautoboot = false, cg3 = false,
          nocache = false, l2tlb = false, quiet = false, progress = false, stress = false, gaps = false,
          full_download = false, eth = false, eth_loop = false;
@@ -564,6 +567,7 @@ int main(int argc, char **argv) {
         else if (a == "--nocache") nocache = true;
         else if (a == "--l2tlb") l2tlb = true;
         else if (a == "--frame") frame_path = next();
+        else if (a == "--ram-fill") ram_fill = (int)strtoul(next().c_str(), nullptr, 0) & 0xFF;
         else if (a == "--ddr-stress") stress = true;
         else if (a == "--ddr-gaps") gaps = true;
         else if (a == "--eth") eth = true;
@@ -662,6 +666,7 @@ int main(int argc, char **argv) {
     }
 
     Ddr ddr;
+    if (ram_fill >= 0) memset(ddr.mem, ram_fill, Ddr::WORDS * 8);
     EthHost ethh;
     ethh.loop = eth_loop;
     ddr.stress = stress;

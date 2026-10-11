@@ -44,7 +44,7 @@ open(o + "-random.orig", "wb").write(b)
 PY
 for k in blank random; do
     "sim/obj_ss$REV/Vsim_top" --rom "$ROM" --nvram "$O-$k.nvr" --stop "CPUTEST DONE" \
-        --cycles 60M --quiet --log "$O-$k.log" 2> "$O-$k.err" &
+        --cycles 400M --quiet --log "$O-$k.log" 2> "$O-$k.err" &
 done
 wait
 clean() { tr -d '\r' < "$1" | tr -cd '\11\12\40-\176' | grep -v '^$'; }
