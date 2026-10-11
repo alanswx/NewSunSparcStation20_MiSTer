@@ -350,20 +350,35 @@ module iu
   assign ser_inflight = (e_valid && serialising(e_dec.cls)) || (m_valid && serialising(m_dec.cls)) ||
                         (w_valid && serialising(w_dec.cls)) || ser_commit_q;
 
-  // Load-use: the instruction in E is a load whose rd is a source of D's
-  logic e_is_load;
+  // Load-use: the instruction in E is a load whose rd is a source of D's —
+  // or the load has moved on to M and its data has not come back yet (a
+  // cache miss, a table walk, a slow bus). D must wait for that too: an
+  // instruction in E re-latches its operands every cycle, but a JMPL/RETT
+  // uses its target in E at once to redirect the fetch, and the forwarding
+  // path only has the load's value once it is acked. (OpenBIOS on the
+  // hybrid: ld [%g1+0x240],%g1; jmpl %g1 — the jump took the old %g1.)
+  function automatic logic d_uses_rd_of(input dec_t ld, input logic dbl);
+    logic u;
+    u = 1'b0;
+    if (ld.rd != 5'd0) begin
+      if (d_dec.rs1 == ld.rd) u = 1'b1;
+      if (!d_dec.imm && d_dec.rs2 == ld.rd) u = 1'b1;
+      if ((d_dec.cls == C_STORE || d_dec.cls == C_ATOMIC) && d_dec.rd == ld.rd) u = 1'b1;
+      if (d_dec.cls == C_STORE && d_dec.size == 2'd3 && {d_dec.rd[4:1], 1'b1} == ld.rd) u = 1'b1;
+      if (dbl && {ld.rd[4:1], 1'b1} == d_dec.rs1) u = 1'b1;
+      if (dbl && !d_dec.imm && {ld.rd[4:1], 1'b1} == d_dec.rs2) u = 1'b1;
+    end
+    return u;
+  endfunction
+  logic e_is_load, m_load_pending;
   assign e_is_load = e_valid && (e_dec.cls == C_LOAD || e_dec.cls == C_ATOMIC);
+  assign m_load_pending = m_valid && !m_trap && (m_dec.cls == C_LOAD || m_dec.cls == C_ATOMIC) &&
+                          !m_acked && !dmem_rsp_i.ack;
   logic d_uses_rd_of_e;
   always_comb begin
     d_uses_rd_of_e = 1'b0;
-    if (e_is_load && e_dec.rd != 5'd0) begin
-      if (d_dec.rs1 == e_dec.rd) d_uses_rd_of_e = 1'b1;
-      if (!d_dec.imm && d_dec.rs2 == e_dec.rd) d_uses_rd_of_e = 1'b1;
-      if ((d_dec.cls == C_STORE || d_dec.cls == C_ATOMIC) && d_dec.rd == e_dec.rd) d_uses_rd_of_e = 1'b1;
-      if (d_dec.cls == C_STORE && d_dec.size == 2'd3 && {d_dec.rd[4:1], 1'b1} == e_dec.rd) d_uses_rd_of_e = 1'b1;
-      if (e_dec.size == 2'd3 && {e_dec.rd[4:1], 1'b1} == d_dec.rs1) d_uses_rd_of_e = 1'b1;
-      if (e_dec.size == 2'd3 && !d_dec.imm && {e_dec.rd[4:1], 1'b1} == d_dec.rs2) d_uses_rd_of_e = 1'b1;
-    end
+    if (e_is_load)       d_uses_rd_of_e |= d_uses_rd_of(e_dec, e_dec.size == 2'd3);
+    if (m_load_pending)  d_uses_rd_of_e |= d_uses_rd_of(m_dec, m_dec.size == 2'd3);
   end
 
   // FP instructions go one at a time: the next waits in D until the one
