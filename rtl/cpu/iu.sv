@@ -533,11 +533,23 @@ module iu
     else                                   icc_fwd = icc;
   end
 
+  // The Y an instruction in E sees: the latest in flight. Multiplies and
+  // MULSCC write Y without delay (only WR %y has one, and it serialises),
+  // so the next MULSCC, RD %y or divide must see it: a 32-step MULSCC chain
+  // (the software .umul) otherwise read a stale Y in two steps of three and
+  // the NetBSD loader computed a disk address from a wrong product.
+  logic [31:0] y_fwd;
+  always_comb begin
+    if (m_valid && m_wy && !m_trap)      y_fwd = m_y;
+    else if (w_valid && w_wy && !w_trap) y_fwd = w_y;
+    else                                 y_fwd = y;
+  end
+
   // ALU
   logic [31:0] alu_r, alu_y;
   logic [3:0]  alu_icc;
   logic        alu_cc, alu_wy, alu_tag_trap;
-  iu_alu u_alu (.op3_i(e_dec.op3), .a_i(a), .b_i(b), .y_i(y), .icc_i(icc_fwd),
+  iu_alu u_alu (.op3_i(e_dec.op3), .a_i(a), .b_i(b), .y_i(y_fwd), .icc_i(icc_fwd),
                 .r_o(alu_r), .icc_o(alu_icc), .cc_o(alu_cc), .y_o(alu_y), .wy_o(alu_wy), .tag_trap_o(alu_tag_trap));
 
   // Multiply / divide
@@ -547,7 +559,7 @@ module iu
   assign e_is_md = e_valid && !e_trap && (e_dec.cls == C_MUL || e_dec.cls == C_DIV);
   assign md_start = e_is_md && !md_started && !md_busy && !m_stall;
   iu_muldiv u_md (.clk, .rst, .start_i(md_start), .kill_i(flush), .div_i(e_dec.cls == C_DIV), .signed_i(e_dec.sgn),
-                  .a_i(a), .b_i(b), .y_i(y), .busy_o(md_busy), .done_o(md_done), .r_o(md_r), .y_o(md_y),
+                  .a_i(a), .b_i(b), .y_i(y_fwd), .busy_o(md_busy), .done_o(md_done), .r_o(md_r), .y_o(md_y),
                   .v_o(md_v), .div_zero_o(md_dz));
   always_ff @(posedge clk) begin
     if (rst || flush) md_started <= 1'b0;
@@ -701,7 +713,7 @@ module iu
         e_result = md_r;
         e_wicc = e_dec.cc; e_icc = {md_r[31], md_r == 32'd0, md_v, 1'b0};
       end
-      C_RDY:   e_result = y;
+      C_RDY:   e_result = y_fwd;
       C_RDPSR: e_result = psr_word(icc, ef, pil, s, ps, et, cwp);
       C_RDWIM: e_result = {24'd0, wim};
       C_RDTBR: e_result = {tba, tt, 4'b0000};

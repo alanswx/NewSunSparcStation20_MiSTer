@@ -66,6 +66,7 @@ PASS trap: LDC/STC family -> cp_disabled (0x24), no memory access
 PASS trap: wr %psr with CWP = NWINDOWS -> illegal_instruction
 PASS iu: reserved ASRs read %y, writes do nothing; CASA -> illegal_instruction
 PASS mmu: SS20 ASI 0x4c is a register, not ASI 0x0c; ASI 0x38 holds 64-bit values
+PASS iu: Y written by MULSCC/UMUL/SMUL is seen by the next instruction (a .umul MULSCC chain, RD %y, UDIV)
 PASS iu: jmp/rett to a jmpl %g1,%o7 (0, 1, 2, 4, 8 stores before the rett), caches on: %o7 is the jmpl's address
 PASS mmu: SS20 ASI 6 TLB image: 64 entries x SEL0-3 hold the POST's bit patterns
 PASS mmu: SS20 ASI 6 TLB image: ASI 3 demaps (context, region, segment, page, entire) clear V by the flush rules
@@ -80,4 +81,4 @@ PASS buserr: a bypass load of an empty SBus slot traps tt 0x29; SFSR TO/AT/FT 5/
 PASS buserr: through a mapping: load tt 0x29 (AT 1, SFAR), fetch tt 0x21 (FT 5, no FAV), a table in the slot: tt 9 with FT 4, L 3, TO
 SKIP dma: a transfer at a line every two cycles into cached lines, under stores and an I-cache flash clear, is what the module reads
 SKIP dma: a transfer into lines the module keeps reloading meanwhile ends with memory's data in the cache
-CPUTEST DONE pass=76 fail=0 skip=4
+CPUTEST DONE pass=77 fail=0 skip=4

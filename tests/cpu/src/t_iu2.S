@@ -280,3 +280,112 @@ BEGIN(t_asi_width, "mmu: SS20 ASI 0x4c is a register, not ASI 0x0c; ASI 0x38 hol
         EXPECT(%l5, 0, 8)
 END
 #endif
+
+/* Y written by one instruction and read by the next: a MULSCC chain, RD %y
+ * and UDIV straight after a multiply. Only WR %y has a delay (three
+ * instructions); multiplies and MULSCC update Y at once (V8 B.17, B.18).
+ * The IU forwarded the ICC but not Y: the software .umul (wr %y, three
+ * instructions, 32 MULSCC, rd %y) read a stale Y in two steps of three and
+ * the NetBSD loader computed fs_fpg * 0 = 0x2c_000c0003 (2026-10-11). */
+
+/* mulscc_umul(a %o0, b %o1) -> %o0 = the low word of a * b, %o1 = the
+ * high word, by the 32-step MULSCC sequence of libgcc's .umul; leaf */
+mulscc_umul:
+        wr %o0, %y
+        nop
+        nop
+        nop
+        andcc %g0, %g0, %o4
+#define MS mulscc %o4, %o1, %o4
+        MS ; MS ; MS ; MS ; MS ; MS ; MS ; MS
+        MS ; MS ; MS ; MS ; MS ; MS ; MS ; MS
+        MS ; MS ; MS ; MS ; MS ; MS ; MS ; MS
+        MS ; MS ; MS ; MS ; MS ; MS ; MS ; MS
+#undef MS
+        mulscc %o4, %g0, %o4
+        tst %o1                         /* a signed step: b < 0 adds a back */
+        bl,a 1f
+        add %o4, %o0, %o4
+1:      rd %y, %o0
+        retl
+        mov %o4, %o1
+mulscc_umul_end:
+
+#define YF_RAM  MT_PAGE(48)             /* identity, cacheable: the copy runs from the I-cache */
+
+BEGIN(t_y_forward, "iu: Y written by MULSCC/UMUL/SMUL is seen by the next instruction (a .umul MULSCC chain, RD %y, UDIV)")
+        set 0x16670, %o0                /* the loader's case: fs_fpg * 0 */
+        clr %o1
+        call mulscc_umul
+        nop
+        mov %o0, %l6                    /* EXPECT clobbers %o0-%o2 */
+        mov %o1, %l7
+        EXPECT(%l6, 0, 1)
+        EXPECT(%l7, 0, 2)
+        set 0x12345, %o0
+        set 0x6789, %o1
+        call mulscc_umul
+        nop
+        mov %o0, %l6
+        mov %o1, %l7
+        set 0x12345 * 0x6789, %l0
+        EXPECT_R(%l6, %l0, 3)
+        EXPECT(%l7, 0, 4)
+        set 0xdeadbeef, %o0
+        set 0x10001, %o1
+        call mulscc_umul
+        nop
+        mov %o0, %l6
+        mov %o1, %l7
+        set 0xdeadbeef, %l0
+        set 0x10001, %l1
+        umul %l0, %l1, %l2
+        rd %y, %l3                      /* right after the multiply */
+        EXPECT_R(%l6, %l2, 5)
+        EXPECT(%l7, 0x0000deae, 10)
+        EXPECT(%l3, 0x0000deae, 6)
+        /* the same chain from cached RAM, back to back as the loader runs
+         * it (from the PROM the fetches leave bubbles that hide the hazard) */
+        call mmu_tables_init
+        nop
+        call mmu_on
+        nop
+        set mulscc_umul, %l0
+        set mulscc_umul_end, %l1
+        set YF_RAM, %l2
+1:      ld [%l0], %o0
+        st %o0, [%l2]
+        add %l0, 4, %l0
+        cmp %l0, %l1
+        blu 1b
+        add %l2, 4, %l2
+        set YF_RAM, %l5
+        set 0x12345, %o0                /* the first call fills the I-cache */
+        set 0x6789, %o1
+        jmpl %l5, %o7
+        nop
+        set 0xdeadbeef, %o0
+        set 0x10001, %o1
+        jmpl %l5, %o7
+        nop
+        mov %o0, %l6
+        mov %o1, %l7
+        call mmu_off
+        nop
+        set 0x9d9cbeef, %l0
+        EXPECT_R(%l6, %l0, 11)
+        EXPECT(%l7, 0x0000deae, 12)
+        /* UDIV right after UMUL: the dividend's high word is the new Y */
+        set 0x10000, %l0
+        set 0x30000, %l1
+        umul %l0, %l1, %l2              /* Y:%l2 = 0x3:0x00000000 */
+        udiv %l2, %l1, %l3              /* 0x3_00000000 / 0x30000 = 0x10000 */
+        EXPECT(%l3, 0x10000, 7)
+        /* SMUL then RD %y */
+        mov -3, %l0
+        mov 5, %l1
+        smul %l0, %l1, %l2
+        rd %y, %l3
+        EXPECT(%l3, 0xffffffff, 8)
+        EXPECT(%l2, 0xfffffff1, 9)
+        END
