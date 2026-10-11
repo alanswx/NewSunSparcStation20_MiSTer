@@ -24,6 +24,7 @@
 #include "t_cache_diag.S"
 #include "t_cache_force.S"
 #include "t_buserr.S"
+#include "t_dma.S"
 
         .section .testtab, "a", @progbits
         .word 0, 0                      /* end of the test table */

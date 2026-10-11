@@ -103,4 +103,5 @@ SKIP cache: SS20 flash clears on the image: lock (VA 0x80000000) drops the locks
 FAIL cache: SS20 a C=0 page of main memory is cached; the walker's R/M writes reach the cached PTE
 SKIP buserr: a bypass load of an empty SBus slot traps tt 0x29; SFSR TO/AT/FT 5/FAV and SFAR, read clears, ldstub, OW, NF; a store is posted
 SKIP buserr: through a mapping: load tt 0x29 (AT 1, SFAR), fetch tt 0x21 (FT 5, no FAV), a table in the slot: tt 9 with FT 4, L 3, TO
-CPUTEST DONE pass=55 fail=12 skip=11
+SKIP dma: a transfer at a line every two cycles into cached lines, under stores and an I-cache flash clear, is what the module reads
+CPUTEST DONE pass=55 fail=12 skip=12

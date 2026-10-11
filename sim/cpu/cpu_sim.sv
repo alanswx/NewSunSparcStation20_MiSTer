@@ -12,7 +12,9 @@
 // 0xF_F110_0000; the timers (slavio_timer) at 0xF_F130_0000; the system
 // control registers (slavio_misc) at
 // 0xF_F1{6,8,A,F}0_0000; 0xE_0xxx_xxxx-0xE_3xxx_xxxx are empty SBus slots (bus
-// error). Anything else reads 0 and takes writes.
+// error) but for the harness's DMA engine in the page at 0xE_0000_1000
+// (below; the board's slot 0 times out there, so t_dma_snoop skips).
+// Anything else reads 0 and takes writes.
 //
 // Plusargs: +lat=N (memory latency, default 1), +gaps (a bubble between
 // burst beats), +trace (every commit), +dmem (every data access), +mem
@@ -79,6 +81,35 @@ module cpu_sim
     .mem_req_o(cmr), .mem_rsp_i(cms), .snoop_i(csn), .snoop_hold_o(c_hold),
     .wd_reset_o(wd_reset), .si_reset_o(si_reset), .halt_o(halt));
 
+  // ---- the harness's DMA engine (t_dma_snoop): registers at 0xE_0000_1000 ----
+  // +0 ID "DMA1", +4 destination PA, +8 lines, +C seed (a write starts the
+  // transfer), +10 busy, +14 cycles a line (>= 1). Each step writes one
+  // 32-byte line of RAM, word k = (pa + 4k) ^ seed, and broadcasts its snoop
+  // (module ID 0) in the same cycle, as the interconnect does for a DMA
+  // write; it waits while the snoop queue is nearly full (a real DMA master
+  // never writes faster than a line per eight bus cycles).
+  logic        dma_run, dma_step, dma_wr, dma_full;
+  logic [30:0] dma_line;
+  logic [35:0] dma_dst;
+  logic [31:0] dma_left, dma_seed, dma_rate, dma_cnt, dma_rd, dma_wr_word;
+  logic [2:0]  dma_reg;
+  assign dma_step    = dma_run && dma_cnt == 32'd0 && !dma_full;
+  assign dma_wr      = dma_step;
+  assign dma_line    = dma_dst[35:5];
+  assign dma_reg     = {mr.pa[4:3], mr.be[7:4] == 4'h0};
+  assign dma_wr_word = (mr.be[7:4] != 4'h0) ? mr.wdata[63:32] : mr.wdata[31:0];
+  always_comb begin
+    case (dma_reg)
+      3'd0: dma_rd = 32'h444D_4131;
+      3'd1: dma_rd = dma_dst[31:0];
+      3'd2: dma_rd = dma_left;
+      3'd3: dma_rd = dma_seed;
+      3'd4: dma_rd = {31'd0, dma_run};
+      3'd5: dma_rd = dma_rate;
+      default: dma_rd = '0;
+    endcase
+  end
+
   // ---- +plomb: the hybrid's bus shim between the module and the interconnect ----
   // (+jitter: the slave stalls acceptance and responses at random)
   mem_req_t pb_in, pmr;
@@ -96,7 +127,7 @@ module cpu_sim
   snoop_queue #(.DEPTH(16), .OWN_MID(4'd8), .DMA_MID(4'd0)) u_snq (
     .clk, .rst, .ld_i(cpu_ld), .hold_i(c_hold_q),
     .own_valid_i(psn_valid), .own_line_i(psn_line),
-    .dma_valid_i(1'b0), .dma_line_i('0),
+    .dma_valid_i(dma_wr), .dma_line_i(dma_line),
     .full_o(psn_full), .snoop_o(psn_b));
   // cpu_plomb's CPU-domain registers on both directions (FIN_EDGES 3)
   mem_req_t pb_in_q;
@@ -118,7 +149,18 @@ module cpu_sim
     .mem_req_o(pmr), .mem_rsp_i(ms));
   assign mr  = use_plomb ? pmr : cmr;
   assign cms = use_plomb ? pms : ms;
-  assign csn = use_plomb ? psn : sn;
+  // The direct interconnect's snoop broadcast: the model's own writes and
+  // the DMA engine's lines through the same queue as the hybrid's (which
+  // honours the module's hold)
+  snoop_t dsn;
+  logic   dsn_full;
+  snoop_queue #(.DEPTH(16), .OWN_MID(4'd8), .DMA_MID(4'd0)) u_dsnq (
+    .clk, .rst, .ld_i(1'b1), .hold_i(c_hold_q),
+    .own_valid_i(sn.valid), .own_line_i(sn.line),
+    .dma_valid_i(dma_wr), .dma_line_i(dma_line),
+    .full_o(dsn_full), .snoop_o(dsn));
+  assign csn      = use_plomb ? psn : dsn;
+  assign dma_full = use_plomb ? psn_full : dsn_full;
 
   // ---- memories ----
   logic [31:0] rom [0:262143];       // 1 MB of words
@@ -159,7 +201,7 @@ module cpu_sim
     .clk, .rst, .bus_i(tmr_req), .bus_o(tmr_rsp), .irq_sys(tmr_irq_sys), .irq_cpu(tmr_irq_cpu));
 
   // ---- the interconnect slave ----
-  logic is_ram, is_rom, is_escc, is_misc, is_timer, is_io, is_sbus_empty;
+  logic is_ram, is_rom, is_escc, is_misc, is_timer, is_io, is_sbus_empty, is_dma;
   always_comb begin
     is_ram  = mr.pa[35:24] == 12'h000;
     is_rom  = mr.pa[35:24] == 12'hFF0;
@@ -167,7 +209,8 @@ module cpu_sim
     is_misc = mr.pa[35:24] == 12'hFF1 && (mr.pa[23:20] == 4'h6 || mr.pa[23:20] == 4'h8 || mr.pa[23:20] == 4'hA || mr.pa[23:20] == 4'hF);
     is_timer = mr.pa[35:20] == 16'hFF13;
     is_io   = is_escc | is_misc | is_timer;
-    is_sbus_empty = mr.pa[35:32] == 4'hE && mr.pa[31:30] == 2'b00;
+    is_dma  = mr.pa[35:12] == 24'hE00001;
+    is_sbus_empty = mr.pa[35:32] == 4'hE && mr.pa[31:30] == 2'b00 && !is_dma;
   end
 
   int lat;
@@ -219,7 +262,19 @@ module cpu_sim
     sn <= '0;
     if (rst) begin
       mst <= M_IDLE; m_cnt <= 0; beat <= '0; gap_q <= 1'b0; esc_started <= 1'b0;
+      dma_run <= 1'b0; dma_dst <= '0; dma_left <= '0; dma_seed <= '0; dma_rate <= 32'd1; dma_cnt <= '0;
     end else begin
+      // ---- the DMA engine: a line a step ----
+      if (dma_step) begin
+        for (int k = 0; k < 4; k++)
+          ram[dma_dst[23:3] + 21'(k)] <= {(dma_dst[31:0] + 32'(8 * k)) ^ dma_seed, (dma_dst[31:0] + 32'(8 * k + 4)) ^ dma_seed};
+        dma_dst  <= dma_dst + 36'd32;
+        dma_left <= dma_left - 32'd1;
+        dma_cnt  <= dma_rate - 32'd1;
+        if (dma_left == 32'd1) dma_run <= 1'b0;
+      end else if (dma_run && dma_cnt != 32'd0) begin
+        dma_cnt <= dma_cnt - 32'd1;
+      end
       case (mst)
         M_IDLE: begin
           if (mr.valid && !ms.ack) begin        // not the request just acked
@@ -242,6 +297,18 @@ module cpu_sim
             ms.ack <= 1'b1;
             if (is_sbus_empty) begin
               ms.err <= 1'b1;
+              mst <= M_IDLE;
+            end else if (is_dma) begin                // the harness's DMA engine
+              ms.rdata <= {2{dma_rd}};
+              if (mr.write) begin
+                case (dma_reg)
+                  3'd1: dma_dst  <= {4'h0, dma_wr_word};
+                  3'd2: dma_left <= dma_wr_word;
+                  3'd3: begin dma_seed <= dma_wr_word; dma_run <= dma_left != 32'd0; dma_cnt <= '0; end
+                  3'd5: dma_rate <= (dma_wr_word == 32'd0) ? 32'd1 : dma_wr_word;
+                  default: ;
+                endcase
+              end
               mst <= M_IDLE;
             end else begin
               ms.rdata <= read_dw(bpa);
