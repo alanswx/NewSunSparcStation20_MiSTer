@@ -301,6 +301,8 @@ struct SdHost {
     enum { IDLE, DELAY, RD_WORD, WR_WORD, END } st = IDLE;
     int slot = -1, word = 0, sub = 0, wait = 0, nblk = 1;
     int latency = 40;   // request to ack: Main's poll and SD latency, shortened
+    bool sd_log = false;   // --sd-log: print every block request
+    uint64_t cyc_now = 0;
     bool is_write = false;
     uint32_t lba = 0;
     uint8_t buf[16384];
@@ -317,6 +319,7 @@ struct SdHost {
                 is_write = sd_wr & (1 << n);
                 lba = lbas[n];
                 nblk = n < 3 ? t->sd_blk_cnt + 1 : 1;
+                if (sd_log) fprintf(stderr, "[sd] %" PRIu64 " slot %d %s lba %u x%d\n", cyc_now, n, is_write ? "WR" : "RD", lba, nblk);
                 memset(buf, 0, sizeof buf);
                 Disk *d = disks[n];
                 if (!is_write && n == 2 && cd_audio && lba >= 0x80000000u) {
@@ -515,6 +518,7 @@ static void usage() {
         "  --full-download     send the whole ROM through ioctl (slow; default: preload\n"
         "                      it into DDR and send only the last word)\n"
         "  --dl-gap N          cycles between download words (default 32)\n"
+        "  --sd-log            print every SD block request (cycle, slot, LBA, count)\n"
         "  --ddr-log N         print the first N DDR commands (core addresses)\n"
         "  --ddr-log-from C    ... starting at cycle C\n"
         "  --ddr-log-range LO HI  ... only core byte addresses in [LO, HI) (hex)\n"
@@ -537,6 +541,7 @@ int main(int argc, char **argv) {
     int dl_gap = 32;
     uint64_t ddr_log_from = 0;
     uint32_t ddr_log_lo = 0, ddr_log_hi = 0;
+    bool sd_log = false;
     int ram_fill = -1;            // --ram-fill: every RAM byte starts as this (the board's DDR holds leftovers; the sim's is zeros)
     bool readonly = false, video = false, noautoboot = false, cg3 = false,
          nocache = false, l2tlb = false, quiet = false, progress = false, stress = false, gaps = false,
@@ -572,6 +577,7 @@ int main(int argc, char **argv) {
         else if (a == "--l2tlb") l2tlb = true;
         else if (a == "--frame") frame_path = next();
         else if (a == "--ram-fill") ram_fill = (int)strtoul(next().c_str(), nullptr, 0) & 0xFF;
+        else if (a == "--sd-log") sd_log = true;
         else if (a == "--ddr-stress") stress = true;
         else if (a == "--ddr-gaps") gaps = true;
         else if (a == "--eth") eth = true;
@@ -678,6 +684,7 @@ int main(int argc, char **argv) {
     ddr.gaps = gaps;
     ddr.log_left = ddr_log;
     ddr.log_from = ddr_log_from;
+    sd.sd_log = sd_log;
     ddr.log_lo = ddr_log_lo; ddr.log_hi = ddr_log_hi;
     Uart uart((double)SIM_SYSFREQ / 115200.0);
     Video vid;
@@ -735,6 +742,7 @@ int main(int argc, char **argv) {
         // Models, driving the inputs for the next cycle.
         ddr.step(t, cyc, rd, we, addr, bc, din, be, busy);
         if (eth) ethh.step(ddr, cyc);
+        sd.cyc_now = cyc;
         sd.step(t, sd_rd, sd_wr, lbas, sdin);
         vid.step(t->vga_r, t->vga_g, t->vga_b, t->vga_de, t->vga_vs);
 
