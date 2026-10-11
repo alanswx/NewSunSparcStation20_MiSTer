@@ -89,15 +89,16 @@ module plomb_master
 
   mem_req_t rq;                      // the request, latched at acceptance
 
-  // The write fence. A posted write is still travelling down the memory
-  // path when the requester's next read goes out, and the DDR bridge lets
-  // a read overtake it (the MMU's walker re-read a page-table word just
-  // stored and got the old one). So before the first read after one or more
-  // posted RAM writes, the shim reads the last written word back, again
-  // until the bytes it wrote come back (a read may overtake the write too),
-  // bounded; writes are performed in order, so the last one landing means
-  // all did. Device writes are not fenced (a read of a device register has
-  // side effects, and that path is short and in order).
+  // The write fence. A posted RAM write is still travelling down the memory
+  // path when the requester's next read, or its next device write, goes
+  // out: a read may overtake it in the DDR bridge, and a device write takes
+  // the short I/O path (the IOMMU reading page-table entries the CPU had
+  // just stored, told to flush and start a DMA, used the old ones). So
+  // before the first read or device write after one or more posted RAM
+  // writes, the shim reads the last written word back, again until the
+  // bytes it wrote come back, bounded; writes land in order, so the last one
+  // landing means all did. A device register is never read back (side
+  // effects); RAM writes after RAM writes are not fenced.
   logic        wfence;               // a RAM write has been posted since the last read
   logic [35:0] fence_pa;
   logic [31:0] fence_d;              // the last written word and its lanes
@@ -196,9 +197,15 @@ module plomb_master
         ack_pend <= 1'b0;
       end
       case (st)
+        // A read, or a write outside RAM (a device register: the IOMMU's
+        // flush, a DMA engine's start — the device path is short and would
+        // complete while the RAM writes before it, page tables for the DMA,
+        // are still travelling to the DDR), first waits for the posted RAM
+        // writes to land.
         S_IDLE: if (req_i.valid) begin
           rq <= req_i;
-          st <= (!req_i.write && wfence) ? S_FENCE : S_RUN;
+          st <= (wfence && (!req_i.write || !(mmu_pkg::cacheable_pa(req_i.pa) && req_i.pa[35:32] == 4'h0)))
+                ? S_FENCE : S_RUN;
           f_issued <= 1'b0; f_tries <= '0;
           iss <= '0; rcv <= '0; aborted <= 1'b0; err_acc <= 1'b0;
         end
