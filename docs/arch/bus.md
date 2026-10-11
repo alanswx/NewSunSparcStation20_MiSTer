@@ -115,7 +115,11 @@ Protocol:
   `snoop` broadcast in the cycle of its ack, as the line it touches; a
   cache drops a valid line with that address (write-through caches never
   hold the only copy, so dropping is always safe; E3, `t_smp_coherent`,
-  `t_selfmod`);
+  `t_selfmod`); a module whose snoop queue is nearly full raises
+  `snoop_hold_o`, and the interconnect delivers it no snoop while that is
+  high (it queues them, holding write acceptance if its own queue fills) —
+  a snoop may never be dropped: a DMA transfer writes a line every few
+  cycles for thousands of lines, and one lost snoop is a stale line;
 - the module ID `mid` (8 + n on the SS20) comes from the module's `mid_i`
   and goes with every request; the arbiter and the MSI's MID register use
   it; the arbiter-enable register (`t_msi`) parks a module by not granting

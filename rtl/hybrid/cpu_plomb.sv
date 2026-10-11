@@ -19,9 +19,10 @@
 // The caches snoop two sources: the module's own acknowledged write beats
 // (from plomb_master, with MID) and the write beats the I/O master gets
 // accepted on its own PLOMB bus (DMA into memory; dma_wr_i/dma_a_i, module
-// ID 0). One snoop goes to the module per CPU cycle: the module's own first,
-// the DMA ones through a short queue in which consecutive beats of one line
-// fold.
+// ID 0). Both go through one queue (snoop_queue) in which consecutive beats
+// of one line fold; one snoop goes to the module per CPU cycle, none while
+// the module's caches hold (snoop_hold_o), and the module's own writes wait
+// while the queue is nearly full.
 
 module cpu_plomb
   import mem_pkg::*;
@@ -70,6 +71,7 @@ module cpu_plomb
   mem_req_t rq_cpu, rq;
   mem_rsp_t rs, rs_cpu;
   snoop_t   sn, sn_cpu;
+  logic        hold_cpu, hold;
   logic        own_valid, sn_full;
   logic [30:0] own_line;
 
@@ -77,11 +79,12 @@ module cpu_plomb
     rq     <= rq_cpu;
     rs_cpu <= rs;
     sn_cpu <= sn;
+    hold   <= hold_cpu;
   end
 
   cpu_module #(.HAS_FPU(1'b1), .RAM_MB(12'(RAM_MB)), .SS20(1'b1), .NCPU_M1(2'd0)) u_cpu (
     .clk(clk_cpu), .rst, .mid_i(4'(MID)), .irl_i,
-    .mem_req_o(rq_cpu), .mem_rsp_i(rs_cpu), .snoop_i(sn_cpu),
+    .mem_req_o(rq_cpu), .mem_rsp_i(rs_cpu), .snoop_i(sn_cpu), .snoop_hold_o(hold_cpu),
     .wd_reset_o, .si_reset_o, .halt_o);
 
   plomb_master #(.MID(4'(MID)), .FIN_EDGES(3)) u_pb (
@@ -93,7 +96,7 @@ module cpu_plomb
 
   // ---- the snoops: own and DMA write beats, one per CPU cycle ----
   snoop_queue #(.DEPTH(16), .OWN_MID(4'(MID)), .DMA_MID(4'd0)) u_snq (
-    .clk, .rst, .ld_i(cpu_ld_i),
+    .clk, .rst, .ld_i(cpu_ld_i), .hold_i(hold),
     .own_valid_i(own_valid), .own_line_i(own_line),
     .dma_valid_i(dma_wr_i), .dma_line_i(dma_a_i[35:5]),
     .full_o(sn_full), .snoop_o(sn));

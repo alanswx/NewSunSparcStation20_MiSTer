@@ -33,6 +33,7 @@ module cpu_module
   output mem_pkg::mem_req_t mem_req_o,
   input  mem_pkg::mem_rsp_t mem_rsp_i,
   input  mem_pkg::snoop_t   snoop_i,
+  output logic              snoop_hold_o,   // a cache's snoop queue is nearly full: deliver no snoop
 
   output logic        wd_reset_o,     // a watchdog reset was taken (one cycle)
   output logic        si_reset_o,     // software-internal reset requested (one cycle)
@@ -132,12 +133,14 @@ module cpu_module
   logic [63:0] ic_dg_rdata, dc_dg_rdata;
   mem_req_t    mem_i, mem_d;
   mem_rsp_t    mem_i_r, mem_d_r;
+  logic        ic_hold, dc_hold;
+  assign snoop_hold_o = ic_hold | dc_hold;
 
   l1cache #(.ICACHE(1'b1)) u_ic (
     .clk, .rst, .enable_i(ie), .mid_i,
     .req_i(ic_req), .we_i(1'b0), .atomic_i(1'b0), .cacheable_i(ic_cacheable), .pa_i(ic_pa), .idx_i(ic_idx), .be_i(8'hFF), .wdata_i(64'd0),
     .done_o(ic_done), .rdata_o(ic_rdata), .err_o(ic_err),
-    .inval_i(ic_inval), .inval_line_i(inval_line), .snoop_i,
+    .inval_i(ic_inval), .inval_line_i(inval_line), .snoop_i, .snoop_hold_o(ic_hold),
     .flash_v_i(ic_flash_v), .flash_l_i(ic_flash_l), .flash_busy_o(ic_flash_busy),
     .diag_req_i(ic_dg_req), .diag_we_i(dmr.write), .diag_tag_i(!dmr.asi[0]), .diag_va_i(dmr.va), .diag_wdata_i(diag_wdata),
     .diag_done_o(ic_dg_done), .diag_rdata_o(ic_dg_rdata),
@@ -162,7 +165,7 @@ module cpu_module
     .clk, .rst, .enable_i(de), .mid_i,
     .req_i(dc_req), .we_i(dc_we), .atomic_i(dc_atomic), .cacheable_i(dc_cacheable), .pa_i(dc_pa), .idx_i(dc_idx), .be_i(dc_be), .wdata_i(dc_wdata),
     .done_o(dc_done), .rdata_o(dc_rdata), .err_o(dc_err),
-    .inval_i(dc_inval_any), .inval_line_i(dc_inval_line), .snoop_i,
+    .inval_i(dc_inval_any), .inval_line_i(dc_inval_line), .snoop_i, .snoop_hold_o(dc_hold),
     .flash_v_i(dc_flash_v), .flash_l_i(dc_flash_l), .flash_busy_o(dc_flash_busy),
     .diag_req_i(dc_dg_req), .diag_we_i(dmr.write), .diag_tag_i(!dmr.asi[0]), .diag_va_i(dmr.va), .diag_wdata_i(diag_wdata),
     .diag_done_o(dc_dg_done), .diag_rdata_o(dc_dg_rdata),

@@ -13,7 +13,9 @@
 // old core's DMA writes a line in eight beats); the shim holds its own write
 // beats while full_o is high, so the module's stores cannot starve the DMA
 // snoops (a polling loop that stores every iteration did, and the cached
-// copy of a DMA buffer went stale).
+// copy of a DMA buffer went stale). While the module holds (hold_i: its
+// caches' queues are nearly full) nothing is delivered; the queue absorbs
+// the DMA beats meanwhile.
 
 module snoop_queue
   import mem_pkg::*;
@@ -25,6 +27,7 @@ module snoop_queue
   input  logic        clk,
   input  logic        rst,
   input  logic        ld_i,            // the cycle whose end loads the register the CPU sees
+  input  logic        hold_i,          // the module's caches cannot take a snoop: deliver none
 
   input  logic        own_valid_i,
   input  logic [30:0] own_line_i,
@@ -51,7 +54,7 @@ module snoop_queue
   assign full_o   = n > DEPTH[AW:0] - 4;
 
   logic pop;
-  assign pop = ld_i && n != '0;
+  assign pop = ld_i && n != '0 && !hold_i;
 
   always_ff @(posedge clk) begin
     if (rst) begin
@@ -71,7 +74,7 @@ module snoop_queue
       if (pop) rp <= rp + 1'b1;
       n <= n + {{AW{1'b0}}, push_dma} + {{AW{1'b0}}, push_own} - {{AW{1'b0}}, pop};
       if (ld_i) begin
-        snoop_o.valid <= n != '0;
+        snoop_o.valid <= pop;
         snoop_o.line  <= q_line[rp];
         snoop_o.mid   <= q_mid[rp];
       end

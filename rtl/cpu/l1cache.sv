@@ -28,11 +28,17 @@
 // burst) and answers after the last beat; a write goes to memory and
 // updates a hit line; an atomic drops the line and does a locked read then
 // the write; an uncacheable access is a single beat. A snoop or line
-// invalidation reads the set's tags on the second port and clears the
-// matching valid bit; a snoop that hits a line being filled stops that
-// fill from being validated. A flash clear sweeps the tag (or lock) words
-// of every set, two cycles a set, with the CPU side held off meanwhile
-// (flash_busy_o).
+// invalidation goes through a 16-entry queue (two pushes a cycle: a snoop
+// and an invalidation), then reads the set's tags on the second port and
+// clears the matching valid bit: one entry a cycle while they miss, two
+// more cycles for one that hits; the queue has priority over a flash sweep
+// and raises snoop_hold_o when it is nearly full, which the interconnect
+// must honour by delivering no further snoops (a DMA transfer writes a
+// line every few cycles for thousands of lines; a lost snoop is a stale
+// line, which is how a DMA buffer re-read by OpenBIOS came back old). A
+// snoop that hits a line being filled stops that fill from being
+// validated. A flash clear sweeps the tag (or lock) words of every set,
+// two cycles a set, with the CPU side held off meanwhile (flash_busy_o).
 
 module l1cache
   import mmu_pkg::*;
@@ -61,6 +67,7 @@ module l1cache
   input  logic        inval_i,
   input  logic [35:5] inval_line_i,
   input  mem_pkg::snoop_t snoop_i,
+  output logic        snoop_hold_o,      // the queue is nearly full: no snoop may be delivered
 
   // Flash clear: valid+MRU bits, lock bits (a sweep; busy meanwhile)
   input  logic        flash_v_i,
@@ -225,9 +232,10 @@ module l1cache
   // ---------------------------------------------------------------------
   // Snoop / invalidation queue
   // ---------------------------------------------------------------------
-  logic [31:0] sq_line [8];        // {force, line[35:5]}: force ignores the mid rule
-  logic [2:0]  sq_wr, sq_rd;
-  logic [3:0]  sq_count;
+  localparam int SQ_DEPTH = 16;
+  logic [31:0] sq_line [SQ_DEPTH];  // {force, line[35:5]}: force ignores the mid rule
+  logic [3:0]  sq_wr, sq_rd;
+  logic [4:0]  sq_count;
   logic        sq_push, sq_push2;
   logic [31:0] sq_in1, sq_in2;
   logic [1:0]  sq_pushes;
@@ -240,6 +248,10 @@ module l1cache
     sq_in2   = {1'b0, snoop_i.line};
     sq_pushes = {1'b0, sq_push} + {1'b0, sq_push2};
   end
+  // Hold at 10 of 16: the hold reaches the interconnect through registers
+  // (the hybrid: two), so a few snoops are still on their way, and the
+  // module's own flush ASIs may push invalidations meanwhile.
+  assign snoop_hold_o = sq_count >= 5'd10;
   typedef enum logic [1:0] {Q_IDLE, Q_CMP, Q_WRITE} qstate_t;
   qstate_t     qs;
   logic [31:0] q_cur;
@@ -321,8 +333,12 @@ module l1cache
   assign fill_end_go     = st == S_DONE && !fill_err && !fill_snooped;
   assign atomic_inval_go = st == S_LOOKUP && r_atomic && hit;
   assign snoop_wr_go     = qs == Q_WRITE;
-  assign flash_go        = fs != F_IDLE && !fill_tag_go && !fill_end_go && !atomic_inval_go && !snoop_wr_go;
-  assign snoop_rd_go     = qs == Q_IDLE && sq_count != 4'd0 && !fill_tag_go && !fill_end_go && !atomic_inval_go && fs == F_IDLE;
+  // The queue drains one entry a cycle: the next entry's tags are read in
+  // the cycle the current one is compared (and found absent). A sweep in
+  // progress waits (it re-reads a set whose write it missed).
+  assign snoop_rd_go     = (qs == Q_IDLE || (qs == Q_CMP && !q_any)) && sq_count != 5'd0 &&
+                           !fill_tag_go && !fill_end_go && !atomic_inval_go;
+  assign flash_go        = fs != F_IDLE && !fill_tag_go && !fill_end_go && !atomic_inval_go && !snoop_wr_go && !snoop_rd_go;
   assign dg_tag_go       = ds == D_IDLE && diag_req_i && diag_tag_i && !fill_tag_go && !fill_end_go && !atomic_inval_go &&
                            !snoop_wr_go && !snoop_rd_go && fs == F_IDLE;
   assign dg_data_go      = ds == D_IDLE && diag_req_i && !diag_tag_i && !fill_beat_now && !st_hit_now;
@@ -354,14 +370,14 @@ module l1cache
       tb_addr = r_set; tb_we_way[hit_idx] = 1'b1; tb_wdata[hit_idx] = ta_rdata[hit_idx] & ~vbit_of(r_pa);
     end else if (snoop_wr_go) begin
       tb_addr = q_set; tb_we_way[q_way_q] = 1'b1; tb_wdata[q_way_q] = q_word_q;
+    end else if (snoop_rd_go) begin
+      tb_addr = sq_line[sq_rd][6 -: SET_W];
     end else if (flash_go) begin
       tb_addr = f_set;
       if (fs == F_WRITE && !f_kind_l) begin
         tb_we_way = '1;
         for (int i = 0; i < WAYS; i++) tb_wdata[i] = tb_rdata[i] & ~TAG_VMASK;
       end
-    end else if (snoop_rd_go) begin
-      tb_addr = sq_line[sq_rd][6 -: SET_W];
     end else if (dg_tag_go) begin
       tb_addr = dg_set;
       if (diag_we_i && dg_t == 2'd2 && dg_way_ok) begin
@@ -544,29 +560,31 @@ module l1cache
 
       // ---- the snoop queue: read the set's tags, compare, clear the valid bit ----
       if (sq_push && sq_push2) begin
-        sq_line[sq_wr] <= sq_in1; sq_line[sq_wr + 3'd1] <= sq_in2;
-        sq_wr <= sq_wr + 3'd2;
+        sq_line[sq_wr] <= sq_in1; sq_line[sq_wr + 4'd1] <= sq_in2;
+        sq_wr <= sq_wr + 4'd2;
       end else if (sq_push || sq_push2) begin
         sq_line[sq_wr] <= sq_push ? sq_in1 : sq_in2;
-        sq_wr <= sq_wr + 3'd1;
+        sq_wr <= sq_wr + 4'd1;
       end
-      sq_count <= sq_count + {2'd0, sq_pushes} - {3'd0, snoop_rd_go};
+      sq_count <= sq_count + {3'd0, sq_pushes} - {4'd0, snoop_rd_go};
+`ifndef SYNTHESIS
+      if (sq_count + {3'd0, sq_pushes} > 5'(SQ_DEPTH))
+        $error("l1cache(ICACHE=%0d): snoop queue overflow (%0d + %0d)", ICACHE, sq_count, sq_pushes);
+`endif
+      if (snoop_rd_go) begin              // the next entry: its set's tags are read now
+        q_cur <= sq_line[sq_rd];
+        sq_rd <= sq_rd + 4'd1;
+      end
       case (qs)
-        Q_IDLE: begin
-          if (snoop_rd_go) begin
-            q_cur <= sq_line[sq_rd];
-            sq_rd <= sq_rd + 3'd1;
-            qs <= Q_CMP;
-          end
-        end
+        Q_IDLE: if (snoop_rd_go) qs <= Q_CMP;
         Q_CMP: begin
           // the tags of the set are on port B now
           if (q_any) begin
             q_way_q <= q_idx;
             q_word_q <= tb_rdata[q_idx] & ~vbit_of(q_pa);
             qs <= Q_WRITE;
-          end else begin
-            qs <= Q_IDLE;
+          end else if (!snoop_rd_go) begin
+            qs <= Q_IDLE;                 // else the next entry is compared next cycle
           end
         end
         Q_WRITE: qs <= Q_IDLE;            // the word is written this cycle (snoop_wr_go)

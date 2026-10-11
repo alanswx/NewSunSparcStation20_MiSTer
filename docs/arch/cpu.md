@@ -266,7 +266,8 @@ TLB (MCNTL bit 6) as an option (`t_mmu_l2`).
 
 `cpu_module` wraps the four: the interconnect master port (fetch and data
 sharing one port with the fetch side given priority on a miss), the snoop
-input, `mid_i` (the MBus module ID, 8 + n), `irl_i`, the module reset
+input with its hold output (`snoop_hold_o`: a cache's 16-entry snoop queue
+is nearly full, bus.md), `mid_i` (the MBus module ID, 8 + n), `irl_i`, the module reset
 with its causes (power-on, software, the watchdog from `error_o`), and the
 module-error output. Two modules in the first SS20 build, up to four if
 they fit (VERILOG-PLAN.md §1.3).

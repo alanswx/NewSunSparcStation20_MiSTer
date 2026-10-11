@@ -68,9 +68,15 @@ module cpu_sim
     assign cpu_ld   = 1'b1;
   end
 
+  // The module's snoop hold: honoured by the shim's queue (+plomb); the
+  // direct interconnect model broadcasts the module's own writes only, at
+  // most one every few cycles, which the caches always keep up with.
+  logic     c_hold, c_hold_q;
+  always_ff @(posedge cpu_clk) c_hold_q <= c_hold;
+
   cpu_module #(.HAS_FPU(1'b1), .RAM_MB(12'd16)) u_cpu (
     .clk(cpu_clk), .rst, .mid_i(4'd8), .irl_i(4'd0),
-    .mem_req_o(cmr), .mem_rsp_i(cms), .snoop_i(csn),
+    .mem_req_o(cmr), .mem_rsp_i(cms), .snoop_i(csn), .snoop_hold_o(c_hold),
     .wd_reset_o(wd_reset), .si_reset_o(si_reset), .halt_o(halt));
 
   // ---- +plomb: the hybrid's bus shim between the module and the interconnect ----
@@ -88,7 +94,7 @@ module cpu_sim
   logic [30:0] psn_line;
   snoop_t   psn_b;                         // the snoop register the shim side builds (as cpu_plomb does)
   snoop_queue #(.DEPTH(16), .OWN_MID(4'd8), .DMA_MID(4'd0)) u_snq (
-    .clk, .rst, .ld_i(cpu_ld),
+    .clk, .rst, .ld_i(cpu_ld), .hold_i(c_hold_q),
     .own_valid_i(psn_valid), .own_line_i(psn_line),
     .dma_valid_i(1'b0), .dma_line_i('0),
     .full_o(psn_full), .snoop_o(psn_b));
