@@ -63,7 +63,7 @@ i = b[0x1fd8:0x1fe8]
 x = 0
 for v in i:
     x ^= v
-ok = (len(b) == 8192 and not any(b[:0x1fd8]) and not any(b[0x1fe8:])
+ok = (len(b) == 8192 and not any(b[:0x1fd8]) and not any(b[0x1fe8:0x1ff8])   # 0x1FF8-0x1FFF: the clock registers, in the image by design
       and i[0] == 1 and i[1] == t and i[2:5] == bytes([8, 0, 0x20])
       and i[5:8] == i[12:15] and x == 0)
 print(("ok " if ok else "bad ") + i.hex())
