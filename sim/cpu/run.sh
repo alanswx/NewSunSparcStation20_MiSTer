@@ -15,7 +15,7 @@ set -u
 here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/../.." && pwd)
 obj="$here/obj"
-main=main_cpu; ALL=0; QEMU=0; WD=0; PLUS=""; HALF=0
+main=main_cpu; ALL=0; QEMU=0; WD=0; PLUS=""; HALF=0; RESNOOP=128
 for a in "$@"; do
   case "$a" in
     --all) ALL=1; main=main ;;
@@ -23,6 +23,8 @@ for a in "$@"; do
     --wd) WD=1; main=wdtest; PLUS="$PLUS +wd" ;;
     --bench=*) WD=2; main="${a#--bench=}" ;;
     +half) HALF=1 ;;
+    +noresnoop) RESNOOP=0 ;;
+    +resnoop=*) RESNOOP="${a#+resnoop=}" ;;   # the shim's delayed second DMA snoop off (t_dma_poll with +dmalag must then fail)
     +*) PLUS="$PLUS $a" ;;
     *) echo "unknown argument $a" >&2; exit 2 ;;
   esac
@@ -60,12 +62,13 @@ if [ "$WD" = 0 ] && { [ "$QEMU" = 1 ] || [ ! -f "$ref" ]; }; then
   echo "qemu reference: $ref ($(grep -c . "$ref") lines)"
 fi
 srcs="rtl/pkg/iobus_pkg.sv rtl/pkg/sun4m_pkg.sv rtl/pkg/cpu_pkg.sv rtl/pkg/fpu_pkg.sv rtl/pkg/mem_pkg.sv rtl/pkg/mmu_pkg.sv rtl/lib/*.sv rtl/cpu/*.sv rtl/hybrid/*.sv sim/cpu/plomb_slave_model.sv rtl/obio/escc.sv rtl/obio/escc_chan.sv rtl/obio/slavio_misc.sv rtl/obio/slavio_timer.sv sim/cpu/cpu_sim.sv"
+# one build directory per parameter set: Verilator does not rebuild for a -G change alone
 if ! verilator --binary --timing --timescale 1ns/1ps -Wall -Wno-DECLFILENAME -Wno-UNUSEDSIGNAL -Wno-UNUSEDPARAM \
-      -Wno-WIDTHTRUNC -Wno-WIDTHEXPAND -Wno-BLKSEQ -Wno-PROCASSINIT --top-module cpu_sim --Mdir "$obj/build" -o Vcpu_sim \
-      -GROM="\"$obj/rom.hex\"" -GHALF=$HALF $srcs > "$obj/build.log" 2>&1; then
+      -Wno-WIDTHTRUNC -Wno-WIDTHEXPAND -Wno-BLKSEQ -Wno-PROCASSINIT --top-module cpu_sim --Mdir "$obj/build-h$HALF-r$RESNOOP" -o Vcpu_sim \
+      -GROM="\"$obj/rom.hex\"" -GHALF=$HALF -GRESNOOP=$RESNOOP $srcs > "$obj/build.log" 2>&1; then
   echo "build failed: see $obj/build.log"; grep -E '%Error|%Warning' "$obj/build.log" | head -20; exit 1
 fi
-"$obj/build/Vcpu_sim" $PLUS | tr -d '\r' | tee "$obj/run.log" | tail -3
+"$obj/build-h$HALF-r$RESNOOP/Vcpu_sim" $PLUS | tr -d '\r' | tee "$obj/run.log" | tail -3
 if [ "$WD" = 2 ]; then
   grep -E 'passes|cycles|PASS|FAIL|DONE' "$obj/run.log"; exit 0
 fi

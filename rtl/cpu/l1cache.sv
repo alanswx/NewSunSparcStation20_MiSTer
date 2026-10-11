@@ -252,7 +252,7 @@ module l1cache
   // (the hybrid: two), so a few snoops are still on their way, and the
   // module's own flush ASIs may push invalidations meanwhile.
   assign snoop_hold_o = sq_count >= 5'd10;
-  typedef enum logic [1:0] {Q_IDLE, Q_CMP, Q_WRITE} qstate_t;
+  typedef enum logic [1:0] {Q_IDLE, Q_CMP, Q_WRITE, Q_RETRY} qstate_t;
   qstate_t     qs;
   logic [31:0] q_cur;
   logic [SET_W-1:0] q_set;
@@ -330,17 +330,25 @@ module l1cache
   assign st_hit_now = st == S_WRITE_WAIT && hit && !st_hit_written && r_cacheable;
   logic fill_tag_go, fill_end_go, atomic_inval_go, snoop_rd_go, snoop_wr_go, flash_go, dg_tag_go, dg_data_go, mru_go;
   assign fill_tag_go     = st == S_FILL_START;
-  assign fill_end_go     = st == S_DONE && !fill_err && !fill_snooped;
+  // (a queued snoop compared in this very cycle read the tags before the fill's
+  // validation: it cannot match, so it vetoes the validation instead)
+  assign fill_end_go     = st == S_DONE && !fill_err && !fill_snooped && !(qs == Q_CMP && q_cur[30:0] == r_pa[35:5]);
   assign atomic_inval_go = st == S_LOOKUP && r_atomic && hit;
-  assign snoop_wr_go     = qs == Q_WRITE;
+  // The invalidation's write, and the re-read after it lost the tag port to
+  // a fill's start or end or an atomic's invalidation (that write may have
+  // changed the set: the compare is done again). Dropping it, as this cache
+  // once did, left a line valid that a DMA had overwritten.
+  logic q_retry_go;
+  assign snoop_wr_go     = qs == Q_WRITE && !fill_tag_go && !fill_end_go && !atomic_inval_go;
+  assign q_retry_go      = qs == Q_RETRY && !fill_tag_go && !fill_end_go && !atomic_inval_go;
   // The queue drains one entry a cycle: the next entry's tags are read in
   // the cycle the current one is compared (and found absent). A sweep in
   // progress waits (it re-reads a set whose write it missed).
   assign snoop_rd_go     = (qs == Q_IDLE || (qs == Q_CMP && !q_any)) && sq_count != 5'd0 &&
                            !fill_tag_go && !fill_end_go && !atomic_inval_go;
-  assign flash_go        = fs != F_IDLE && !fill_tag_go && !fill_end_go && !atomic_inval_go && !snoop_wr_go && !snoop_rd_go;
+  assign flash_go        = fs != F_IDLE && !fill_tag_go && !fill_end_go && !atomic_inval_go && !snoop_wr_go && !snoop_rd_go && !q_retry_go;
   assign dg_tag_go       = ds == D_IDLE && diag_req_i && diag_tag_i && !fill_tag_go && !fill_end_go && !atomic_inval_go &&
-                           !snoop_wr_go && !snoop_rd_go && fs == F_IDLE;
+                           !snoop_wr_go && !snoop_rd_go && !q_retry_go && fs == F_IDLE;
   assign dg_data_go      = ds == D_IDLE && diag_req_i && !diag_tag_i && !fill_beat_now && !st_hit_now;
   assign mru_go          = (st == S_LOOKUP && !r_atomic && hit) || fill_end_go;
 
@@ -370,6 +378,8 @@ module l1cache
       tb_addr = r_set; tb_we_way[hit_idx] = 1'b1; tb_wdata[hit_idx] = ta_rdata[hit_idx] & ~vbit_of(r_pa);
     end else if (snoop_wr_go) begin
       tb_addr = q_set; tb_we_way[q_way_q] = 1'b1; tb_wdata[q_way_q] = q_word_q;
+    end else if (q_retry_go) begin
+      tb_addr = q_set;
     end else if (snoop_rd_go) begin
       tb_addr = sq_line[sq_rd][6 -: SET_W];
     end else if (flash_go) begin
@@ -499,9 +509,6 @@ module l1cache
             fill_beat <= fill_beat + 2'd1;
             if (fill_beat == 2'd3 || mem_rsp_i.err) st <= S_DONE;
           end
-          // a write to this line while it fills: do not keep it
-          if ((snoop_i.valid && (ICACHE || !snoop_mine) && snoop_i.line == r_pa[35:5]) ||
-              (inval_i && inval_line_i == r_pa[35:5])) fill_snooped <= 1'b1;
         end
         S_DONE: begin
           // validate (the tag word with the valid bit, and the MRU word,
@@ -545,6 +552,16 @@ module l1cache
         default: st <= S_IDLE;
       endcase
 
+      // A write to the line being filled -- seen on the broadcast from the
+      // miss decision on, or taken from the snoop queue while the fill's tag
+      // is not yet valid (the queue's compare cannot match it then) -- means
+      // the line is not kept: its data may predate the write.
+      if ((st == S_LOOKUP || st == S_FILL_START || st == S_FILL) &&
+          ((snoop_i.valid && (ICACHE || !snoop_mine) && snoop_i.line == r_pa[35:5]) ||
+           (inval_i && inval_line_i == r_pa[35:5]) ||
+           (qs == Q_CMP && q_cur[30:0] == r_pa[35:5])))   // queued entries were filtered at the push
+        fill_snooped <= 1'b1;
+
       // Taking a request (in S_IDLE, or in the cycle a read hit answers)
       if (accept) begin
         r_we <= we_i; r_atomic <= atomic_i; r_cacheable <= cacheable_i && enable_i;
@@ -587,7 +604,8 @@ module l1cache
             qs <= Q_IDLE;                 // else the next entry is compared next cycle
           end
         end
-        Q_WRITE: qs <= Q_IDLE;            // the word is written this cycle (snoop_wr_go)
+        Q_WRITE: qs <= snoop_wr_go ? Q_IDLE : Q_RETRY;   // written this cycle, or read the set again
+        Q_RETRY: if (q_retry_go) qs <= Q_CMP;
         default: qs <= Q_IDLE;
       endcase
 

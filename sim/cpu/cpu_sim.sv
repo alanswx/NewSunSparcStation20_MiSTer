@@ -28,6 +28,7 @@ module cpu_sim
 #(
   parameter string ROM = "tests/cpu/out/ss20/cputest.rom",
   parameter bit     HALF   = 1'b0,
+  parameter int     RESNOOP = 128,        // the shim's delayed second DMA snoop (bus cycles; -GRESNOOP=0 turns it off)
   parameter longint CYCLES = 400_000_000
 );
   logic clk, rst;
@@ -77,7 +78,7 @@ module cpu_sim
   always_ff @(posedge cpu_clk) c_hold_q <= c_hold;
 
   cpu_module #(.HAS_FPU(1'b1), .RAM_MB(12'd16)) u_cpu (
-    .clk(cpu_clk), .rst, .mid_i(4'd8), .irl_i(4'd0),
+    .clk(cpu_clk), .rst, .mid_i(4'd8), .irl_i(4'd0), .cache_en_i(1'b1),
     .mem_req_o(cmr), .mem_rsp_i(cms), .snoop_i(csn), .snoop_hold_o(c_hold),
     .wd_reset_o(wd_reset), .si_reset_o(si_reset), .halt_o(halt));
 
@@ -87,7 +88,9 @@ module cpu_sim
   // 32-byte line of RAM, word k = (pa + 4k) ^ seed, and broadcasts its snoop
   // (module ID 0) in the same cycle, as the interconnect does for a DMA
   // write; it waits while the snoop queue is nearly full (a real DMA master
-  // never writes faster than a line per eight bus cycles).
+  // never writes faster than a line per eight bus cycles). +dmalag=N: each
+  // line reaches the RAM N cycles after its snoop (the hybrid's memory path,
+  // where the bus accepts a DMA write well before the DDR has it).
   logic        dma_run, dma_step, dma_wr, dma_full;
   logic [30:0] dma_line;
   logic [35:0] dma_dst;
@@ -104,7 +107,7 @@ module cpu_sim
       3'd1: dma_rd = dma_dst[31:0];
       3'd2: dma_rd = dma_left;
       3'd3: dma_rd = dma_seed;
-      3'd4: dma_rd = {31'd0, dma_run};
+      3'd4: dma_rd = {31'd0, dma_run || lag_rp != lag_wp || (dma_lag != 0 && cyc - last_land < 300)};   // busy until 300 cycles after the last line landed (a controller's interrupt and status reads)
       3'd5: dma_rd = dma_rate;
       default: dma_rd = '0;
     endcase
@@ -124,7 +127,7 @@ module cpu_sim
   logic        psn_valid, psn_full;
   logic [30:0] psn_line;
   snoop_t   psn_b;                         // the snoop register the shim side builds (as cpu_plomb does)
-  snoop_queue #(.DEPTH(16), .OWN_MID(4'd8), .DMA_MID(4'd0)) u_snq (
+  snoop_queue #(.DEPTH(16), .OWN_MID(4'd8), .DMA_MID(4'd0), .RESNOOP(RESNOOP), .RW(512)) u_snq (
     .clk, .rst, .ld_i(cpu_ld), .hold_i(c_hold_q),
     .own_valid_i(psn_valid), .own_line_i(psn_line),
     .dma_valid_i(dma_wr), .dma_line_i(dma_line),
@@ -154,7 +157,7 @@ module cpu_sim
   // honours the module's hold)
   snoop_t dsn;
   logic   dsn_full;
-  snoop_queue #(.DEPTH(16), .OWN_MID(4'd8), .DMA_MID(4'd0)) u_dsnq (
+  snoop_queue #(.DEPTH(16), .OWN_MID(4'd8), .DMA_MID(4'd0), .RESNOOP(RESNOOP), .RW(512)) u_dsnq (
     .clk, .rst, .ld_i(1'b1), .hold_i(c_hold_q),
     .own_valid_i(sn.valid), .own_line_i(sn.line),
     .dma_valid_i(dma_wr), .dma_line_i(dma_line),
@@ -257,17 +260,41 @@ module cpu_sim
   end
   logic esc_started;
 
+  int dma_lag;
+  initial begin
+    if (!$value$plusargs("dmalag=%d", dma_lag)) dma_lag = 0;
+    if (dma_lag != 0) $display("cpu_sim: DMA lines land %0d cycles after their snoop; second snoop after %0d", dma_lag, RESNOOP);
+  end
+  logic [35:0] lag_dst  [0:255];
+  logic [31:0] lag_seed [0:255];
+  longint      lag_due  [0:255];
+  logic [7:0]  lag_wp, lag_rp;
+  longint      last_land;
+  initial begin lag_wp = '0; lag_rp = '0; last_land = 0; end
   always_ff @(posedge clk) begin
     ms <= '0;
     sn <= '0;
+    // the DMA engine's delayed RAM writes
+    if (lag_rp != lag_wp && cyc >= lag_due[lag_rp]) begin
+      for (int k = 0; k < 4; k++)
+        ram[lag_dst[lag_rp][23:3] + 21'(k)] <= {(lag_dst[lag_rp][31:0] + 32'(8 * k)) ^ lag_seed[lag_rp],
+                                                 (lag_dst[lag_rp][31:0] + 32'(8 * k + 4)) ^ lag_seed[lag_rp]};
+      lag_rp <= lag_rp + 8'd1;
+      last_land <= cyc;
+    end
     if (rst) begin
       mst <= M_IDLE; m_cnt <= 0; beat <= '0; gap_q <= 1'b0; esc_started <= 1'b0;
       dma_run <= 1'b0; dma_dst <= '0; dma_left <= '0; dma_seed <= '0; dma_rate <= 32'd1; dma_cnt <= '0;
     end else begin
       // ---- the DMA engine: a line a step ----
       if (dma_step) begin
-        for (int k = 0; k < 4; k++)
-          ram[dma_dst[23:3] + 21'(k)] <= {(dma_dst[31:0] + 32'(8 * k)) ^ dma_seed, (dma_dst[31:0] + 32'(8 * k + 4)) ^ dma_seed};
+        if (dma_lag == 0) begin
+          for (int k = 0; k < 4; k++)
+            ram[dma_dst[23:3] + 21'(k)] <= {(dma_dst[31:0] + 32'(8 * k)) ^ dma_seed, (dma_dst[31:0] + 32'(8 * k + 4)) ^ dma_seed};
+        end else begin
+          lag_dst[lag_wp] <= dma_dst; lag_seed[lag_wp] <= dma_seed; lag_due[lag_wp] <= cyc + longint'(dma_lag);
+          lag_wp <= lag_wp + 8'd1;
+        end
         dma_dst  <= dma_dst + 36'd32;
         dma_left <= dma_left - 32'd1;
         dma_cnt  <= dma_rate - 32'd1;

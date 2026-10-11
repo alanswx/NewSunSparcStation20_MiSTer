@@ -29,6 +29,7 @@ module cpu_module
 
   input  logic [3:0]  mid_i,
   input  logic [3:0]  irl_i,
+  input  logic        cache_en_i,     // 0: both caches off whatever MCNTL says (the OSD's Cachena)
 
   output mem_pkg::mem_req_t mem_req_o,
   input  mem_pkg::mem_rsp_t mem_rsp_i,
@@ -113,8 +114,8 @@ module cpu_module
     .mcntl_o(mcntl), .wd_i(wd_now), .si_reset_o(si_reset_o));
 
   logic ie, de, nf;
-  assign ie = mcntl[MC_IE];
-  assign de = mcntl[MC_DE];
+  assign ie = mcntl[MC_IE] && cache_en_i;
+  assign de = mcntl[MC_DE] && cache_en_i;
   assign nf = mcntl[MC_NF];
 
   // ---------------------------------------------------------------------

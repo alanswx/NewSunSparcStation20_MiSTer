@@ -36,6 +36,7 @@ module cpu_plomb
   input  logic        cpu_ld_i,
   input  logic        rst,
   input  logic [3:0]  irl_i,
+  input  logic        cache_en_i,         // the OSD's Cachena
 
   input  logic        dma_wr_i,
   input  logic [35:0] dma_a_i,
@@ -83,7 +84,7 @@ module cpu_plomb
   end
 
   cpu_module #(.HAS_FPU(1'b1), .RAM_MB(12'(RAM_MB)), .SS20(1'b1), .NCPU_M1(2'd0)) u_cpu (
-    .clk(clk_cpu), .rst, .mid_i(4'(MID)), .irl_i,
+    .clk(clk_cpu), .rst, .mid_i(4'(MID)), .irl_i, .cache_en_i,
     .mem_req_o(rq_cpu), .mem_rsp_i(rs_cpu), .snoop_i(sn_cpu), .snoop_hold_o(hold_cpu),
     .wd_reset_o, .si_reset_o, .halt_o);
 
@@ -95,7 +96,9 @@ module cpu_plomb
     .pb_ack, .pb_dreq, .pb_rd, .pb_code);
 
   // ---- the snoops: own and DMA write beats, one per CPU cycle ----
-  snoop_queue #(.DEPTH(16), .OWN_MID(4'(MID)), .DMA_MID(4'd0)) u_snq (
+  // a DMA line is snooped again 128 bus cycles later: its write reaches the
+  // DDR long after the I/O bus accepted it (snoop_queue; t_dma_poll +dmalag)
+  snoop_queue #(.DEPTH(16), .OWN_MID(4'(MID)), .DMA_MID(4'd0), .RESNOOP(128), .RW(32)) u_snq (
     .clk, .rst, .ld_i(cpu_ld_i), .hold_i(hold),
     .own_valid_i(own_valid), .own_line_i(own_line),
     .dma_valid_i(dma_wr_i), .dma_line_i(dma_a_i[35:5]),
