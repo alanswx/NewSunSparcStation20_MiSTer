@@ -911,6 +911,10 @@ module iu
       if (w_trap) begin
         if (!et) begin
           error <= 1'b1;                      // a trap with ET = 0: error mode
+`ifndef SYNTHESIS
+          $display("%0t iu: error mode (a trap with ET=0): tt=%02x pc=%08x npc=%08x s=%0d ps=%0d cwp=%0d wim=%02x",
+                   $time, w_tt, w_pc, w_npc, s, ps, cwp, wim);
+`endif
         end else begin
           et <= 1'b0;
           ps <= s;
