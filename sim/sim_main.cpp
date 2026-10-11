@@ -595,6 +595,7 @@ int main(int argc, char **argv) {
         else if (a == "--trace-from") trace_from = parse_count(next().c_str());
         else if (a == "--quiet") quiet = true;
         else if (a == "--progress") progress = true;
+        else if (a[0] == '+') ;   // a plusarg for the design ($value$plusargs)
         else usage();
     }
     if (rom.empty()) usage();

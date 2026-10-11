@@ -902,6 +902,23 @@ module iu
     fpu_req_o.fq_pop     = HAS_FPU && w_commit && w_dec.cls == C_FPSTORE && w_dec.fq;
   end
 
+`ifndef SYNTHESIS
+  // +ctrace_from=N +ctrace_to=M (IU clock cycles): every instruction leaving
+  // W (or trapping there), with the register it writes, ICC and Y
+  longint ct_cyc, ct_from, ct_to;
+  initial begin
+    ct_cyc = 0;
+    if (!$value$plusargs("ctrace_from=%d", ct_from)) ct_from = -1;
+    if (!$value$plusargs("ctrace_to=%d", ct_to)) ct_to = -1;
+  end
+  always_ff @(posedge clk) begin
+    ct_cyc <= ct_cyc + 1;
+    if (ct_from >= 0 && ct_cyc >= ct_from && ct_cyc <= ct_to && w_valid && !w_stall)
+      $display("ct %0d pc=%08x i=%08x%s%s rd=%0d%s=%08x icc=%x y=%08x cwp=%0d", ct_cyc, w_pc, w_inst,
+               w_trap ? " TRAP" : "", w_second ? " 2nd" : "", rf_rd, rf_we ? "" : "(-)", rf_wdata, icc, y, cwp);
+  end
+`endif
+
   // Architectural state updates
   always_ff @(posedge clk) begin
     if (rst) begin
