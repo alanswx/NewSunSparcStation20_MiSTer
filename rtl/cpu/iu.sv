@@ -470,7 +470,14 @@ module iu
       // decode-time traps, in priority order after the fetch's
       e_trap <= 1'b0;
       e_tt <= '0;
-      if (d_trap) begin e_trap <= 1'b1; e_tt <= d_tt; end
+      // An annulled instruction is not executed, so it takes no trap: a
+      // fetch fault or an interrupt tagged on a delay slot that the DCTI
+      // annulled after the slot entered D is dropped (the interrupt, a
+      // level, is taken on the next instruction). Taking it saved PC = the
+      // annulled slot, and RETT then executed it: NetBSD's idle_loop ran
+      // an annulled SAVE on return from a clock interrupt and continued a
+      // window deeper (mutex_enter(NULL) from statclock).
+      if (d_trap && !d_annul_now) begin e_trap <= 1'b1; e_tt <= d_tt; end
       else if (!d_annul_now) begin
         if (d_dec.trap_priv)             begin e_trap <= 1'b1; e_tt <= TT_PRIV_INST; end
         else if (d_dec.trap_illegal)     begin e_trap <= 1'b1; e_tt <= TT_ILLEGAL_INST; end

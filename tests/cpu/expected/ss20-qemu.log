@@ -106,4 +106,5 @@ SKIP buserr: a bypass load of an empty SBus slot traps tt 0x29; SFSR TO/AT/FT 5/
 SKIP buserr: through a mapping: load tt 0x29 (AT 1, SFAR), fetch tt 0x21 (FT 5, no FAV), a table in the slot: tt 9 with FT 4, L 3, TO
 SKIP dma: a transfer at a line every two cycles into cached lines, under stores and an I-cache flash clear, is what the module reads
 SKIP dma: a transfer into lines the module keeps reloading meanwhile ends with memory's data in the cache
-CPUTEST DONE pass=56 fail=12 skip=13
+SKIP irq: an interrupt never resumes into an annulled delay slot (ba,a / be,a untaken / bn,a under a level-10 source)
+CPUTEST DONE pass=56 fail=12 skip=14

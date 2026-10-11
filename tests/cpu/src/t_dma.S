@@ -230,3 +230,103 @@ BEGIN(t_dma_poll, "dma: a transfer into lines the module keeps reloading meanwhi
         EXPECT(%l5, 0, 3)
         END
 8:      SKIP_TEST
+
+/* Interrupts against annulled delay slots. The harness's interrupt source
+ * (same page, +0x18 period, +0x1c acknowledge) raises level 10 every few
+ * cycles while a loop of annulling branches runs from cached RAM: each
+ * annulled slot increments a counter, which must stay 0. The IU used to
+ * attach the interrupt to a slot that entered D before its DCTI resolved;
+ * the trap saved PC = the annulled slot and RETT executed it (NetBSD's
+ * idle_loop ran an annulled SAVE after a clock interrupt, 2026-10-11). */
+
+/* annul_loop(n %o0) -> %o0 = executions of annulled slots; leaf */
+annul_loop:
+        clr %o1
+1:      ba,a 2f
+        add %o1, 1, %o1                 /* annulled: never executes */
+2:      cmp %g0, 1
+        be,a 3f                         /* untaken, a = 1: annulled */
+        add %o1, 1, %o1
+3:      bn,a 4f                         /* never, a = 1: annulled */
+        add %o1, 1, %o1
+4:      subcc %o0, 1, %o0
+        bne 1b
+        nop
+        retl
+        mov %o1, %o0
+annul_loop_end:
+
+#define IRQ_PERIOD_REG  0x18
+#define IRQ_ACK_REG     0x1c
+#define AL_RAM          MT_PAGE(50)
+
+BEGIN(t_irq_annul, "irq: an interrupt never resumes into an annulled delay slot (ba,a / be,a untaken / bn,a under a level-10 source)")
+        mov 0x300, %o0
+        lda [%o0] 4, %g0
+        mov -1, %o0
+        st %o0, [%g7 + V_TRAP_SEEN]
+        set TT_DACC_ERR, %o0
+        st %o0, [%g7 + V_TRAP_EXPECT]
+        set DMA_PA_LO, %l3
+        lda [%l3] DMA_ASI, %l0
+        ld [%g7 + V_TRAP_SEEN], %o1
+        mov -1, %o0
+        st %o0, [%g7 + V_TRAP_EXPECT]
+        mov 0x300, %o0
+        lda [%o0] 4, %g0
+        cmp %o1, -1
+        bne 8f
+        set DMA_ID, %o0
+        cmp %l0, %o0
+        bne 8f
+        nop
+        call mmu_tables_init
+        nop
+        call mmu_on
+        nop
+        set annul_loop, %l0
+        set annul_loop_end, %l1
+        set AL_RAM, %l2
+1:      ld [%l0], %o0
+        st %o0, [%l2]
+        add %l0, 4, %l0
+        cmp %l0, %l1
+        blu 1b
+        add %l2, 4, %l2
+        set AL_RAM, %l5
+        mov 1000, %o0                   /* the first call fills the I-cache */
+        jmpl %l5, %o7
+        nop
+        /* interrupts on: counted mode, PIL 0, the source every 23 cycles */
+        mov 1, %o0
+        st %o0, [%g7 + V_IRQ_MODE]
+        st %g0, [%g7 + V_IRQ_COUNT]
+        rd %psr, %l6
+        andn %l6, 0xf00, %o0
+        wr %o0, %psr
+        nop ; nop ; nop
+        mov 23, %o0
+        mov IRQ_PERIOD_REG, %o1
+        sta %o0, [%l3 + %o1] DMA_ASI
+        set 20000, %o0
+        jmpl %l5, %o7
+        nop
+        mov %o0, %l7                    /* annulled slots executed */
+        mov IRQ_PERIOD_REG, %o1
+        sta %g0, [%l3 + %o1] DMA_ASI    /* source off */
+        mov IRQ_ACK_REG, %o1
+        sta %g0, [%l3 + %o1] DMA_ASI
+        wr %l6, %psr                    /* PIL back */
+        nop ; nop ; nop
+        st %g0, [%g7 + V_IRQ_MODE]
+        ld [%g7 + V_IRQ_COUNT], %l4
+        call mmu_off
+        nop
+        EXPECT(%l7, 0, 1)
+        cmp %l4, 1000                   /* the loop really ran under interrupts */
+        bgu,a 2f
+        mov 1, %l4
+        mov 0, %l4
+2:      EXPECT(%l4, 1, 2)
+        END
+8:      SKIP_TEST

@@ -15,7 +15,7 @@ PASS branch: annul bit and delay slots
 PASS branch: call/jmpl link register, computed jumps
 PASS trap: ta n -> tt 0x80+n, trap PC/nPC, register+imm number
 PASS trap: unimp and invalid opcodes -> illegal_instruction
-    check 00000002 exp=00002768 obs=0000276c
+    check 00000002 exp=000027b8 obs=000027bc
 FAIL trap: rett with traps enabled -> illegal_instruction
 PASS trap: rett in user mode -> privileged_instruction (0x03)
 PASS trap: udiv/sdiv by zero -> division_by_zero (0x2a)
@@ -87,4 +87,5 @@ SKIP buserr: a bypass load of an empty SBus slot traps tt 0x29; SFSR TO/AT/FT 5/
 SKIP buserr: through a mapping: load tt 0x29 (AT 1, SFAR), fetch tt 0x21 (FT 5, no FAV), a table in the slot: tt 9 with FT 4, L 3, TO
 SKIP dma: a transfer at a line every two cycles into cached lines, under stores and an I-cache flash clear, is what the module reads
 SKIP dma: a transfer into lines the module keeps reloading meanwhile ends with memory's data in the cache
-CPUTEST DONE pass=51 fail=10 skip=7
+SKIP irq: an interrupt never resumes into an annulled delay slot (ba,a / be,a untaken / bn,a under a level-10 source)
+CPUTEST DONE pass=51 fail=10 skip=8

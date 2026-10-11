@@ -78,7 +78,7 @@ module cpu_sim
   always_ff @(posedge cpu_clk) c_hold_q <= c_hold;
 
   cpu_module #(.HAS_FPU(1'b1), .RAM_MB(12'd16)) u_cpu (
-    .clk(cpu_clk), .rst, .mid_i(4'd8), .irl_i(4'd0), .cache_en_i(1'b1),
+    .clk(cpu_clk), .rst, .mid_i(4'd8), .irl_i(h_irl), .cache_en_i(1'b1),
     .mem_req_o(cmr), .mem_rsp_i(cms), .snoop_i(csn), .snoop_hold_o(c_hold),
     .wd_reset_o(wd_reset), .si_reset_o(si_reset), .halt_o(halt));
 
@@ -96,6 +96,13 @@ module cpu_sim
   logic [35:0] dma_dst;
   logic [31:0] dma_left, dma_seed, dma_rate, dma_cnt, dma_rd, dma_wr_word;
   logic [2:0]  dma_reg;
+  // The harness's interrupt source (same page): +18 period in cycles (0
+  // stops it), +1C a write acknowledges, a read gives the count raised.
+  // Every period cycles it raises level 10 until acknowledged.
+  logic [31:0] h_period, h_cnt, h_raised;
+  logic        h_pend;
+  logic [3:0]  h_irl;
+  assign h_irl = h_pend ? 4'd10 : 4'd0;
   assign dma_step    = dma_run && dma_cnt == 32'd0 && !dma_full;
   assign dma_wr      = dma_step;
   assign dma_line    = dma_dst[35:5];
@@ -109,6 +116,8 @@ module cpu_sim
       3'd3: dma_rd = dma_seed;
       3'd4: dma_rd = {31'd0, dma_run || lag_rp != lag_wp || (dma_lag != 0 && cyc - last_land < 300)};   // busy until 300 cycles after the last line landed (a controller's interrupt and status reads)
       3'd5: dma_rd = dma_rate;
+      3'd6: dma_rd = h_period;
+      3'd7: dma_rd = h_raised;
       default: dma_rd = '0;
     endcase
   end
@@ -285,7 +294,13 @@ module cpu_sim
     if (rst) begin
       mst <= M_IDLE; m_cnt <= 0; beat <= '0; gap_q <= 1'b0; esc_started <= 1'b0;
       dma_run <= 1'b0; dma_dst <= '0; dma_left <= '0; dma_seed <= '0; dma_rate <= 32'd1; dma_cnt <= '0;
+      h_period <= '0; h_cnt <= '0; h_raised <= '0; h_pend <= 1'b0;
     end else begin
+      // ---- the interrupt source ----
+      if (h_period != 32'd0) begin
+        if (h_cnt <= 32'd1) begin h_cnt <= h_period; h_pend <= 1'b1; h_raised <= h_raised + 32'd1; end
+        else h_cnt <= h_cnt - 32'd1;
+      end
       // ---- the DMA engine: a line a step ----
       if (dma_step) begin
         if (dma_lag == 0) begin
@@ -333,6 +348,8 @@ module cpu_sim
                   3'd2: dma_left <= dma_wr_word;
                   3'd3: begin dma_seed <= dma_wr_word; dma_run <= dma_left != 32'd0; dma_cnt <= '0; end
                   3'd5: dma_rate <= (dma_wr_word == 32'd0) ? 32'd1 : dma_wr_word;
+                  3'd6: begin h_period <= dma_wr_word; h_cnt <= dma_wr_word; h_pend <= 1'b0; end
+                  3'd7: h_pend <= 1'b0;
                   default: ;
                 endcase
               end

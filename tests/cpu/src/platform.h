@@ -97,6 +97,10 @@
 #define V_TRAP_RESUME   0x54    /* non-zero: the next expected trap resumes
                                    there (once), not after the trapping
                                    instruction: for instruction faults */
+#define V_IRQ_MODE      0x58    /* non-zero: interrupts (tt 0x11-0x1f) are counted in
+                                   V_IRQ_COUNT, the harness source acknowledged,
+                                   and the interrupted instruction resumed */
+#define V_IRQ_COUNT     0x5c
 #define V_SIZE          0x80
 
 /* ta SVC_SUPER: the runtime resumes after it in supervisor mode; a test

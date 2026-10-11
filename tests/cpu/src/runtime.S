@@ -241,7 +241,26 @@ trap_common:
         cmp %l3, TT_TICC(SVC_SUPER)
         be trap_svc_super
         nop
-        ld [%g7 + V_TRAPS], %l4
+        ld [%g7 + V_IRQ_MODE], %l4
+        tst %l4
+        be 1f
+        cmp %l3, 0x11
+        bl 1f
+        cmp %l3, 0x1f
+        bg 1f
+        nop
+        /* a counted interrupt: acknowledge the harness source (pa
+         * 0xe_0000_101c), resume the interrupted instruction */
+        ld [%g7 + V_IRQ_COUNT], %l4
+        add %l4, 1, %l4
+        st %l4, [%g7 + V_IRQ_COUNT]
+        set 0x101c, %l4
+        sta %g0, [%l4] 0x2e
+        wr %l0, %psr
+        nop ; nop ; nop
+        jmp %l1
+        rett %l2
+1:      ld [%g7 + V_TRAPS], %l4
         add %l4, 1, %l4
         st %l4, [%g7 + V_TRAPS]
         ld [%g7 + V_TRAP_EXPECT], %l4
