@@ -28,7 +28,7 @@ ROM=tests/cpu/out/$T/scsitest.rom
 mkdir -p sim/out
 O=sim/out/scsi-ss$REV
 for t in hd0 hd1; do
-    python3 tests/cpu/mkscsiimg.py "$O-$t.orig" "${t^^}" || exit 1
+    python3 tests/cpu/mkscsiimg.py "$O-$t.orig" "$(printf %s "$t" | tr a-z A-Z)" || exit 1   # not ${t^^}: macOS bash 3
     cp "$O-$t.orig" "$O-$t.img"
 done
 cp "$O-hd0.orig" "$O-one-hd0.img"
