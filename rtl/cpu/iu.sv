@@ -921,6 +921,11 @@ module iu
           s <= 1'b1;
           cwp <= cwp - 3'd1;
           tt <= w_tt;
+`ifndef SYNTHESIS
+          // every trap but the window spills/fills and interrupts (noise)
+          if (w_tt != 8'h05 && w_tt != 8'h06 && !(w_tt >= 8'h11 && w_tt <= 8'h1f))
+            $display("iu: trap tt=%02x pc=%08x npc=%08x s=%0d cwp=%0d wim=%02x tba=%05x", w_tt, w_pc, w_npc, s, cwp, wim, tba);
+`endif
         end
       end else begin
         if (w_wicc) icc <= w_icc;
