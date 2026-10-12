@@ -330,3 +330,55 @@ BEGIN(t_mmu_ifault, "mmu: an instruction access fault sets the SFSR once (FAV, n
         call mmu_off
         nop
 END
+
+/* A store to a page whose TLB entry has M = 0 (the page was only read so
+ * far): the walk sets M in the PTE and the entry is updated in place — one
+ * entry for the page, not two. The SRMMU inserted the walk's result into a
+ * fresh slot and left the stale M = 0 entry matching first; every hit kept
+ * it in use, so each store walked again forever (NetBSD hung at init, its
+ * first store to a page it had only read, 2026-10-11). Here the stores must
+ * complete, M must be set in memory, and the ASI 6 image must hold exactly
+ * one valid entry for the page. */
+#define MW_PAGE         56
+#define MW_VA           MT_PAGE(MW_PAGE)
+
+BEGIN(t_mmu_store_m, "mmu: a store after a load to a page sets M in the PTE and updates the one TLB entry (no duplicate, no endless walk)")
+        call mmu_tables_init
+        nop
+        call mmu_on                     /* flushes the TLB */
+        nop
+        set MW_VA, %l0
+        clr %l4
+        ld [%l0], %g0                   /* the entry: R set, M clear */
+        set 0x1234abcd, %o0
+        st %o0, [%l0]                   /* M = 0 in the entry: walk, set M */
+        st %o0, [%l0 + 4]
+        ld [%l0], %l1
+        /* count the valid entries of the page in the ASI 6 image */
+        clr %l2
+        mov 0, %o1
+1:      sll %o1, 12, %o2
+        lda [%o2] 6, %o3                /* SEL0: the tag */
+        cmp %o3, %l0
+        bne 2f
+        or %o2, 0x200, %o2
+        lda [%o2] 6, %o3                /* SEL2: {ppn, c, m, v, acc, lvl} */
+        andcc %o3, 0x20, %g0            /* V */
+        be 2f
+        nop
+        add %l2, 1, %l2
+        and %o3, 0x40, %l4              /* the entry's M */
+2:      add %o1, 1, %o1
+        cmp %o1, 64
+        bl 1b
+        nop
+        call mmu_off
+        nop
+        set MT_L3 + MW_PAGE * 4, %o0
+        lda [%o0] 0x20, %l3             /* the PTE in memory */
+        and %l3, 0x60, %l3              /* R | M */
+        EXPECT(%l1, 0x1234abcd, 1)
+        EXPECT(%l2, 1, 2)
+        EXPECT(%l3, 0x60, 3)
+        EXPECT(%l4, 0x40, 4)            /* the one entry has M */
+        END

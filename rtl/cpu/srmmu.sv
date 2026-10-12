@@ -265,6 +265,14 @@ module srmmu
   logic        probe_done;
   // the owner of the running walk, held through the cycle of walk_done_o
   logic [1:0]  w_owner;
+  // A walk started because a store hit an entry with M = 0 writes its result
+  // back into that entry. Inserting it elsewhere left the stale entry
+  // matching: the lookup takes the lowest matching index, every hit marks
+  // it used so it is never the victim, and each store walked again forever
+  // with no interrupt taken (NetBSD hung silently at init, its first store
+  // to a page it had only read).
+  logic        w_rep;
+  logic [5:0]  w_rep_idx;
   assign walk_owner_o = w_owner;
 
   // the word within the doubleword the port returns
@@ -430,7 +438,7 @@ module srmmu
       for (int i = 0; i < 64; i++) tlb[i] <= '0;
       used <= '0;
       ws <= W_IDLE;
-      w_probe <= 1'b0; w_ptype <= '0; w_va <= '0; w_at <= '0; w_no_fault <= 1'b0;
+      w_probe <= 1'b0; w_ptype <= '0; w_va <= '0; w_at <= '0; w_no_fault <= 1'b0; w_rep <= 1'b0; w_rep_idx <= '0;
       w_level <= '0; w_addr <= '0; w_entry <= '0; w_result <= '0; w_fault <= 1'b0;
       probe_done <= 1'b0; w_owner <= 2'd0;
     end else begin
@@ -462,12 +470,15 @@ module srmmu
             w_va <= walk_req_d_i ? xd_i.va : xi_i.va;
             w_at <= walk_req_d_i ? xd_i.at : xi_i.at;
             w_no_fault <= walk_req_d_i ? xd_i.no_fault : xi_i.no_fault;
+            w_rep <= walk_req_d_i && h_hit;      // lk is the data side's lookup in this cycle
+            w_rep_idx <= h_idx;
             w_level <= 2'd0;
             w_addr <= {ctpr, 4'b0000} + {18'd0, ctx, 2'b00};
             w_fault <= 1'b0;
             ws <= W_READ;
           end else if (probe_start) begin
             w_probe <= 1'b1;
+            w_rep <= 1'b0;
             w_ptype <= reg_va_i[10:8];
             w_va <= reg_va_i;
             w_at <= AT_LD_SD;
@@ -527,7 +538,10 @@ module srmmu
             walk_done_o <= 1'b1;
             walk_fault_o <= w_fault;
             walk_masked_o <= w_fault && nf && w_no_fault;
-            if (!w_fault) begin
+            if (!w_fault && w_rep) begin
+              tlb[w_rep_idx] <= new_entry;
+              used[w_rep_idx] <= 1'b1;
+            end else if (!w_fault) begin
               tlb[victim] <= new_entry;
               used[victim] <= 1'b1;
               if (&(used | (64'd1 << victim))) begin
