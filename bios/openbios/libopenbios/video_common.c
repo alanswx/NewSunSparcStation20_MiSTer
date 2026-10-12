@@ -272,13 +272,34 @@ static struct {
 
 #define TV(x) (*(ucell *)(term.x))
 
+/* The data address of a value: ['] name cell+, through the C findword()
+   (the Forth interpreter's $find walks the dictionary in Forth, some 10 M
+   cycles a word on the TACUS CPU, and setup_video() looks up some 40). */
 static volatile ucell *value_addr(const char *name)
 {
 	char buf[64];
+	xt_t xt = findword(name);
 
+	if (xt)
+		return cell2pointer(xt + sizeof(cell));
 	snprintf(buf, sizeof(buf), "['] %s cell+", name);
 	feval(buf);
 	return cell2pointer(POP());
+}
+
+/* to name ( x -- ), for a value or a defer, through findword() too */
+static void to_word(const char *name)
+{
+	char buf[64];
+	xt_t xt = findword(name);
+
+	if (xt) {
+		PUSH(xt);
+		fword("(to-xt)");
+		return;
+	}
+	snprintf(buf, sizeof(buf), "to %s", name);
+	feval(buf);
 }
 
 static void term_newline(void)
@@ -365,38 +386,30 @@ void setup_video()
 	   sync. */
 	char buf[6];
 
-	feval("['] display-ih cell+");
-	video.ih = cell2pointer(POP());
-
-	feval("['] frame-buffer-adr cell+");
-	video.mvirt = cell2pointer(POP());
-	feval("['] openbios-video-width cell+");
-	video.w = cell2pointer(POP());
-	feval("['] openbios-video-height cell+");
-	video.h = cell2pointer(POP());
-	feval("['] depth-bits cell+");
-	video.depth = cell2pointer(POP());
-	feval("['] line-bytes cell+");
-	video.rb = cell2pointer(POP());
-	feval("['] color-palette cell+");
-	video.pal = cell2pointer(POP());
+	video.ih = value_addr("display-ih");
+	video.mvirt = value_addr("frame-buffer-adr");
+	video.w = value_addr("openbios-video-width");
+	video.h = value_addr("openbios-video-height");
+	video.depth = value_addr("depth-bits");
+	video.rb = value_addr("line-bytes");
+	video.pal = value_addr("color-palette");
 
 	/* Set global variables ready for fb8-install */
 	PUSH( pointer2cell(video_mask_blit) );
 	fword("is-noname-cfunc");
-	feval("to fb8-blitmask");
+	to_word("fb8-blitmask");
 	PUSH( pointer2cell(video_fill_rect) );
 	fword("is-noname-cfunc");
-	feval("to fb8-fillrect");
+	to_word("fb8-fillrect");
 	PUSH( pointer2cell(video_invert_rect) );
 	fword("is-noname-cfunc");
-	feval("to fb8-invertrect");
+	to_word("fb8-invertrect");
 	PUSH( pointer2cell(video_move) );
 	fword("is-noname-cfunc");
-	feval("to fb8-move");
+	to_word("fb8-move");
 	PUSH( pointer2cell(video_write) );
 	fword("is-noname-cfunc");
-	feval("to fb-write");
+	to_word("fb-write");
 
 	term.line = value_addr("line#");
 	term.col = value_addr("column#");
@@ -418,11 +431,11 @@ void setup_video()
 
 	/* Static information */
 	PUSH((ucell)fontdata);
-	feval("to (romfont)");
+	to_word("(romfont)");
 	PUSH(FONT_HEIGHT);
-	feval("to (romfont-height)");
+	to_word("(romfont-height)");
 	PUSH(FONT_WIDTH);
-	feval("to (romfont-width)");
+	to_word("(romfont-width)");
 
 	/* Initialise the structure */
 	VIDEO_DICT_VALUE(video.w) = VGA_DEFAULT_WIDTH;
