@@ -247,3 +247,71 @@ BEGIN(t_fpu_underflow, "fpu: FLT_MIN*FLT_MIN, DBL_MIN*DBL_MIN: trapped UF|NX (st
         and %l1, %l7, %l1
         EXPECT(%l1, 0x000000a5, 13)
 END
+
+/* The shape of Solaris libm's __libm__k_sin small-argument path (sin()
+ * returned its argument on the board): the double argument arrives in
+ * %o0/%o1, the callee moves it into %f0 by std/ldd through its frame,
+ * builds a polynomial with ldd constants and fmuld/faddd, and the final
+ * faddd into %f0 sits in the delay slot of a taken annulling branch,
+ * followed straight by ret/restore twice (the sin() wrapper). */
+        .align 8
+.L_ks_c: .word 0x40000000, 0          /* 2.0 */
+         .word 0x3ff00000, 0          /* 1.0 */
+.L_ks_kern:                            /* (x, y): x + x*(x*x*2) if y == 0 */
+        save %sp, -192, %sp
+        std %i0, [%fp - 8]
+        sethi %hi(0x80000000), %l5
+        andn %i0, %l5, %l1
+        ldd [%fp - 8], %f0
+        set .L_ks_c, %l0
+        sethi %hi(0x3e400000), %l2
+        cmp %l1, %l2
+        bge,a 1f
+        fmuld %f0, %f0, %f2
+        ba 3f
+        fdtoi %f0, %f4
+1:      ldd [%l0], %f10
+        fmuld %f2, %f10, %f10
+        std %i2, [%fp - 16]
+        andncc %i2, %l5, %g0
+        fmuld %f0, %f10, %f10
+        be,a 3f
+        faddd %f0, %f10, %f0
+        ldd [%fp - 16], %f4
+        faddd %f4, %f10, %f10
+        ba 3f
+        faddd %f0, %f10, %f0
+3:      ret
+        restore
+.L_ks_wrap:                            /* sin(x) for a small x */
+        save %sp, -192, %sp
+        mov %i0, %o0
+        mov %i1, %o1
+        clr %o2
+        call .L_ks_kern
+        clr %o3
+        ret
+        restore
+
+BEGIN(t_fpu_ksin, "fpu: libm k_sin shape: faddd in a taken annulling slot, std/ldd moves, nested ret")
+        FPU_OR_SKIP
+        set .L_ks_c + 8, %l0
+        ldd [%l0], %f0                  /* the caller's %f0 = x = 1.0 */
+        set 0x3ff00000, %o0
+        clr %o1
+        call .L_ks_wrap
+        nop
+        std %f0, [%g7 + V_SIZE]
+        ld [%g7 + V_SIZE], %l1
+        ld [%g7 + V_SIZE + 4], %l2
+        EXPECT(%l1, 0x40080000, 1)      /* 1 + 1*2 = 3.0 */
+        EXPECT(%l2, 0, 2)
+        /* again with x = 0.5: 0.5 + 0.5*0.5 = 0.75 */
+        set 0x3fe00000, %o0
+        clr %o1
+        call .L_ks_wrap
+        nop
+        std %f0, [%g7 + V_SIZE]
+        ld [%g7 + V_SIZE], %l1
+        EXPECT(%l1, 0x3fe80000, 3)
+END
