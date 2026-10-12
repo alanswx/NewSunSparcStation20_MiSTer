@@ -177,6 +177,8 @@ for t in "${TESTS[@]}"; do
     log="sim/out/hw-${REV#SunSparcStation}-$t.log"
     case "$t" in
     cpu)
+        # always the current suite (a stale ROM once ran an old t_mmu_l2)
+        python3 tests/cpu/build.py "$T" > /dev/null || exit 1
         rsh "cp $G/boot.rom /tmp/boot.rom.hwtest"
         scp -q "${SSH_OPTS[@]}" "tests/cpu/out/$T/cputest.rom" "$DEV:$G/boot.rom" || exit 1
         cp=$(run_capture "$log" 90 'CPUTEST DONE')
