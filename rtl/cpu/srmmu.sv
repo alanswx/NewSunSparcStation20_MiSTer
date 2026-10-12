@@ -391,7 +391,7 @@ module srmmu
       sfsr_n = record(sfsr_n, wk_ft, w_at, w_level, 1'b1, mem_rsp_i.err);
 `ifndef SYNTHESIS
       $display("srmmu: walk fault ft=%0d at=%0d level=%0d va=%08x entry@%09x = %08x (err=%0d) ctx=%0d ctpr=%08x",
-               wk_ft, w_at, w_level, w_va, w_addr, mem_word, mem_rsp_i.err, ctx, ctpr);
+               wk_ft, w_at, w_level, w_va, w_addr, mem_word, mem_rsp_i.err, ctx, ctpr); $fflush();
 `endif
     end
     // register accesses

@@ -991,7 +991,7 @@ module iu
           error <= 1'b1;                      // a trap with ET = 0: error mode
 `ifndef SYNTHESIS
           $display("%0t iu: error mode (a trap with ET=0): tt=%02x pc=%08x npc=%08x s=%0d ps=%0d cwp=%0d wim=%02x",
-                   $time, w_tt, w_pc, w_npc, s, ps, cwp, wim);
+                   $time, w_tt, w_pc, w_npc, s, ps, cwp, wim); $fflush();
 `endif
         end else begin
           et <= 1'b0;
@@ -1002,7 +1002,7 @@ module iu
 `ifndef SYNTHESIS
           // every trap but the window spills/fills and interrupts (noise)
           if (w_tt != 8'h05 && w_tt != 8'h06 && !(w_tt >= 8'h11 && w_tt <= 8'h1f))
-            $display("iu: trap tt=%02x pc=%08x npc=%08x s=%0d cwp=%0d wim=%02x tba=%05x", w_tt, w_pc, w_npc, s, cwp, wim, tba);
+            $display("iu: trap tt=%02x pc=%08x npc=%08x s=%0d cwp=%0d wim=%02x tba=%05x", w_tt, w_pc, w_npc, s, cwp, wim, tba); $fflush();
 `endif
         end
       end else begin
