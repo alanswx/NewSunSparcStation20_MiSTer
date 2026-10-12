@@ -4,7 +4,8 @@
 // IU's commits and traps; when no instruction has committed for 2^CBITS
 // CPU cycles ("C"), or no trap has been taken for 2^TBITS cycles ("T": a
 // running kernel takes clock interrupts, so this is a spin with traps
-// off), it snapshots the CPU's state and prints it once as one text line
+// off; armed by the first interrupt trap after reset, as firmware runs for
+// seconds at PIL 15 without one), it snapshots the CPU's state and prints it once as one text line
 // on its own serial output (8N1, DIV clocks a bit), which the core muxes
 // onto the console's line while act_o is high:
 //
@@ -47,8 +48,9 @@ module hang_dump #(
   logic [CBITS:0] nc;                 // saturates with its top bit set
   logic [TBITS:0] nt;                 // wraps
   logic        fire_c, fire_t;
+  logic        t_armed;               // an interrupt trap was seen
   assign fire_c = nc == {1'b0, {CBITS{1'b1}}};
-  assign fire_t = nt == {1'b0, {TBITS{1'b1}}};
+  assign fire_t = t_armed && nt == {1'b0, {TBITS{1'b1}}};
 
   logic [31:0] snap [NW];
   logic        kind;                  // 0: no commit, 1: no trap
@@ -88,7 +90,7 @@ module hang_dump #(
 
   always_ff @(posedge clk) begin
     if (rst) begin
-      rp <= '0; tp <= '0; nc <= '0; nt <= '0;
+      rp <= '0; tp <= '0; nc <= '0; nt <= '0; t_armed <= 1'b0;
       busy <= 1'b0; kind <= 1'b0;
       ph <= '0; hi <= '0; wi <= '0; ni <= '0; ti <= 1'b0;
       sh <= '1; nbits <= '0; dcnt <= '0; last <= 1'b0;
@@ -101,6 +103,7 @@ module hang_dump #(
       end
       if (trap_i) begin
         tpc[tp] <= pc_i; ttt[tp] <= tt_i; tp <= tp + 3'd1; nt <= '0;
+        if (tt_i >= 8'h11 && tt_i <= 8'h1f) t_armed <= 1'b1;
       end else begin
         nt <= nt + 1'b1;
       end
