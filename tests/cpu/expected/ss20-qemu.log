@@ -15,7 +15,7 @@ PASS branch: annul bit and delay slots
 PASS branch: call/jmpl link register, computed jumps
 PASS trap: ta n -> tt 0x80+n, trap PC/nPC, register+imm number
 PASS trap: unimp and invalid opcodes -> illegal_instruction
-    check 00000002 exp=00002768 obs=0000276c
+    check 00000002 exp=000027b8 obs=000027bc
 FAIL trap: rett with traps enabled -> illegal_instruction
 PASS trap: rett in user mode -> privileged_instruction (0x03)
 PASS trap: udiv/sdiv by zero -> division_by_zero (0x2a)
@@ -34,6 +34,7 @@ PASS fpu: fitos/fitod/fstoi/fdtoi/fstod/fdtos
 PASS fpu: fcmps/fcmpd fcc values and FBfcc
 PASS fpu: FSR cexc/aexc on inexact, divide-by-zero, invalid
 PASS fpu: FLT_MIN*FLT_MIN, DBL_MIN*DBL_MIN: trapped UF|NX (store blocked), untrapped +0
+PASS fpu: libm k_sin shape: faddd in a taken annulling slot, std/ldd moves, nested ret
 PASS chipset: system control reads 0 after power-on (RS, WD clear)
 PASS chipset: NVRAM IDPROM format 1, machine type, checksum
 PASS chipset: NVRAM byte and word stores read back (restored)
@@ -46,6 +47,7 @@ FAIL chipset: DMA2 E_BASE_ADDR resets to 0xff
     check 00000001 exp=000000c3 obs=00000080
     check 00000006 exp=00000071 obs=00000021
 FAIL chipset: 82077 floppy, no drive: reset, VERSION, RECALIBRATE, IRQ
+PASS chipset: TCX stipple and blit doubleword stores
 PASS chipset: SS20 MSI: IOMMU IMPL/VER 0x13, MID 8, arbiter enable
 SKIP chipset: SS20 MSI: each CPU reads its own MID; the arbiter parks CPU 1
 SKIP chipset: SS20 SIMM slot 7 is 16 MB, aliased every 16 MB
@@ -58,6 +60,8 @@ FAIL mmu: ASI 3 probes page/segment/region/context/entire; 0 on invalid, reserve
     check 0000000d exp=0000030e obs=0000000e
 FAIL mmu: SFSR L/AT/FT/FAV/OW and SFAR on invalid, reserved, protection, privilege faults; NF
 PASS mmu: an instruction access fault sets the SFSR once (FAV, no OW)
+    check 00000002 exp=00000001 obs=00000000
+    check 00000004 exp=00000040 obs=00000000
 FAIL mmu: a store after a load to a page sets M in the PTE and updates the one TLB entry (no duplicate, no endless walk)
 PASS mmu: a window trap in W squashes the walk of the load behind the SAVE before it starts (deep recursion, cold TLB)
 PASS cache: SS20 flash clear (ASI 0x36/0x37) drops stale lines
@@ -109,4 +113,4 @@ SKIP buserr: through a mapping: load tt 0x29 (AT 1, SFAR), fetch tt 0x21 (FT 5, 
 SKIP dma: a transfer at a line every two cycles into cached lines, under stores and an I-cache flash clear, is what the module reads
 SKIP dma: a transfer into lines the module keeps reloading meanwhile ends with memory's data in the cache
 SKIP irq: an interrupt never resumes into an annulled delay slot (ba,a / be,a untaken / bn,a under a level-10 source)
-CPUTEST DONE pass=57 fail=13 skip=14
+CPUTEST DONE pass=59 fail=13 skip=14

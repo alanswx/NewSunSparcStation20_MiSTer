@@ -31,12 +31,14 @@ PASS fpu: fitos/fitod/fstoi/fdtoi/fstod/fdtos
 PASS fpu: fcmps/fcmpd fcc values and FBfcc
 PASS fpu: FSR cexc/aexc on inexact, divide-by-zero, invalid
 PASS fpu: FLT_MIN*FLT_MIN, DBL_MIN*DBL_MIN: trapped UF|NX (store blocked), untrapped +0
+PASS fpu: libm k_sin shape: faddd in a taken annulling slot, std/ldd moves, nested ret
 PASS chipset: system control reads 0 after power-on (RS, WD clear)
 PASS chipset: NVRAM IDPROM format 1, machine type, checksum
 PASS chipset: NVRAM byte and word stores read back (restored)
 PASS chipset: frame buffer slot starts with FCode (0xf1 header)
 PASS chipset: DMA2 E_BASE_ADDR resets to 0xff
 PASS chipset: 82077 floppy, no drive: reset, VERSION, RECALIBRATE, IRQ
+PASS chipset: TCX stipple and blit doubleword stores
 PASS chipset: SS20 MSI: IOMMU IMPL/VER 0x13, MID 8, arbiter enable
 PASS chipset: SS20 MSI: each CPU reads its own MID; the arbiter parks CPU 1
 PASS chipset: SS20 SIMM slot 7 is 16 MB, aliased every 16 MB
@@ -84,4 +86,4 @@ PASS buserr: through a mapping: load tt 0x29 (AT 1, SFAR), fetch tt 0x21 (FT 5, 
 SKIP dma: a transfer at a line every two cycles into cached lines, under stores and an I-cache flash clear, is what the module reads
 SKIP dma: a transfer into lines the module keeps reloading meanwhile ends with memory's data in the cache
 SKIP irq: an interrupt never resumes into an annulled delay slot (ba,a / be,a untaken / bn,a under a level-10 source)
-CPUTEST DONE pass=79 fail=0 skip=5
+CPUTEST DONE pass=81 fail=0 skip=5

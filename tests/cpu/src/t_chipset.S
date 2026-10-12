@@ -233,3 +233,40 @@ BEGIN(t_fdc, "chipset: 82077 floppy, no drive: reset, VERSION, RECALIBRATE, IRQ"
         EXPECT(%l6, 0, 7)               /* cleared by SENSE INTERRUPT */
         stba %g0, [%l0] FDC_ASI         /* DOR: back in reset */
 END
+
+#if defined(TARGET_SS20)
+/* TCX acceleration as Xsun's tcx module uses it for text and copies
+ * (QEMU hw/display/tcx.c, NetBSD tcxreg.h): a doubleword store into the
+ * STIP space (+0x0400_0000) writes the colour (first word) into the 32
+ * pixels whose mask bits (second word) are set, at pixel = offset/8; one
+ * into the BLIT space (+0x0600_0000) copies len = bits 28:24 + 1 pixels
+ * from source pixel = bits 23:0 to pixel = offset/8. The 8-bit VRAM is at
+ * +0x0080_0000. Under Solaris Xsun the first xterm froze the machine. */
+#  define TCX_VRAM8     (TCX_PA + 0x00800000)
+#  define TCX_STIP      (TCX_PA + 0x04000000)
+#  define TCX_BLIT      (TCX_PA + 0x06000000)
+BEGIN(t_tcx_accel, "chipset: TCX stipple and blit doubleword stores")
+        set TCX_VRAM8, %l0
+        sta %g0, [%l0] TCX_ASI          /* pixels 0-3 */
+        add %l0, 4, %l1
+        sta %g0, [%l1] TCX_ASI          /* pixels 4-7 */
+        add %l0, 64, %l2
+        sta %g0, [%l2] TCX_ASI          /* pixels 64-67 */
+        set TCX_STIP, %l3
+        set 0xab, %o2                   /* colour */
+        set 0xf0000000, %o3             /* pixels 0-3 */
+        stda %o2, [%l3] TCX_ASI
+        lda [%l0] TCX_ASI, %l4
+        EXPECT(%l4, 0xabababab, 1)
+        lda [%l1] TCX_ASI, %l4
+        EXPECT(%l4, 0, 2)
+        set TCX_BLIT + 64*8, %l3
+        clr %o2
+        set 0x03000000, %o3             /* 4 pixels from pixel 0 */
+        stda %o2, [%l3] TCX_ASI
+        lda [%l2] TCX_ASI, %l4
+        EXPECT(%l4, 0xabababab, 3)
+        sta %g0, [%l0] TCX_ASI          /* leave the corner black */
+        sta %g0, [%l2] TCX_ASI
+END
+#endif
