@@ -335,14 +335,24 @@ module cpu_module
   assign ic_cacheable = i_hit_now ? cacheable_pa(i_fast_pa) : ic_cacheable_q;
   assign ic_idx       = i_hit_now ? i_va_now[11:3] : ic_pa_q[11:3];
 
-  // The response: a cache answer the cycle it comes, a fault from the register
+  // The response: a cache answer the cycle it comes, a fault from the
+  // register; one the IU does not take (ready low: its buffer is full) is
+  // held here and offered until it does (the IU issues nothing meanwhile)
+  ifetch_rsp_t ifs_now, ifs_hold;
+  logic        ifs_hold_v;
   always_comb begin
-    ifs = ifs_q;
+    ifs_now = ifs_q;
     if (is == I_CACHE && ic_done) begin
-      ifs.valid = 1'b1;
-      ifs.inst  = ic_pa_q[2] ? ic_rdata[31:0] : ic_rdata[63:32];
-      ifs.fault = ic_err ? 2'd2 : 2'd0;
+      ifs_now.valid = 1'b1;
+      ifs_now.inst  = ic_pa_q[2] ? ic_rdata[31:0] : ic_rdata[63:32];
+      ifs_now.fault = ic_err ? 2'd2 : 2'd0;
     end
+  end
+  assign ifs = ifs_hold_v ? ifs_hold : ifs_now;
+  always_ff @(posedge clk) begin
+    if (iu_rst) ifs_hold_v <= 1'b0;
+    else if (ifs.valid && !ifr.ready) begin ifs_hold_v <= 1'b1; ifs_hold <= ifs; end
+    else if (ifr.ready) ifs_hold_v <= 1'b0;
   end
 
   always_ff @(posedge clk) begin

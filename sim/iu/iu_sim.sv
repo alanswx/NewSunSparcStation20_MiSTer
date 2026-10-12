@@ -61,11 +61,13 @@ module iu_sim
     return {4'h0, va};                                // MMU off: PA = VA in space 0
   endfunction
 
-  // ---- instruction fetch: one cycle ----
+  // ---- instruction fetch: one cycle; an answer not taken (ready low) is held ----
   always_ff @(posedge clk) begin
+    if (!(ifs.valid && !ifr.ready)) begin
     ifs.valid <= 1'b0;
     ifs.inst <= 32'd0;
     ifs.fault <= 2'd0;
+    end
     if (ifr.valid) begin
       ifs.valid <= 1'b1;
       if (mmu_ctrl[14])                 // boot mode: the PROM

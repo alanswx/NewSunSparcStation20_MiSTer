@@ -64,11 +64,16 @@ package cpu_pkg;
   // The instruction fetch port: one request per cycle, in order, answered
   // in order with the word or a fault. `valid`/`ready` on the request;
   // the response is a `valid` with the data, matched to requests in order.
+  // `ready` is the IU's: it takes a response this cycle (into D or its
+  // buffer); a response not taken is held and offered again. The IU
+  // decides a request from registered state, so the answer of one fetch
+  // and the issue of the next do not form one long path.
   // ---------------------------------------------------------------------
   typedef struct packed {
     logic        valid;
     logic [31:0] va;
     logic        supv;        // ASI 9 (supervisor) or 8 (user)
+    logic        ready;       // a response offered this cycle is taken
   } ifetch_req_t;
 
   typedef struct packed {

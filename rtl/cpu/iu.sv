@@ -173,7 +173,13 @@ module iu
   logic        rsp_valid;      // a usable response this cycle
   logic        can_issue;
 
-  assign rsp_valid = ifetch_rsp_i.valid & f_pending & ~f_pend_discard;
+  // A response is taken unless the buffer is full and stays full (D does
+  // not take from it this cycle); one for a dropped path is always taken.
+  // (f_take_buf is f_take when the buffer holds the instruction for D.)
+  logic        f_take_buf, rsp_ready, rsp_taken, rsp_to_buf;
+  assign rsp_ready = f_pend_discard | ~f_have | f_take_buf;
+  assign rsp_taken = ifetch_rsp_i.valid & rsp_ready;
+  assign rsp_valid = ifetch_rsp_i.valid & f_pending & ~f_pend_discard & (~f_have | f_take_buf);
 
   // What D would take this cycle
   logic        take_from_buf;
@@ -205,6 +211,10 @@ module iu
 
   // D takes the instruction unless a redirect drops it (it is behind the slot)
   assign f_take = take_avail & ~d_stall & ~flush & ~error & ~(redirect & ~(take_pc == slot_pc));
+  assign f_take_buf = f_have & ~d_stall & ~flush & ~error & ~(redirect & ~(f_buf_pc == slot_pc));
+  // the arriving response goes to the buffer unless D takes it directly
+  // (it does only with the buffer empty)
+  assign rsp_to_buf = rsp_valid & (f_have | ~f_take);
   logic [31:0] take_npc_eff;
   logic        take_annul;
   assign take_npc_eff = (redirect && take_pc == slot_pc) ? redirect_target : take_npc;
@@ -237,14 +247,18 @@ module iu
   end
 
   // Issue a new fetch when nothing is outstanding (or its response arrives
-  // now) and the buffer will be free
-  assign can_issue = ~error & ~flush & (~f_pending | ifetch_rsp_i.valid) & (~f_have | f_take) &
-                     ~(rsp_valid & ~f_take) &   // the response goes to the buffer: wait
+  // now) and the buffer is empty: the arriving response then has D or the
+  // buffer, and the new one, if the buffer is still full when it comes,
+  // waits in the module (ready low). Registered state only, apart from
+  // the response's valid, so that the cache's answer and the next request
+  // are a short path.
+  assign can_issue = ~error & ~flush & (~f_pending | ifetch_rsp_i.valid) & ~f_have &
                      ~ifault_hold & ~(rsp_valid & (ifetch_rsp_i.fault != 2'd0));
 
   assign ifetch_req_o.valid = can_issue;
   assign ifetch_req_o.va    = f_pc;
   assign ifetch_req_o.supv  = s;
+  assign ifetch_req_o.ready = rsp_ready;
 
   always_ff @(posedge clk) begin
     if (rst) begin
@@ -267,18 +281,20 @@ module iu
         f_pend_discard <= 1'b0;
         f_pc <= f_npc;
         f_npc <= f_npc + 32'd4;
-      end else if (ifetch_rsp_i.valid) begin
+      end else if (rsp_taken) begin
         f_pending <= 1'b0;
       end
       // the buffer
       if (f_take && f_have) f_have <= 1'b0;
-      if (rsp_valid && !f_take) begin
+      if (rsp_to_buf) begin
         f_have <= 1'b1;
         f_buf_inst <= ifetch_rsp_i.inst;
         f_buf_pc <= f_pend_pc;
         f_buf_npc <= f_pend_npc;
         f_buf_fault <= ifetch_rsp_i.fault;
       end
+      if (f_take && f_have) f_buf_annul <= 1'b0;
+      if (rsp_to_buf) f_buf_annul <= 1'b0;          // marked below if it is the annulled slot
       // the annulled-slot marker is consumed by the next instruction into D
       if (f_take) f_annul_next <= 1'b0;
 
@@ -290,11 +306,12 @@ module iu
         f_npc <= redirect_target + 32'd4;
         if (can_issue && f_pc != slot_pc) f_pend_discard <= 1'b1;   // issued now, behind the slot
         if (slot_in_d || slot_arriving) begin
-          if (!slot_arriving && f_pending && !ifetch_rsp_i.valid) f_pend_discard <= 1'b1;
-          if (!(slot_arriving && !f_take)) f_have <= 1'b0;
+          if (!slot_arriving && f_pending && !rsp_taken) f_pend_discard <= 1'b1;
+          if (!(slot_arriving && rsp_to_buf)) f_have <= 1'b0;
         end else if (slot_in_buf) begin
           f_buf_npc <= redirect_target;
-          if (f_pending && !ifetch_rsp_i.valid) f_pend_discard <= 1'b1;
+          if (f_pending && !rsp_taken) f_pend_discard <= 1'b1;
+          if (f_take_buf) f_have <= 1'b0;            // the slot goes to D; a response arriving is behind it
         end else if (slot_pending) begin
           f_pend_npc <= redirect_target;
         end else if (can_issue && f_pc == slot_pc) begin
@@ -307,13 +324,12 @@ module iu
       end
       // the response of the slot arriving while D stalls goes to the buffer
       // with the new npc
-      if (rsp_valid && !f_take && redirect && slot_arriving) f_buf_npc <= redirect_target;
+      if (rsp_to_buf && redirect && slot_arriving) f_buf_npc <= redirect_target;
       if (annul_slot) begin
-        if (slot_arriving && !f_take) f_buf_annul <= 1'b1;
-        else if (slot_in_buf)          f_buf_annul <= 1'b1;
-        else if (!slot_in_d && !slot_arriving) f_annul_next <= 1'b1;
+        if (slot_arriving && rsp_to_buf) f_buf_annul <= 1'b1;
+        else if (slot_in_buf && !f_take_buf) f_buf_annul <= 1'b1;   // (taken now: take_annul has it)
+        else if (!slot_in_d && !slot_arriving && !slot_in_buf) f_annul_next <= 1'b1;
       end
-      if (f_take && f_have) f_buf_annul <= 1'b0;
 
       // A trap at W: everything younger goes
       if (flush) begin

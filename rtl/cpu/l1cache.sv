@@ -460,8 +460,13 @@ module l1cache
   assign done_o  = done_q | hit_now;
   assign rdata_o = hit_now ? da_rdata[hit_idx] : rdata_q;
   assign err_o   = hit_now ? 1'b0 : err_q;
-  logic accept;
-  assign accept = req_i && !done_q && (st == S_IDLE || hit_now) && fs == F_IDLE && !flash_v_i && !flash_l_i;
+  // The request's fields are latched whenever one could be taken, whether
+  // or not req_i is up (the CPU side's request valid comes late: it hangs
+  // off the answer of the previous request); only the state change waits
+  // for it. Nothing reads them outside the states a request leads to.
+  logic can_take, accept;
+  assign can_take = !done_q && (st == S_IDLE || hit_now) && fs == F_IDLE && !flash_v_i && !flash_l_i;
+  assign accept   = req_i && can_take;
 
   always_ff @(posedge clk) begin
     done_q <= 1'b0;
@@ -565,9 +570,11 @@ module l1cache
         fill_snooped <= 1'b1;
 
       // Taking a request (in S_IDLE, or in the cycle a read hit answers)
-      if (accept) begin
+      if (can_take) begin
         r_we <= we_i; r_atomic <= atomic_i; r_cacheable <= cacheable_i && enable_i;
         r_pa <= pa_i; r_be <= be_i; r_wdata <= wdata_i;
+      end
+      if (accept) begin
         err_q <= 1'b0;
         st_hit_written <= 1'b0;
         fill_err <= 1'b0; fill_snooped <= 1'b0;
