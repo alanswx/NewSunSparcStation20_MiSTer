@@ -402,9 +402,12 @@ specification, and the TCX section of the Sun framebuffer docs or QEMU.
 
 ## 9. Status
 
-Updated 2026-10-12. Summary: the new CPU (phases 1-3), inside the old
-core as the "CPU hybrid", boots NetBSD 11 and Solaris 8 and runs X and the
-CDE desktop on the board; the running detail is in
+Updated 2026-10-12. Summary: the new CPU (phases 1-3, pipelined: it
+meets 55 MHz alone with +2.5 ns, and in the hybrid build at 92 %), inside
+the old core as the "CPU hybrid" at the full 55 MHz, boots NetBSD 11 and
+Solaris 8 under OpenBIOS and the Sun PROM, and runs X and CDE on the
+board; phase 0 of the new core is done (an empty machine builds and shows
+a pattern). The running detail is in
 [sessions/HANDOFF-20261009.md](sessions/HANDOFF-20261009.md) ("Current
 state").
 
