@@ -32,7 +32,7 @@ module cpu_timing_top
 
   /* verilator lint_off PINCONNECTEMPTY */
   cpu_module u_cpu (
-    .clk, .rst, .mid_i(mid), .irl_i(irl), .cache_en_i(cache_en),
+    .clk, .rst, .mid_i(mid), .irl_i(irl), .cache_en_i(cache_en), .ram_mb_i(12'd464),
     .mem_req_o(req), .mem_rsp_i(rsp), .snoop_i(sn), .snoop_hold_o(hold),
     .wd_reset_o(wd), .si_reset_o(sir), .halt_o(halt),
     .dbg_commit_o(), .dbg_trap_o(), .dbg_tt_o(), .dbg_pc_o(), .dbg_psr_o(), .dbg_w_o());

@@ -68,10 +68,11 @@ static std::string unescape(const std::string &s) {
 }
 
 // ---------------------------------------------------------------------------
-// DDR3: 512 MB of 64-bit words, zeroed (the SIMU core skips its own clear).
-// ss_core puts its memory in the MiSTer's FPGA window, byte addresses
-// 0x2000_0000-0x3FFF_FFFF: word-address bits 28:26 are "001" (and 25:17 are
-// inverted, which is invisible here).
+// DDR3: 512 MB of 64-bit words, zeroed (the machine is built with
+// SKIP_CLEAR for the simulation). ss20_machine puts its memory in the
+// MiSTer's FPGA window, byte addresses 0x2000_0000-0x3FFF_FFFF (word
+// address BASE + core byte address / 8; rtl/machine/ss20_memctl.sv), each
+// doubleword big-endian: byte offset 0 in bits 63:56.
 // Reads are pipelined (up to DDR_QUEUE bursts outstanding, first beat after
 // DDR_LAT cycles); write bursts take one beat per cycle.
 struct Ddr {
@@ -89,15 +90,14 @@ struct Ddr {
     uint64_t log_from = 0;        // --ddr-log-from: first cycle to log
     uint32_t log_lo = 0, log_hi = 0;   // --ddr-log-range: core byte addresses [lo, hi) to log (equal: all)
     // The core's own byte address for a DDR word address, and back.
-    static uint32_t core_addr(uint32_t a) { return ((a - BASE) ^ (0x1FFu << 17)) << 3; }
-    static uint32_t ddr_word(uint32_t core) { return BASE | (((core >> 3) ^ (0x1FFu << 17)) & (WORDS - 1)); }
-    // Store bytes where ss_core's loader would put them: file byte k of each
-    // 8 lands in DDR lane k (the loader's lane choice and ss_core's byte
-    // reversal cancel out).
+    static uint32_t core_addr(uint32_t a) { return (a - BASE) << 3; }
+    static uint32_t ddr_word(uint32_t core) { return BASE | ((core >> 3) & (WORDS - 1)); }
+    // Store bytes where ss20_loader would put them: file byte k of each 8
+    // in bits 63-8k:56-8k (big-endian, as the interconnect carries them).
     void backdoor(uint32_t core, const uint8_t *p, size_t n) {
         for (size_t i = 0; i < n; i += 8) {
             uint64_t w = 0;
-            for (int k = 0; k < 8 && i + k < n; k++) w |= (uint64_t)p[i + k] << (8 * k);
+            for (int k = 0; k < 8 && i + k < n; k++) w |= (uint64_t)p[i + k] << (8 * (7 - k));
             at(ddr_word(core + i)) = w;
         }
     }

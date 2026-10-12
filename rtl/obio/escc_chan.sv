@@ -248,7 +248,7 @@ module escc_chan (
   function automatic logic parity_of(input logic [7:0] d, input logic [3:0] n, input logic even);
     logic p;
     p = 1'b0;
-    for (int i = 0; i < 8; i++) if (i < int'(n)) p ^= d[i];
+    for (int b = 0; b < 8; b++) if (b < int'(n)) p ^= d[b];
     return even ? p : ~p;
   endfunction
 

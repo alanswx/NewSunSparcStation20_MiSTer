@@ -77,8 +77,8 @@ module cpu_sim
   logic     c_hold, c_hold_q;
   always_ff @(posedge cpu_clk) c_hold_q <= c_hold;
 
-  cpu_module #(.HAS_FPU(1'b1), .RAM_MB(12'd16)) u_cpu (
-    .clk(cpu_clk), .rst, .mid_i(4'd8), .irl_i(h_irl), .cache_en_i(1'b1),
+  cpu_module #(.HAS_FPU(1'b1)) u_cpu (
+    .clk(cpu_clk), .rst, .mid_i(4'd8), .irl_i(h_irl), .cache_en_i(1'b1), .ram_mb_i(12'd16),
     .mem_req_o(cmr), .mem_rsp_i(cms), .snoop_i(csn), .snoop_hold_o(c_hold),
     .wd_reset_o(wd_reset), .si_reset_o(si_reset), .halt_o(halt),
     .dbg_commit_o(dbg_commit), .dbg_trap_o(dbg_trap), .dbg_tt_o(dbg_tt), .dbg_pc_o(dbg_pc),

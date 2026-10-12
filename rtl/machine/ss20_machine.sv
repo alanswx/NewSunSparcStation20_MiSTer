@@ -5,26 +5,33 @@
 // simulation's sim/sim_top.sv both wrap this module, so whatever the board
 // runs is what the simulation runs.
 //
-// Phase 0: the machine is empty. The ports are the ones the full machine
-// needs, and every output is idle, except that the video side shows a test
-// pattern at 1024x768 so the board has a picture for the OSD to sit on and
-// the simulation has frames to count, and LED_USER blinks from clk_sys so a
-// board with no picture still shows the core is clocked.
-//
+// Phase 4 (in progress): one CPU module (MID 8) on ss20_memctl (main
+// memory and the boot PROM in DDR3, ss20_loader filling it from hps_io),
+// ss20_iobridge to the system devices of rtl/obio (both ESCCs, the M48T08,
+// the counter/timers, the interrupt controller, the system registers), and
+// ttya on the MiSTer's serial line through ss20_uart. Not yet: nvram_sd,
+// the SBus devices (TCX, DMA2/ESP, LANCE), the keyboard and mouse, sound,
+// the MSI/EMC registers; the screen still shows phase 0's test pattern.
+
 // Clocks: clk is the machine (55 MHz on the board), clk_vid the pixel clock
 // (65 MHz). They are unrelated; the simulation drives both from one clock.
 //
 // The DDR3 port is the single Avalon master the framework provides; the
 // machine's own masters (memory controller, video scan-out, the Ethernet
 // mailbox) will share it through rtl/mister/ddram_arb.sv inside this module.
-// Addresses are 64-bit words in the FPGA's 512 MB window (byte 0x2000_0000
-// of the ARM's map is word 0).
+// Addresses are 64-bit word addresses of the ARM's physical map (ARM
+// physical / 8): the machine's memory is the FPGA window from 0x2000_0000
+// (word 0x0400_0000, ss20_memctl.sv); the Ethernet mailbox is at
+// 0x1FF0_0000 (word 0x03FE_0000).
 //
 // The hps_io side follows Main's support/sun (plan §1.2): ioctl index 0 is
 // the boot PROM, index 64 the ID PROM seed; SD slots 0/1 the disks, 2 the
 // CD, 3 the 8 KB NVRAM image; sd_blk_cnt is blocks - 1, up to 32 blocks.
 
-module ss20_machine (
+module ss20_machine #(
+  parameter int CLK_HZ     = 55_000_000,
+  parameter bit SKIP_CLEAR = 1'b0        // simulation: its DDR model starts zeroed
+)(
   input  logic         clk,
   input  logic         rst,            // synchronous to clk
   input  logic         clk_vid,
@@ -105,17 +112,169 @@ module ss20_machine (
   output logic         led_user_o
 );
 
-  // ---------------------------------------------------------------- idle --
+  import mem_pkg::*;
+  import iobus_pkg::*;
+  import sun4m_pkg::*;
 
-  assign ddr_burstcnt_o = 8'd1;
-  assign ddr_addr_o     = '0;
-  assign ddr_rd_o       = 1'b0;
-  assign ddr_we_o       = 1'b0;
-  assign ddr_din_o      = '0;
-  assign ddr_be_o       = '0;
+  // ------------------------------------------------------------ loader --
+  // The PROM download and the memory clear; the machine runs once a PROM
+  // is in and the clear is done.
+  logic        run, ld_active;
+  logic        ld_we;
+  logic [7:0]  ld_bc, ld_be;
+  logic [28:0] ld_addr;
+  logic [63:0] ld_din;
 
-  assign ioctl_wait_o   = 1'b0;
+  ss20_loader #(.SKIP_CLEAR(SKIP_CLEAR)) u_loader (
+    .clk, .rst, .ram_mb_i(opt_ram_mb_i),
+    .ioctl_download_i, .ioctl_index_i, .ioctl_wr_i, .ioctl_addr_i, .ioctl_dout_i, .ioctl_wait_o,
+    .run_o(run), .active_o(ld_active),
+    .ddr_wait_i(ddr_busy_i), .ddr_burstcnt_o(ld_bc), .ddr_addr_o(ld_addr), .ddr_we_o(ld_we),
+    .ddr_din_o(ld_din), .ddr_be_o(ld_be));
 
+  // The machine's reset: the loader's, and a software reset (the system
+  // control register) for a few cycles, which keeps memory
+  logic       sw_reset;
+  logic [3:0] swr_cnt;
+  logic       rst_m, rst_swr;
+  always_ff @(posedge clk) begin
+    if (rst || !run) swr_cnt <= '0;
+    else if (sw_reset) swr_cnt <= 4'd15;
+    else if (swr_cnt != 4'd0) swr_cnt <= swr_cnt - 4'd1;
+  end
+  assign rst_swr = swr_cnt != 4'd0;
+  assign rst_m   = rst || !run || rst_swr;
+
+  /* verilator lint_off PINCONNECTEMPTY */  // (the blocks' unused outputs, left open)
+
+  // ------------------------------------------------------------ the CPU --
+  mem_req_t    cpu_req;
+  mem_rsp_t    cpu_rsp;
+  snoop_t      snoop;
+  logic        snoop_hold, wd_reset;
+  logic [3:0]  irl;
+
+  cpu_module #(.HAS_FPU(1'b1), .SS20(1'b1), .NCPU_M1(2'd0)) u_cpu (
+    .clk, .rst(rst_m), .mid_i(4'd8), .irl_i(irl), .cache_en_i(1'b1), .ram_mb_i({2'b00, opt_ram_mb_i}),
+    .mem_req_o(cpu_req), .mem_rsp_i(cpu_rsp), .snoop_i(snoop), .snoop_hold_o(snoop_hold),
+    .wd_reset_o(wd_reset), .si_reset_o(), .halt_o(),
+    .dbg_commit_o(), .dbg_trap_o(), .dbg_tt_o(), .dbg_pc_o(), .dbg_psr_o(), .dbg_w_o());
+
+  // ---------------------------------------------------- memory and I/O --
+  mem_req_t    io_req;
+  mem_rsp_t    io_rsp;
+  logic        mc_rd, mc_we;
+  logic [7:0]  mc_bc, mc_be;
+  logic [28:0] mc_addr;
+  logic [63:0] mc_din;
+
+  ss20_memctl u_mem (
+    .clk, .rst(rst_m), .ram_mb_i(opt_ram_mb_i), .mid_i(4'd8),
+    .req_i(cpu_req), .rsp_o(cpu_rsp), .snoop_o(snoop), .snoop_hold_i(snoop_hold),
+    .io_req_o(io_req), .io_rsp_i(io_rsp),
+    .ddr_wait_i(ddr_busy_i), .ddr_burstcnt_o(mc_bc), .ddr_addr_o(mc_addr), .ddr_rd_o(mc_rd),
+    .ddr_we_o(mc_we), .ddr_din_o(mc_din), .ddr_be_o(mc_be),
+    .ddr_dout_i, .ddr_dout_ready_i);
+
+  // DDR3: the loader while it works (the machine is in reset then), else
+  // the memory controller. The other masters (video scan-out, the
+  // Ethernet mailbox) come with their phases, through ddram_arb.
+  always_comb begin
+    if (ld_active) begin
+      ddr_burstcnt_o = ld_bc; ddr_addr_o = ld_addr; ddr_rd_o = 1'b0; ddr_we_o = ld_we;
+      ddr_din_o = ld_din; ddr_be_o = ld_be;
+    end else begin
+      ddr_burstcnt_o = mc_bc; ddr_addr_o = mc_addr; ddr_rd_o = mc_rd; ddr_we_o = mc_we;
+      ddr_din_o = mc_din; ddr_be_o = mc_be;
+    end
+  end
+
+  iob_req_t    iob_q [8];
+  iob_rsp_t    iob_r [8];
+  ss20_iobridge u_io (.clk, .rst(rst_m), .req_i(io_req), .rsp_o(io_rsp), .io_o(iob_q), .io_i(iob_r));
+
+  // ------------------------------------------------- the system devices --
+  // 0: keyboard/mouse ESCC (phase 6 connects its byte streams)
+  logic irq_kbd, irq_ser;
+  escc #(.CLK_HZ(CLK_HZ)) u_escc_kbd (
+    .clk, .rst(rst_m), .bus_i(iob_q[0]), .bus_o(iob_r[0]),
+    .txd_a_o(), .rxd_a_i(1'b1), .dcd_a_i(1'b1), .cts_a_i(1'b1), .rts_a_o(), .dtr_a_o(),
+    .txd_b_o(), .rxd_b_i(1'b1), .dcd_b_i(1'b1), .cts_b_i(1'b1), .rts_b_o(), .dtr_b_o(),
+    .tx_byte_a_o(), .tx_byte_valid_a_o(), .rx_byte_a_i(8'd0), .rx_byte_valid_a_i(1'b0), .rx_byte_ready_a_o(),
+    .tx_byte_b_o(), .tx_byte_valid_b_o(), .rx_byte_b_i(8'd0), .rx_byte_valid_b_i(1'b0), .rx_byte_ready_b_o(),
+    .irq_o(irq_kbd));
+
+  // 1: ttya (A, on the MiSTer's serial line) and ttyb (B, unconnected)
+  logic [7:0] ta_tx, ta_rx;
+  logic       ta_tx_v, ta_rx_v, ta_rx_rdy, ta_brk;
+  escc #(.CLK_HZ(CLK_HZ)) u_escc_ser (
+    .clk, .rst(rst_m), .bus_i(iob_q[1]), .bus_o(iob_r[1]),
+    .txd_a_o(), .rxd_a_i(!ta_brk), .dcd_a_i(1'b1), .cts_a_i(1'b1), .rts_a_o(), .dtr_a_o(),
+    .txd_b_o(), .rxd_b_i(1'b1), .dcd_b_i(1'b1), .cts_b_i(1'b1), .rts_b_o(), .dtr_b_o(),
+    .tx_byte_a_o(ta_tx), .tx_byte_valid_a_o(ta_tx_v),
+    .rx_byte_a_i(ta_rx), .rx_byte_valid_a_i(ta_rx_v && ta_rx_rdy), .rx_byte_ready_a_o(ta_rx_rdy),
+    .tx_byte_b_o(), .tx_byte_valid_b_o(), .rx_byte_b_i(8'd0), .rx_byte_valid_b_i(1'b0), .rx_byte_ready_b_o(),
+    .irq_o(irq_ser));
+
+  ss20_uart #(.CLK_HZ(CLK_HZ)) u_uart (
+    .clk, .rst,
+    .tx_byte_i(ta_tx), .tx_valid_i(ta_tx_v), .txd_o(uart_txd_o),
+    .rxd_i(uart_rxd_i), .rx_byte_o(ta_rx), .rx_valid_o(ta_rx_v), .rx_ready_i(ta_rx_rdy), .brk_o(ta_brk));
+  assign uart_rts_o = 1'b0;
+  assign uart_dtr_o = 1'b0;
+
+  // 2: the M48T08, its clock seeded from the MiSTer's RTC (BCD) at the
+  // first update; the NVRAM image port is nvram_sd's (phase 4, in progress)
+  logic rtc_t, rtc_seen;
+  always_ff @(posedge clk) begin
+    rtc_t <= rtc_i[64];
+    if (rst) rtc_seen <= 1'b0;
+    else if (rtc_t != rtc_i[64]) rtc_seen <= 1'b1;
+  end
+  m48t08 #(.CLK_HZ(CLK_HZ)) u_nvram (
+    .clk, .rst(rst_m), .bus_i(iob_q[2]), .bus_o(iob_r[2]),
+    .img_we(1'b0), .img_addr('0), .img_be('0), .img_wdata('0), .img_rdata(),
+    .seed_valid(rtc_seen && rtc_t != rtc_i[64]),
+    .seed_sec(rtc_i[7:0]), .seed_min(rtc_i[15:8]), .seed_hour(rtc_i[23:16]), .seed_day(rtc_i[55:48]),
+    .seed_date(rtc_i[31:24]), .seed_month(rtc_i[39:32]), .seed_year(rtc_i[47:40]));
+
+  // 3: the counter/timers, 4: the interrupt controller
+  logic irq_tsys, irq_tcpu;
+  slavio_timer #(.NCPU(1), .CLK_HZ(CLK_HZ)) u_timer (
+    .clk, .rst(rst_m), .bus_i(iob_q[3]), .bus_o(iob_r[3]), .irq_sys(irq_tsys), .irq_cpu(irq_tcpu));
+
+  logic [31:0] isrc;
+  always_comb begin
+    isrc = '0;
+    isrc[SI_K] = irq_kbd;
+    isrc[SI_S] = irq_ser;
+    isrc[SI_T] = irq_tsys;
+  end
+  logic [0:0][3:0] irl_v;
+  slavio_intctl #(.NCPU(1)) u_intctl (
+    .clk, .rst(rst_m), .bus_i(iob_q[4]), .bus_o(iob_r[4]), .src_i(isrc), .timer_cpu_i(irq_tcpu), .irl_o(irl_v));
+  assign irl = irl_v[0];
+
+  // 5: the system registers (LEDs, AUXIO, power, system control/status)
+  logic [15:0] leds;
+  logic        aux_led;
+  slavio_misc u_misc (
+    .clk, .rst(rst || !run), .rst_swr_i(rst_swr), .rst_switch_i(1'b0), .wd_i(wd_reset),
+    .bus_i(iob_q[5]), .bus_o(iob_r[5]),
+    .leds_o(leds), .led_o(aux_led), .fd_tc_o(), .fd_density_i(1'b0), .power_off_o(),
+    .pwr_fail_i(1'b0), .pwr_irq_o(), .diag_sw_i(1'b0), .sw_reset_o(sw_reset));
+
+  // 6: SBus slot F (DMA2, ESP, LANCE: phases 7-8), 7: slot 2 (TCX: phase
+  // 6): not yet; their registers read 0
+  always_ff @(posedge clk) begin
+    iob_r[6] <= '0; iob_r[7] <= '0;
+    iob_r[6].ack <= iob_q[6].req && !iob_r[6].ack;
+    iob_r[7].ack <= iob_q[7].req && !iob_r[7].ack;
+  end
+
+  /* verilator lint_on PINCONNECTEMPTY */
+
+  // ------------------------------------------------------- idle for now --
   always_comb begin
     for (int n = 0; n < 4; n++) begin
       sd_lba_o[n]      = '0;
@@ -123,28 +282,14 @@ module ss20_machine (
       sd_buff_din_o[n] = '0;
     end
   end
-  assign sd_rd_o        = '0;
-  assign sd_wr_o        = '0;
-
-  assign uart_txd_o     = 1'b1;         // a mark: the line is idle
-  assign uart_rts_o     = 1'b0;
-  assign uart_dtr_o     = 1'b0;
-
+  assign sd_rd_o          = '0;
+  assign sd_wr_o          = '0;
   assign kbd_led_status_o = '0;
   assign kbd_led_use_o    = '0;
-
-  assign audio_l_o      = '0;
-  assign audio_r_o      = '0;
-
-  assign led_disk_o     = 1'b0;
-
-  // About one blink a second at 55 MHz.
-  logic [25:0] beat;
-  always_ff @(posedge clk) begin
-    if (rst) beat <= '0;
-    else beat <= beat + 26'd1;
-  end
-  assign led_user_o = beat[25];
+  assign audio_l_o        = '0;
+  assign audio_r_o        = '0;
+  assign led_disk_o       = 1'b0;
+  assign led_user_o       = !aux_led;   // the Aux register's LED bit (0 = lit), as the board's LED
 
   // -------------------------------------------------------- test pattern --
 
@@ -187,11 +332,9 @@ module ss20_machine (
 
   /* verilator lint_off UNUSEDSIGNAL */
   wire unused_inputs = ^{opt_autoboot_i, opt_serial_i, opt_cg3_i, opt_kbd_layout_i, opt_l2tlb_i,
-                         opt_ram_mb_i, opt_eth_i, ddr_busy_i, ddr_dout_i, ddr_dout_ready_i,
-                         ioctl_download_i, ioctl_index_i, ioctl_wr_i, ioctl_addr_i, ioctl_dout_i,
-                         img_mounted_i, img_readonly_i, img_size_i, sd_ack_i, sd_buff_addr_i,
-                         sd_buff_dout_i, sd_buff_wr_i, rtc_i, uart_rxd_i, uart_cts_i, uart_dsr_i,
-                         ps2_key_i, ps2_mouse_i, frame};
+                         opt_eth_i, img_mounted_i, img_readonly_i, img_size_i, sd_ack_i, sd_buff_addr_i,
+                         sd_buff_dout_i, sd_buff_wr_i, uart_cts_i, uart_dsr_i,
+                         ps2_key_i, ps2_mouse_i, frame, leds, rtc_i[63:56]};
   /* verilator lint_on UNUSEDSIGNAL */
 
 endmodule

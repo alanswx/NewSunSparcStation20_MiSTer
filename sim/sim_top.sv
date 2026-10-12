@@ -114,7 +114,7 @@ wire       vid_ce, uart_rts, uart_dtr;
 wire [2:0] kbd_led_status, kbd_led_use;
 wire [15:0] audio_l, audio_r;
 
-ss20_machine machine
+ss20_machine #(.SKIP_CLEAR(1'b1)) machine
 (
 	.clk(clk),
 	.rst(reset),

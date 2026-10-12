@@ -20,8 +20,8 @@ module cpu_module
   import cpu_pkg::*;
 #(
   parameter bit HAS_FPU = 1'b1,
-  parameter logic [11:0] RAM_MB  = 12'd64,  // SYSCONF (ASI 4 VA 0xD00, the old core's private register, read by
-  parameter bit          SS20    = 1'b1,    // OpenBIOS and the suite): RAM MB in 31:20, SS20 in bit 4,
+  parameter bit          SS20    = 1'b1,    // SYSCONF (ASI 4 VA 0xD00, the old core's private register, read by
+                                            // OpenBIOS and the suite): RAM MB (ram_mb_i) in 31:20, SS20 in bit 4,
   parameter logic [1:0]  NCPU_M1 = 2'd0     // the CPU count minus one in 1:0 (docs/legacy/HARDWARE_GAPS.md:150)
 )(
   input  logic        clk,
@@ -30,6 +30,7 @@ module cpu_module
   input  logic [3:0]  mid_i,
   input  logic [3:0]  irl_i,
   input  logic        cache_en_i,     // 0: both caches off whatever MCNTL says (the OSD's Cachena)
+  input  logic [11:0] ram_mb_i,       // installed memory in MB, for SYSCONF (the OSD's option)
 
   output mem_pkg::mem_req_t mem_req_o,
   input  mem_pkg::mem_rsp_t mem_rsp_i,
@@ -123,7 +124,7 @@ module cpu_module
     .walk_done_o(wk_done), .walk_fault_o(wk_fault), .walk_masked_o(wk_masked),
     .berr_valid_i(be_valid), .berr_at_i(be_at), .berr_va_i(be_va), .berr_no_fault_i(be_no_fault), .berr_masked_o(be_masked),
     .mem_req_o(mem_w), .mem_rsp_i(mem_w_r),
-    .sysconf_i({RAM_MB, 12'd0, 3'd0, SS20, 2'b00, NCPU_M1}),
+    .sysconf_i({ram_mb_i, 12'd0, 3'd0, SS20, 2'b00, NCPU_M1}),
     .mcntl_o(mcntl), .wd_i(wd_now), .si_reset_o(si_reset_o), .dbg_o(dbg_mmu));
 
   logic ie, de, nf;
