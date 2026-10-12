@@ -15,7 +15,7 @@ command -v verilator >/dev/null || { echo "verilator not found" >&2; exit 2; }
 
 # The RTL, packages first.
 pkgs=("$rtl"/pkg/*_pkg.sv)
-srcs=$(ls "$rtl"/lib/*.sv "$rtl"/mister/*.sv "$rtl"/obio/*.sv "$rtl"/cpu/*.sv "$rtl"/video/*.sv "$rtl"/machine/*.sv 2>/dev/null)
+srcs=$(ls "$rtl"/lib/*.sv "$rtl"/mister/*.sv "$rtl"/obio/*.sv "$rtl"/cpu/*.sv "$rtl"/video/*.sv "$rtl"/machine/*.sv "$rtl"/sun4m/*.sv 2>/dev/null)
 
 fail=0
 echo "== lint"
