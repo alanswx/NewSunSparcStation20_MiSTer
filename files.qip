@@ -25,6 +25,7 @@ set_global_assignment -name SYSTEMVERILOG_FILE rtl/obio/m48t08.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/obio/slavio_timer.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/obio/slavio_intctl.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/obio/slavio_misc.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/mister/nvram_sd.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/machine/ss20_memctl.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/machine/ss20_iobridge.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/machine/ss20_loader.sv

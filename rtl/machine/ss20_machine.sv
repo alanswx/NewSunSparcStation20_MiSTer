@@ -135,6 +135,7 @@ module ss20_machine #(
   // The machine's reset: the loader's, and a software reset (the system
   // control register) for a few cycles, which keeps memory
   logic       sw_reset;
+  logic       nv_ready;                  // (nvram_sd, below)
   logic [3:0] swr_cnt;
   logic       rst_m, rst_swr;
   always_ff @(posedge clk) begin
@@ -143,7 +144,7 @@ module ss20_machine #(
     else if (swr_cnt != 4'd0) swr_cnt <= swr_cnt - 4'd1;
   end
   assign rst_swr = swr_cnt != 4'd0;
-  assign rst_m   = rst || !run || rst_swr;
+  assign rst_m   = rst || !run || rst_swr || !nv_ready;   // the NVRAM image loads first
 
   /* verilator lint_off PINCONNECTEMPTY */  // (the blocks' unused outputs, left open)
 
@@ -224,16 +225,48 @@ module ss20_machine #(
   assign uart_dtr_o = 1'b0;
 
   // 2: the M48T08, its clock seeded from the MiSTer's RTC (BCD) at the
-  // first update; the NVRAM image port is nvram_sd's (phase 4, in progress)
+  // first update, its 8 KB kept in the image on SD slot 3 by nvram_sd
+  // (which also stamps the ID PROM from ioctl index 64's serial)
   logic rtc_t, rtc_seen;
   always_ff @(posedge clk) begin
     rtc_t <= rtc_i[64];
     if (rst) rtc_seen <= 1'b0;
     else if (rtc_t != rtc_i[64]) rtc_seen <= 1'b1;
   end
+
+  logic [23:0] seed;
+  logic        seed_ok, seed_dl;
+  always_ff @(posedge clk) begin
+    seed_dl <= ioctl_download_i && ioctl_index_i == 8'd64;
+    if (ioctl_download_i && ioctl_index_i == 8'd64 && ioctl_wr_i) begin
+      if (ioctl_addr_i == 27'd4) seed[23:16] <= ioctl_dout_i[15:8];          // byte 5
+      if (ioctl_addr_i == 27'd6) seed[15:0]  <= {ioctl_dout_i[7:0], ioctl_dout_i[15:8]};
+      if (ioctl_addr_i == 27'd6) seed_ok <= 1'b1;
+    end
+  end
+  initial seed_ok = 1'b0;
+
+  logic        nv_we;
+  logic [10:0] nv_addr;
+  logic [3:0]  nv_be;
+  logic [31:0] nv_wdata, nv_rdata;
+  logic [31:0] nv_lba;
+  logic [5:0]  nv_cnt;
+  logic        nv_rd, nv_wr;
+  logic [15:0] nv_din;
+  nvram_sd #(.CLK_HZ(CLK_HZ), .SIMU(SKIP_CLEAR)) u_nvsd (
+    .clk, .por(1'b0),
+    .img_mounted(img_mounted_i[3]), .img_readonly(img_readonly_i), .img_size(img_size_i),
+    .sd_lba(nv_lba), .sd_blk_cnt(nv_cnt), .sd_rd(nv_rd), .sd_wr(nv_wr), .sd_ack(sd_ack_i[3]),
+    .sd_buff_addr(sd_buff_addr_i), .sd_buff_dout(sd_buff_dout_i), .sd_buff_din(nv_din), .sd_buff_wr(sd_buff_wr_i),
+    .seed, .seed_ok(seed_ok && !seed_dl),
+    .nv_we, .nv_addr, .nv_be, .nv_wdata, .nv_rdata,
+    .nv_bus_req(iob_q[2]), .nv_bus_rsp(iob_r[2]),
+    .ready(nv_ready));
+
   m48t08 #(.CLK_HZ(CLK_HZ)) u_nvram (
     .clk, .rst(rst_m), .bus_i(iob_q[2]), .bus_o(iob_r[2]),
-    .img_we(1'b0), .img_addr('0), .img_be('0), .img_wdata('0), .img_rdata(),
+    .img_we(nv_we), .img_addr(nv_addr), .img_be(nv_be), .img_wdata(nv_wdata), .img_rdata(nv_rdata),
     .seed_valid(rtc_seen && rtc_t != rtc_i[64]),
     .seed_sec(rtc_i[7:0]), .seed_min(rtc_i[15:8]), .seed_hour(rtc_i[23:16]), .seed_day(rtc_i[55:48]),
     .seed_date(rtc_i[31:24]), .seed_month(rtc_i[39:32]), .seed_year(rtc_i[47:40]));
@@ -276,14 +309,17 @@ module ss20_machine #(
 
   // ------------------------------------------------------- idle for now --
   always_comb begin
-    for (int n = 0; n < 4; n++) begin
+    for (int n = 0; n < 3; n++) begin
       sd_lba_o[n]      = '0;
       sd_blk_cnt_o[n]  = '0;
       sd_buff_din_o[n] = '0;
     end
+    sd_lba_o[3]      = nv_lba;
+    sd_blk_cnt_o[3]  = nv_cnt;
+    sd_buff_din_o[3] = nv_din;
   end
-  assign sd_rd_o          = '0;
-  assign sd_wr_o          = '0;
+  assign sd_rd_o          = {nv_rd, 3'b000};
+  assign sd_wr_o          = {nv_wr, 3'b000};
   assign kbd_led_status_o = '0;
   assign kbd_led_use_o    = '0;
   assign audio_l_o        = '0;
@@ -332,8 +368,7 @@ module ss20_machine #(
 
   /* verilator lint_off UNUSEDSIGNAL */
   wire unused_inputs = ^{opt_autoboot_i, opt_serial_i, opt_cg3_i, opt_kbd_layout_i, opt_l2tlb_i,
-                         opt_eth_i, img_mounted_i, img_readonly_i, img_size_i, sd_ack_i, sd_buff_addr_i,
-                         sd_buff_dout_i, sd_buff_wr_i, uart_cts_i, uart_dsr_i,
+                         opt_eth_i, sd_ack_i[2:0], img_mounted_i[2:0], uart_cts_i, uart_dsr_i,
                          ps2_key_i, ps2_mouse_i, frame, leds, rtc_i[63:56]};
   /* verilator lint_on UNUSEDSIGNAL */
 
