@@ -59,6 +59,7 @@ module l1cache
   input  logic [8:0]  idx_i,         // = the VA's [11:3]: the RAM index, so that it does not wait for the TLB
   input  logic [7:0]  be_i,
   input  logic [63:0] wdata_i,
+  output logic        taken_o,       // the request is taken this cycle
   output logic        done_o,
   output logic [63:0] rdata_o,
   output logic        err_o,
@@ -467,6 +468,7 @@ module l1cache
   logic can_take, accept;
   assign can_take = !done_q && (st == S_IDLE || hit_now) && fs == F_IDLE && !flash_v_i && !flash_l_i;
   assign accept   = req_i && can_take;
+  assign taken_o  = accept;
 
   always_ff @(posedge clk) begin
     done_q <= 1'b0;

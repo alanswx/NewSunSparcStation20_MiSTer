@@ -133,7 +133,7 @@ module cpu_module
   // ---------------------------------------------------------------------
   // The caches
   // ---------------------------------------------------------------------
-  logic        ic_req, ic_done, ic_err;
+  logic        ic_req, ic_taken, ic_done, ic_err;
   logic [35:0] ic_pa;
   logic [8:0]  ic_idx;
   logic        ic_cacheable;
@@ -152,7 +152,7 @@ module cpu_module
   l1cache #(.ICACHE(1'b1)) u_ic (
     .clk, .rst, .enable_i(ie), .mid_i,
     .req_i(ic_req), .we_i(1'b0), .atomic_i(1'b0), .cacheable_i(ic_cacheable), .pa_i(ic_pa), .idx_i(ic_idx), .be_i(8'hFF), .wdata_i(64'd0),
-    .done_o(ic_done), .rdata_o(ic_rdata), .err_o(ic_err),
+    .taken_o(ic_taken), .done_o(ic_done), .rdata_o(ic_rdata), .err_o(ic_err),
     .inval_i(ic_inval), .inval_line_i(inval_line), .snoop_i, .snoop_hold_o(ic_hold),
     .flash_v_i(ic_flash_v), .flash_l_i(ic_flash_l), .flash_busy_o(ic_flash_busy),
     .diag_req_i(ic_dg_req), .diag_we_i(dmr.write), .diag_tag_i(!dmr.asi[0]), .diag_va_i(dmr.va), .diag_wdata_i(diag_wdata),
@@ -160,6 +160,9 @@ module cpu_module
     .mem_req_o(mem_i), .mem_rsp_i(mem_i_r), .dbg_o(dbg_ic));
 
   logic        dc_req, dc_we, dc_atomic, dc_cacheable, dc_done, dc_err;
+  /* verilator lint_off UNUSEDSIGNAL */
+  logic        dc_taken;               // (the data side needs no such flag: its index is the VA's)
+  /* verilator lint_on UNUSEDSIGNAL */
   logic [35:0] dc_pa;
   logic [8:0]  dc_idx;
   logic [7:0]  dc_be;
@@ -177,7 +180,7 @@ module cpu_module
   l1cache #(.ICACHE(1'b0)) u_dc (
     .clk, .rst, .enable_i(de), .mid_i,
     .req_i(dc_req), .we_i(dc_we), .atomic_i(dc_atomic), .cacheable_i(dc_cacheable), .pa_i(dc_pa), .idx_i(dc_idx), .be_i(dc_be), .wdata_i(dc_wdata),
-    .done_o(dc_done), .rdata_o(dc_rdata), .err_o(dc_err),
+    .taken_o(dc_taken), .done_o(dc_done), .rdata_o(dc_rdata), .err_o(dc_err),
     .inval_i(dc_inval_any), .inval_line_i(dc_inval_line), .snoop_i, .snoop_hold_o(dc_hold),
     .flash_v_i(dc_flash_v), .flash_l_i(dc_flash_l), .flash_busy_o(dc_flash_busy),
     .diag_req_i(dc_dg_req), .diag_we_i(dmr.write), .diag_tag_i(!dmr.asi[0]), .diag_va_i(dmr.va), .diag_wdata_i(diag_wdata),
@@ -331,9 +334,16 @@ module cpu_module
   end
   assign i_hit_now    = i_new && ut_ok;
   assign ic_req       = i_hit_now || (is == I_CACHE && !ic_done);   // held until done
-  assign ic_pa        = i_hit_now ? i_fast_pa : ic_pa_q;
-  assign ic_cacheable = i_hit_now ? cacheable_pa(i_fast_pa) : ic_cacheable_q;
-  assign ic_idx       = i_hit_now ? i_va_now[11:3] : ic_pa_q[11:3];
+  // The address the cache sees: the registered one while a request in
+  // I_CACHE waits to be taken (after the MMU's lookup, or the cache was
+  // busy), else this cycle's fast translation. Chosen by state only: the
+  // request valid (i_hit_now) is late.
+  logic        i_pend_q;
+  logic        ic_use_q;
+  assign ic_use_q     = is == I_CACHE && i_pend_q;
+  assign ic_pa        = ic_use_q ? ic_pa_q : i_fast_pa;
+  assign ic_cacheable = ic_use_q ? ic_cacheable_q : cacheable_pa(i_fast_pa);
+  assign ic_idx       = ic_use_q ? ic_pa_q[11:3] : i_va_now[11:3];
 
   // The response: a cache answer the cycle it comes, a fault from the
   // register; one the IU does not take (ready low: its buffer is full) is
@@ -360,8 +370,9 @@ module cpu_module
     if (iu_rst) begin
       is <= I_IDLE;
       i_va <= '0; i_supv <= 1'b0;
-      ic_pa_q <= '0; ic_cacheable_q <= 1'b0;
+      ic_pa_q <= '0; ic_cacheable_q <= 1'b0; i_pend_q <= 1'b0;
     end else begin
+      if (ic_taken) i_pend_q <= 1'b0;
       case (is)
         I_IDLE, I_CACHE: begin
           if (is == I_CACHE && !ic_done) begin
@@ -371,6 +382,7 @@ module cpu_module
             if (ut_ok) begin
               ic_pa_q <= i_fast_pa;
               ic_cacheable_q <= cacheable_pa(i_fast_pa);
+              i_pend_q <= !ic_taken;      // the cache was busy: the registered PA from now on
               is <= I_CACHE;
             end else begin
               is <= I_XLAT;                // the micro-TLB missed: the MMU's TLB next
@@ -385,6 +397,7 @@ module cpu_module
           end else if (xi_r.hit) begin
             ic_pa_q <= xi_r.pa;
             ic_cacheable_q <= cacheable_pa(xi_r.pa);
+            i_pend_q <= 1'b1;
             is <= I_CACHE;                 // the cache request goes out next cycle, from the register
           end else if (xi_r.fault) begin
             ifs_q.valid <= 1'b1; ifs_q.fault <= 2'd1;
@@ -494,7 +507,7 @@ module cpu_module
   assign dc_atomic = dmr.atomic;
   assign dc_pa    = d_hit_now ? xd_r.pa : d_bypass_now ? {dmr.asi[3:0], dmr.va} : d_pa;
   assign dc_cacheable = d_hit_now ? cacheable_pa(xd_r.pa) : d_bypass_now ? 1'b0 : d_cacheable;
-  assign dc_idx   = (d_hit_now || d_bypass_now) ? dmr.va[11:3] : d_pa[11:3];
+  assign dc_idx   = dmr.va[11:3];      // = the PA's (the page offset), and the IU holds the request: no wait for the TLB
   assign dc_be    = lanes_be(dmr.size, dc_pa[2:0]);     // from the PA of this cycle, not the latched one
   assign dc_wdata = lanes_wdata(dmr.size, dmr.wdata);
   assign rg_valid = ds == D_REG;
