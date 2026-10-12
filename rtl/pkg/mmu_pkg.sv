@@ -58,6 +58,7 @@ package mmu_pkg;
     logic [35:0] pa;
     logic        pte_c;       // the PTE's C bit (informational; E3 caches RAM anyway)
     logic [2:0]  acc;         // the entry's ACC (for a side's own translation cache)
+    logic        m;           // the entry's M bit (likewise: a store may use the copy only with M set)
   } xlat_rsp_t;
 
   // The physical address space rule for the caches (docs/arch/mmu.md §3)

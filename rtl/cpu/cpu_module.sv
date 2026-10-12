@@ -103,6 +103,7 @@ module cpu_module
   logic [1:0]  rg_size;
   xlat_req_t   xi, xd;
   xlat_rsp_t   xi_r, xd_r;
+  logic        xd_sel;              // the data side has the MMU's lookup port this cycle (see srmmu)
   logic        wk_req_d, wk_req_i, wk_done, wk_fault, wk_masked;
   logic [1:0]  wk_owner;
   logic        tlb_changed;
@@ -117,7 +118,7 @@ module cpu_module
     .clk, .rst,
     .reg_valid_i(rg_valid), .reg_we_i(rg_we), .reg_asi_i(rg_asi), .reg_va_i(rg_va), .reg_wdata_i(rg_wdata),
     .reg_size_i(rg_size), .reg_ack_o(rg_ack), .reg_fault_o(rg_fault), .reg_rdata_o(rg_rdata),
-    .xi_i(xi), .xi_o(xi_r), .xd_i(xd), .xd_o(xd_r), .tlb_changed_o(tlb_changed),
+    .xi_i(xi), .xi_o(xi_r), .xd_i(xd), .xd_o(xd_r), .xd_sel_i(xd_sel), .tlb_changed_o(tlb_changed),
     .walk_req_d_i(wk_req_d), .walk_req_i_i(wk_req_i), .walk_owner_o(wk_owner),
     .walk_done_o(wk_done), .walk_fault_o(wk_fault), .walk_masked_o(wk_masked),
     .berr_valid_i(be_valid), .berr_at_i(be_at), .berr_va_i(be_va), .berr_no_fault_i(be_no_fault), .berr_masked_o(be_masked),
@@ -483,30 +484,107 @@ module cpu_module
   assign d_at       = {dmr.write | dmr.atomic, ~dmr.asi[1], dmr.asi[0]};
   assign d_no_fault = dmr.asi != 8'h09;
 
-  // The MMU lookup of the data side: in the cycle the IU's request arrives
-  // (a normal ASI), on the retry after a walk, and for a line flush
+  // The data side translates a normal-ASI request in the cycle it arrives
+  // only by its micro-TLB below, or directly (MMU off; boot mode for the
+  // instruction-space ASIs), and the cache takes it at once; a miss, or a
+  // hit the permission check or a clear M bit refuses, goes to the MMU's
+  // TLB (D_XLAT: two cycles from registered state), the cache request then
+  // follows from the registered PA. Line flushes look up in D_FLUSH_XLAT.
   dmem_rsp_t   dms_q;                   // the registered part of the answer
   logic        d_new, d_bypass_now, d_hit_now;
   assign d_new        = ds == D_IDLE && dmr.valid && !dms_q.ack && d_normal;
   assign d_bypass_now = ds == D_IDLE && dmr.valid && !dms_q.ack && d_bypass;
+
+  logic        d_direct;
+  logic [35:0] d_direct_pa;
+  assign d_direct    = !mcntl[MC_EN] || (mcntl[MC_BM] && d_at[1]);
+  assign d_direct_pa = (mcntl[MC_BM] && d_at[1]) ? {8'hFF, dmr.va[27:0]} : {4'h0, dmr.va};
+
+  localparam int DUT = 8;
+  logic        dut_v [DUT];
+  logic [19:0] dut_vtag [DUT];
+  logic [23:0] dut_ppn [DUT];
+  logic [2:0]  dut_acc [DUT];
+  logic        dut_m [DUT];
+  logic [2:0]  dut_wp;
+  logic        dut_hit, dut_ok, dut_m_hit;
+  logic [35:0] dut_pa;
+  logic [2:0]  dut_acc_hit;
+  always_comb begin
+    dut_hit = 1'b0; dut_pa = '0; dut_acc_hit = '0; dut_m_hit = 1'b0;
+    for (int k = 0; k < DUT; k++) begin
+      if (dut_v[k] && dut_vtag[k] == dmr.va[31:12]) begin
+        dut_hit = 1'b1; dut_pa = {dut_ppn[k], dmr.va[11:0]}; dut_acc_hit = dut_acc[k]; dut_m_hit = dut_m[k];
+      end
+    end
+    dut_ok = d_direct || (dut_hit && acc_fault(d_at, dut_acc_hit) == FT_NONE && (!d_at[2] || dut_m_hit));
+  end
+  logic [35:0] d_fast_pa;
+  assign d_fast_pa = d_direct ? d_direct_pa : dut_pa;
+
+  // Filled one cycle after the MMU's answer, from a registered copy
+  logic        dut_fill, dut_fill_q;
+  logic [19:0] dut_fill_vtag;
+  logic [23:0] dut_fill_ppn;
+  logic [2:0]  dut_fill_acc;
+  logic        dut_fill_m;
+  assign dut_fill = ds == D_XLAT && xd_r.hit && !d_direct;
+  logic        dut_dup;
+  logic [2:0]  dut_dup_idx;
+  always_comb begin
+    dut_dup = 1'b0; dut_dup_idx = '0;
+    for (int k = 0; k < DUT; k++)
+      if (dut_v[k] && dut_vtag[k] == dut_fill_vtag) begin dut_dup = 1'b1; dut_dup_idx = 3'(k); end
+  end
+  always_ff @(posedge clk) begin
+    dut_fill_vtag <= dmr.va[31:12];
+    dut_fill_ppn  <= xd_r.pa[35:12];
+    dut_fill_acc  <= xd_r.acc;
+    dut_fill_m    <= xd_r.m;
+    if (rst || tlb_changed) begin
+      for (int k = 0; k < DUT; k++) dut_v[k] <= 1'b0;
+      dut_wp <= '0;
+      dut_fill_q <= 1'b0;
+    end else begin
+      dut_fill_q <= dut_fill;
+      if (dut_fill_q) begin
+        // a page already held (its copy refused a store: M was clear) is replaced in place
+        if (dut_dup) begin
+          dut_ppn[dut_dup_idx] <= dut_fill_ppn; dut_acc[dut_dup_idx] <= dut_fill_acc; dut_m[dut_dup_idx] <= dut_fill_m;
+        end else begin
+          dut_v[dut_wp]    <= 1'b1;
+          dut_vtag[dut_wp] <= dut_fill_vtag;
+          dut_ppn[dut_wp]  <= dut_fill_ppn;
+          dut_acc[dut_wp]  <= dut_fill_acc;
+          dut_m[dut_wp]    <= dut_fill_m;
+          dut_wp <= dut_wp + 3'd1;
+        end
+      end
+    end
+  end
+
   always_comb begin
     xd = '0;
     xd.va = dmr.va;
-    if (d_new || ds == D_XLAT) begin
+    if (ds == D_XLAT) begin
       xd.valid = 1'b1; xd.at = d_at; xd.no_fault = d_no_fault;
     end else if (ds == D_FLUSH_XLAT) begin
       xd.valid = 1'b1; xd.at = AT_LD_SD; xd.no_fault = 1'b1;
     end
     wk_req_d = xd.valid && xd_r.miss && wk_owner == 2'd0;
   end
-  assign d_hit_now = (d_new || ds == D_XLAT) && xd_r.hit;
+  assign d_hit_now = d_new && dut_ok;
+  assign xd_sel = ds == D_XLAT || ds == D_FLUSH_XLAT;
 
-  // Requests to the blocks: the cache in the translation's cycle
+  // Requests to the blocks: the cache in the request cycle on the fast
+  // paths, else from the registered PA (chosen by state: the request valid is late)
+  logic d_fast_sel;
+  assign d_fast_sel = ds == D_IDLE;
   assign dc_req   = d_hit_now || d_bypass_now || (ds == D_CACHE && !dc_done);
   assign dc_we    = dmr.write;
   assign dc_atomic = dmr.atomic;
-  assign dc_pa    = d_hit_now ? xd_r.pa : d_bypass_now ? {dmr.asi[3:0], dmr.va} : d_pa;
-  assign dc_cacheable = d_hit_now ? cacheable_pa(xd_r.pa) : d_bypass_now ? 1'b0 : d_cacheable;
+  assign dc_pa    = !d_fast_sel ? d_pa : d_bypass ? {dmr.asi[3:0], dmr.va} : d_fast_pa;
+  assign dc_cacheable = !d_fast_sel ? d_cacheable : d_bypass ? 1'b0 : cacheable_pa(d_fast_pa);
   assign dc_idx   = dmr.va[11:3];      // = the PA's (the page offset), and the IU holds the request: no wait for the TLB
   assign dc_be    = lanes_be(dmr.size, dc_pa[2:0]);     // from the PA of this cycle, not the latched one
   assign dc_wdata = lanes_wdata(dmr.size, dmr.wdata);
@@ -567,22 +645,12 @@ module cpu_module
         D_IDLE: begin
           if (dmr.valid && !dms_q.ack) begin
             if (d_normal) begin
-              // translated this cycle (d_new): as D_XLAT
-              if (xd_r.hit) begin
-                d_pa <= xd_r.pa;
-                d_cacheable <= cacheable_pa(xd_r.pa);
+              if (dut_ok) begin                // translated this cycle (d_hit_now): the cache has it
+                d_pa <= d_fast_pa;
+                d_cacheable <= cacheable_pa(d_fast_pa);
                 ds <= D_CACHE;
-              end else if (xd_r.fault) begin
-                dms_q.ack <= 1'b1;
-                if (!d_masked) begin dms_q.fault <= 2'd1;
-`ifndef SYNTHESIS
-                $display("%0t cpu_module: data fault (%s) va=%08x asi=%02x write=%0d acc=%0d nf=%0d masked=%0d", $time, "permission", dmr.va, dmr.asi, dmr.write, xd_r.acc, nf, d_masked); $fflush();
-`endif
-                end
-              end else if (wk_req_d) begin
-                ds <= D_WALK;
               end else begin
-                ds <= D_WALK_WAIT;
+                ds <= D_XLAT;                  // the MMU's TLB: misses, faults and walks are found there
               end
             end else if (d_bypass) begin
               d_pa <= {dmr.asi[3:0], dmr.va};
@@ -636,7 +704,9 @@ module cpu_module
           end
         end
         D_XLAT: begin
-          if (xd_r.hit) begin
+          if (xd_r.busy) begin
+            // the lookup's first cycle, or the port was the other side's
+          end else if (xd_r.hit) begin
             d_pa <= xd_r.pa;
             d_cacheable <= cacheable_pa(xd_r.pa);
             ds <= D_CACHE;
@@ -694,7 +764,9 @@ module cpu_module
           if (dc_dg_done) begin dms_q.ack <= 1'b1; dms_q.rdata <= diag_rd(dc_dg_rdata); ds <= D_IDLE; end
         end
         D_FLUSH_XLAT: begin
-          if (xd_r.hit) begin
+          if (xd_r.busy) begin
+            // the lookup's first cycle
+          end else if (xd_r.hit) begin
             inval_line <= xd_r.pa[35:5];
             dc_inval <= !dmr.asi[3];          // 0x10-0x14 both caches, 0x18-0x1C the I-cache
             ic_inval <= 1'b1;
@@ -742,7 +814,7 @@ module cpu_module
   // synthesis translate_on
 `endif
   logic unused_ok;
-  assign unused_ok = &{1'b0, iu_halt, iu_cwp, be_masked, xd_r.pte_c, xi_r.pte_c, xd_r.acc, xd_r.busy, ifr.supv, dmr.va[7:0]};
+  assign unused_ok = &{1'b0, iu_halt, iu_cwp, be_masked, xd_r.pte_c, xi_r.pte_c, xi_r.m, ifr.supv, dmr.va[7:0]};
 
   // the hang reporter's words: the IU's pipeline, the data request, the
   // fetch, the states of the data side, instruction side, arbiter, MMU

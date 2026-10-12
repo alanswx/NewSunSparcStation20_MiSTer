@@ -28,7 +28,8 @@ module cpu_plomb
   import mem_pkg::*;
 #(
   parameter integer RAM_MB = 64,          // reported in ASI 4 VA 0xD00 (bits 31:20)
-  parameter integer MID    = 8            // this CPU's MBus module ID
+  parameter integer MID    = 8,           // this CPU's MBus module ID
+  parameter integer CPU_HZ = 27_500_000   // clk_cpu's frequency (the hang reporter's baud rate and timeouts)
 )(
   input  logic        clk,
   input  logic        clk_cpu,
@@ -113,7 +114,8 @@ module cpu_plomb
     dbg_pb_c  <= dbg_pb;
     dbg_bus_c <= {pb_req, pb_ack, pb_dreq, pb_lock, pb_code, sn_full, hold};
   end
-  hang_dump u_hang (
+  hang_dump #(.DIV(CPU_HZ / 115_200), .CBITS(CPU_HZ > 40_000_000 ? 25 : 24),
+              .TBITS(CPU_HZ > 40_000_000 ? 28 : 27)) u_hang (
     .clk(clk_cpu), .rst, .commit_i(dbg_commit), .trap_i(dbg_trap), .tt_i(dbg_tt), .pc_i(dbg_pc),
     .psr_i(dbg_psr), .w_i(dbg_w), .x_i({dbg_pb_c, dbg_bus_c, rq.valid, rs_cpu.ack, rs_cpu.err, 5'd0}),
     .txd_o(dbg_txd_o), .act_o(dbg_act_o));

@@ -54,6 +54,8 @@ module srmmu
   output xlat_rsp_t   xi_o,
   input  xlat_req_t   xd_i,
   output xlat_rsp_t   xd_o,
+  input  logic        xd_sel_i,        // the data side may look up this cycle (registered state only;
+                                       // covers xd_i.valid): the CAM takes its VA
   output logic        tlb_changed_o,   // a flush, an ASI 5/6/7 write, a CTX/CTPR/MCNTL write: translation caches drop
 
   // The walker, for the side that missed (its request fields are used):
@@ -166,7 +168,7 @@ module srmmu
     end else if (hit) begin
       if (acc_fault(r.at, e.acc) != FT_NONE) a.fault = 1'b1;
       else if (r.at[2] && !e.m) a.miss = 1'b1;   // a store to a page with M = 0: walk again
-      else begin a.hit = 1'b1; a.pa = pte_pa(e, r.va); a.pte_c = e.c; a.acc = e.acc; end
+      else begin a.hit = 1'b1; a.pa = pte_pa(e, r.va); a.pte_c = e.c; a.acc = e.acc; a.m = e.m; end
     end else begin
       a.miss = 1'b1;
     end
@@ -176,24 +178,56 @@ module srmmu
 
   // The one lookup: the data side's request when it has one, else the
   // instruction side's
-  xlat_req_t   lk;
+  xlat_req_t   lk;                     // the lookup in its second cycle (B)
   logic        h_hit;
   logic [5:0]  h_idx;
   xlat_rsp_t   h_ans;
-  assign lk = xd_i.valid ? xd_i : xi_i;
+  // The lookup takes two cycles. A: the port's request is chosen by
+  // xd_sel_i (registered state in cpu_module: the data side when it may
+  // look up) and the 64 entries are compared, into a registered hit vector.
+  // B: the vector is encoded, the entry chosen and the answer made, for the
+  // port that was looked up in A. A side holds its request until answered
+  // and sees busy meanwhile; an answer is given (and a fault recorded, the
+  // used bit set) only to a side still asking in B. A TLB, context or MCNTL
+  // write in A spoils the lookup: B answers busy and the side asks again.
+  // The sides translate in their request cycle with their own micro-TLBs
+  // (cpu_module); this port serves their misses.
+  xlat_req_t   lk_a;
+  logic [63:0] hv;
+  assign lk_a = xd_sel_i ? xd_i : xi_i;
+  always_comb
+    for (int i = 0; i < 64; i++) hv[i] = tlb_hit(tlb[i], lk_a.va, ctx);
+
+  logic        tlb_mod_now;            // (assigned with the state below)
+  logic [63:0] hv_q;
+  logic        lk_d_q;
+  always_ff @(posedge clk) begin
+    hv_q <= hv;
+    lk <= lk_a;
+    lk_d_q <= xd_sel_i;
+    if (rst || tlb_mod_now) lk.valid <= 1'b0;
+  end
+
+  logic        lk_go;                  // B: the side looked up in A still asks: it gets the answer
+  assign lk_go = lk.valid && (lk_d_q ? xd_i.valid : xi_i.valid);
   always_comb begin
-    h_hit = 1'b0; h_idx = '0;
-    for (int i = 63; i >= 0; i--)
-      if (tlb_hit(tlb[i], lk.va, ctx)) begin h_hit = 1'b1; h_idx = 6'(i); end
+    h_hit = hv_q != '0;
+    h_idx = '0;
+    for (int i = 63; i >= 0; i--) if (hv_q[i]) h_idx = 6'(i);
   end
   assign h_ans = answer(lk, h_hit, tlb[h_idx], mmu_en, bm);
+`ifndef SYNTHESIS
+  always @(posedge clk) if (!rst && xd_i.valid && !xd_sel_i) $error("srmmu: a data-side lookup without xd_sel_i");
+`endif
   always_comb begin
     xd_o = '0; xi_o = '0;
     if (xd_i.valid) begin
-      xd_o = h_ans;
-      xi_o.busy = xi_i.valid;
-    end else begin
-      xi_o = h_ans;
+      if (lk_go && lk_d_q) xd_o = h_ans;
+      else xd_o.busy = 1'b1;
+    end
+    if (xi_i.valid) begin
+      if (lk_go && !lk_d_q) xi_o = h_ans;
+      else xi_o.busy = 1'b1;
     end
   end
 
@@ -379,7 +413,7 @@ module srmmu
   // The next SFSR/SFAR: every source applied in order in one cycle
   // ---------------------------------------------------------------------
   logic lk_fault_now;
-  assign lk_fault_now = lk.valid && h_ans.fault;
+  assign lk_fault_now = lk_go && h_ans.fault;
 
   always_comb begin
     sfsr_n = sfsr;
@@ -420,6 +454,12 @@ module srmmu
     end
   end
 
+  // A write that can change a lookup's answer, this cycle (see the lookup)
+  assign tlb_mod_now = (ws == W_DONE && !w_probe && !w_fault) ||
+                       (reg_go && reg_we_i && reg_is_word &&
+                        (reg_asi_i == 8'h03 || reg_asi_i == 8'h05 || reg_asi_i == 8'h06 || reg_asi_i == 8'h07 ||
+                         (reg_asi_i == 8'h04 && (reg_va_i[12:8] == 5'h00 || reg_va_i[12:8] == 5'h02))));
+
   // ---------------------------------------------------------------------
   // State
   // ---------------------------------------------------------------------
@@ -453,7 +493,7 @@ module srmmu
       if (berr_valid_i) berr_masked_o <= nf && berr_no_fault_i;
 
       // used bits: a hit sets
-      if (lk.valid && h_hit) used[h_idx] <= 1'b1;
+      if (lk_go && h_hit) used[h_idx] <= 1'b1;
 
       // translation caches outside drop on anything that changes a translation
       tlb_changed_o <= wd_i ||
