@@ -390,7 +390,11 @@ specification, and the TCX section of the Sun framebuffer docs or QEMU.
 
 ## 9. Status
 
-Updated 2026-10-10.
+Updated 2026-10-12. Summary: the new CPU (phases 1-3), inside the old
+core as the "CPU hybrid", boots NetBSD 11 and Solaris 8 and runs X and the
+CDE desktop on the board; the running detail is in
+[sessions/HANDOFF-20261009.md](sessions/HANDOFF-20261009.md) ("Current
+state").
 
 | Phase | State |
 |---|---|
