@@ -264,8 +264,17 @@ BEGIN(t_tcx_accel, "chipset: TCX stipple and blit doubleword stores")
         clr %o2
         set 0x03000000, %o3             /* 4 pixels from pixel 0 */
         stda %o2, [%l3] TCX_ASI
-        lda [%l2] TCX_ASI, %l4
-        EXPECT(%l4, 0xabababab, 3)
+        /* The copy may finish after the store is accepted (the VHDL core's
+           TCX acks first; a 55 MHz CPU's next load gets there before it):
+           read until the pixels arrive, a few hundred tries at most. */
+        set 512, %l5
+1:      lda [%l2] TCX_ASI, %l4
+        subcc %l4, %o2, %g0             /* (%o2 = 0: nonzero means arrived) */
+        bne 2f
+        subcc %l5, 1, %l5
+        bne 1b
+        nop
+2:      EXPECT(%l4, 0xabababab, 3)
         sta %g0, [%l0] TCX_ASI          /* leave the corner black */
         sta %g0, [%l2] TCX_ASI
 END
