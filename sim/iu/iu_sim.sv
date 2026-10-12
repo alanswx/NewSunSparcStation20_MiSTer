@@ -40,7 +40,10 @@ module iu_sim
 
   iu #(.HAS_FPU(1'b1)) u_iu (.clk, .rst, .ifetch_req_o(ifr), .ifetch_rsp_i(ifs), .dmem_req_o(dmr), .dmem_rsp_i(dms),
                              .fpu_req_o(fpr), .fpu_rsp_i(fps),
-                             .irl_i(4'd0), .error_o(error), .cwp_o(cwp), .halt_o(halt));
+                             .irl_i(4'd0), .error_o(error), .cwp_o(cwp), .halt_o(halt),
+                             /* verilator lint_off PINCONNECTEMPTY */
+                             .dbg_commit_o(), .dbg_trap_o(), .dbg_tt_o(), .dbg_pc_o(), .dbg_psr_o(), .dbg_pipe_o());
+                             /* verilator lint_on PINCONNECTEMPTY */
   fpu u_fpu (.clk, .rst, .req_i(fpr), .rsp_o(fps));
 
   // ---- memories ----

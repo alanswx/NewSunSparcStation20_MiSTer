@@ -179,7 +179,12 @@ module fpu
   // Rounder
   logic [63:0] rnd_bits;
   logic [4:0]  rnd_flags;
-  fp_round u_round (.v_i(wide), .dbl_i(c_dst_dbl), .rd_i(fsr_rd), .uf_trap_i(fsr_tem[FX_UF]),
+  fp_wide_t    wide_q;
+  logic [63:0] res_bits_q;
+  logic [4:0]  res_flags_q;
+  logic        res_direct_q, res_is_cmp_q;
+  logic [1:0]  res_fcc_q;
+  fp_round u_round (.clk, .v_i(wide_q), .dbl_i(c_dst_dbl), .rd_i(fsr_rd), .uf_trap_i(fsr_tem[FX_UF]),
                     .bits_o(rnd_bits), .flags_o(rnd_flags));
 
   // Divide / square root
@@ -199,31 +204,41 @@ module fpu
   // leading one at 55 (three guard bits below), a sticky for what falls
   // off; the sticky enters the sum as a half-ulp below so that a
   // subtraction borrows (the result's bit 0 is then the new sticky).
-  logic        sub_eff;                // effective subtraction
-  logic signed [13:0] e_big;
-  logic [57:0] ma, mb, m_big, m_small, m_small_al;
+  // Two stages, align then add, each registered: the operands hold for
+  // the whole operation, so each register settles one cycle after the
+  // one before it (the state machine's wait covers them).
+  logic        sub_eff1, a_bigger1, al_sticky1;
+  logic signed [13:0] e_big1;
+  logic [57:0] ma, mb, m_big1, m_small, m_small_al1;
   logic [13:0] ediff;
-  logic        a_bigger, al_sticky;
-  logic [58:0] sum;
   always_comb begin
-    sub_eff = (c_op == O_SUB) ^ c_a.sign ^ c_b.sign;
-    a_bigger = (c_a.exp > c_b.exp) || (c_a.exp == c_b.exp && c_a.man >= c_b.man);
+    sub_eff1 = (c_op == O_SUB) ^ c_a.sign ^ c_b.sign;
+    a_bigger1 = (c_a.exp > c_b.exp) || (c_a.exp == c_b.exp && c_a.man >= c_b.man);
     ma = {2'b0, c_a.man, 3'b0};
     mb = {2'b0, c_b.man, 3'b0};
-    e_big   = a_bigger ? c_a.exp : c_b.exp;
-    m_big   = a_bigger ? ma : mb;
-    m_small = a_bigger ? mb : ma;
-    ediff = 14'(a_bigger ? (c_a.exp - c_b.exp) : (c_b.exp - c_a.exp));
-    al_sticky = 1'b0;
+    e_big1  = a_bigger1 ? c_a.exp : c_b.exp;
+    m_big1  = a_bigger1 ? ma : mb;
+    m_small = a_bigger1 ? mb : ma;
+    ediff = 14'(a_bigger1 ? (c_a.exp - c_b.exp) : (c_b.exp - c_a.exp));
+    al_sticky1 = 1'b0;
     if (ediff > 14'd60) begin
-      m_small_al = '0;
-      al_sticky = m_small != '0;
+      m_small_al1 = '0;
+      al_sticky1 = m_small != '0;
     end else begin
-      m_small_al = m_small >> ediff[5:0];
-      for (int i = 0; i < 58; i++) if (i < int'(ediff[5:0]) && m_small[i]) al_sticky = 1'b1;
+      m_small_al1 = m_small >> ediff[5:0];
+      for (int i = 0; i < 58; i++) if (i < int'(ediff[5:0]) && m_small[i]) al_sticky1 = 1'b1;
     end
-    if (sub_eff) sum = {m_big, 1'b0} - {m_small_al, al_sticky};
-    else         sum = {m_big, 1'b0} + {m_small_al, al_sticky};
+  end
+
+  logic        sub_eff, a_bigger, al_sticky;
+  logic signed [13:0] e_big;
+  logic [57:0] m_big, m_small_al;
+  logic [58:0] sum;
+  always_ff @(posedge clk) begin
+    sub_eff <= sub_eff1; a_bigger <= a_bigger1; al_sticky <= al_sticky1;
+    e_big <= e_big1; m_big <= m_big1; m_small_al <= m_small_al1;
+    if (sub_eff) sum <= {m_big, 1'b0} - {m_small_al, al_sticky};
+    else         sum <= {m_big, 1'b0} + {m_small_al, al_sticky};
   end
 
   // NaN handling (V8 App. N): a signalling NaN wins, else rs2's; quieted
@@ -425,12 +440,20 @@ module fpu
     endcase
   end
 
+  // The per-op result, registered (the rounder's first stage follows)
+  always_ff @(posedge clk) begin
+    wide_q <= wide;
+    res_bits_q <= res_bits; res_flags_q <= res_flags; res_direct_q <= res_direct;
+    res_fcc_q <= res_fcc; res_is_cmp_q <= res_is_cmp;
+  end
+
   // ---------------------------------------------------------------------
   // Control
   // ---------------------------------------------------------------------
   logic [63:0] fin_bits;
   logic [4:0]  fin_flags;
   logic [1:0]  wait_cnt;
+  logic        ds_ok;                  // the divide/square-root unit finished
 
   always_ff @(posedge clk) begin
     dp_wr <= 1'b0;
@@ -443,7 +466,7 @@ module fpu
       fq <= '0;
       c_op <= O_UNIMPL; c_src_dbl <= 1'b0; c_dst_dbl <= 1'b0; c_rd <= '0; c_inst <= '0; c_pc <= '0;
       c_a <= '0; c_b <= '0; c_a_bits <= '0; c_b_bits <= '0;
-      wait_cnt <= '0;
+      wait_cnt <= '0; ds_ok <= 1'b0;
       dp_wr_addr <= '0; dp_wr_dbl <= 1'b0; dp_wr_data <= '0;
       fin_bits <= '0; fin_flags <= '0;
     end else begin
@@ -476,20 +499,25 @@ module fpu
           end
         end
         S_START: begin
-          // operands latched: start the long units, or wait for the multiplier
+          // operands latched: start the long units, or wait for the pipeline
+          ds_ok <= 1'b0;
           if (c_op == O_UNIMPL) begin
             ex <= S_DONE;
           end else if ((c_op == O_DIV || c_op == O_SQRT) && !res_direct) begin
             ds_start <= 1'b1;
             ex <= S_WAIT;
           end else begin
-            wait_cnt <= 2'd2;              // the multiplier's two registers
+            wait_cnt <= 2'd2;              // align/add/select/normalise, the multiplier's two registers
             ex <= S_WAIT;
           end
         end
         S_WAIT: begin
-          if ((c_op == O_DIV || c_op == O_SQRT) && !res_direct) begin
-            if (ds_done) ex <= S_ROUND;
+          // the pipeline after the operands: align, add, result select,
+          // normalise (mul_p2 is ready with the add); then S_ROUND packs.
+          // A divide or square root waits for its unit, then for the
+          // result select and normalise registers.
+          if ((c_op == O_DIV || c_op == O_SQRT) && !res_direct && !ds_ok) begin
+            if (ds_done) begin ds_ok <= 1'b1; wait_cnt <= 2'd1; end
           end else if (wait_cnt != '0) begin
             wait_cnt <= wait_cnt - 2'd1;
           end else begin
@@ -497,12 +525,9 @@ module fpu
           end
         end
         S_ROUND: begin
-          // fin_* load only here: from the operands (latched entering S_START)
-          // the align/add/round path has five cycles, from mul_p2 three
-          // (a multicycle constraint in the board build's SDC)
           ex <= S_DONE;
-          fin_bits <= res_direct ? res_bits : rnd_bits;
-          fin_flags <= res_direct ? res_flags : (rnd_flags | res_flags);
+          fin_bits <= res_direct_q ? res_bits_q : rnd_bits;
+          fin_flags <= res_direct_q ? res_flags_q : (rnd_flags | res_flags_q);
         end
         S_DONE: begin
           ex <= S_IDLE;
@@ -522,8 +547,8 @@ module fpu
             fsr_ftt <= FTT_NONE;
             fsr_cexc <= fin_flags;
             fsr_aexc <= fsr_aexc | fin_flags;
-            if (res_is_cmp) begin
-              fsr_fcc <= res_fcc;
+            if (res_is_cmp_q) begin
+              fsr_fcc <= res_fcc_q;
             end else begin
               dp_wr <= 1'b1;
               dp_wr_addr <= c_rd;

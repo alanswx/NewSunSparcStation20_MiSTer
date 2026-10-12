@@ -232,10 +232,16 @@ module cpu_module
   end
 
   // ---------------------------------------------------------------------
-  // The instruction side: the IU's request is translated in the cycle it
-  // is made and the cache indexed at once; a cache hit answers in the
-  // next cycle, in which the IU's next request is taken, so that fetches
-  // run one per cycle on hits.
+  // The instruction side. A request is translated in the cycle it is made
+  // only by the instruction micro-TLB below (or directly with the MMU off
+  // or in boot mode) and the cache indexed at once; a cache hit answers in
+  // the next cycle, in which the IU's next request is taken, so that
+  // fetches run one per cycle on hits. A micro-TLB miss goes to the MMU's
+  // TLB from a register in the next cycle (I_XLAT), and the cache request
+  // follows one cycle later still from the registered PA (I_CACHE): the
+  // IU's request valid arrives late in the cycle (it depends on E's branch
+  // resolution), so nothing long may hang off it — the address the
+  // lookups use is chosen by the state alone.
   // ---------------------------------------------------------------------
   typedef enum logic [2:0] {I_IDLE, I_XLAT, I_WALK, I_WALK_WAIT, I_CACHE} istate_t;
   istate_t     is;
@@ -245,19 +251,24 @@ module cpu_module
   logic        ic_cacheable_q;
   ifetch_rsp_t ifs_q;
 
-  logic        i_new, i_xlat_now, i_hit_now;
+  logic        i_new, i_hit_now;
   logic [31:0] i_va_now;
   logic        i_supv_now;
   assign i_new      = ifr.valid && (is == I_IDLE || (is == I_CACHE && ic_done));
-  assign i_xlat_now = i_new || is == I_XLAT;
-  assign i_va_now   = i_new ? ifr.va : i_va;
-  assign i_supv_now = i_new ? ifr.supv : i_supv;
+  assign i_va_now   = ifr.va;          // the request's address (a register in the IU)
+  assign i_supv_now = ifr.supv;
   at_t         i_at;
   assign i_at = {1'b0, 1'b1, i_supv};
 
+  // Untranslated fetches: boot mode sends them to the PROM, the MMU off
+  // passes the VA (srmmu.sv's answer() for the same cases)
+  logic        i_direct;
+  logic [35:0] i_direct_pa;
+  assign i_direct    = !mcntl[MC_EN] || mcntl[MC_BM];
+  assign i_direct_pa = mcntl[MC_BM] ? {8'hFF, i_va_now[27:0]} : {4'h0, i_va_now};
+
   // The instruction side's own translation cache: the last eight pages
-  // translated through the MMU, so that the MMU's one lookup port is
-  // mostly the data side's. A hit must still pass the permission check
+  // translated through the MMU. A hit must still pass the permission check
   // (else the MMU records the fault); everything is dropped whenever a
   // translation may have changed (tlb_changed).
   localparam int UT = 8;
@@ -266,7 +277,7 @@ module cpu_module
   logic [23:0] ut_ppn [UT];
   logic [2:0]  ut_acc [UT];
   logic [2:0]  ut_wp;
-  logic        ut_hit, ut_use;
+  logic        ut_hit, ut_ok;
   logic [35:0] ut_pa;
   logic [2:0]  ut_acc_hit;
   always_comb begin
@@ -276,19 +287,21 @@ module cpu_module
         ut_hit = 1'b1; ut_pa = {ut_ppn[k], i_va_now[11:0]}; ut_acc_hit = ut_acc[k];
       end
     end
-    ut_use = i_xlat_now && mcntl[MC_EN] && !mcntl[MC_BM] && ut_hit &&
-             acc_fault({1'b0, 1'b1, i_supv_now}, ut_acc_hit) == FT_NONE;
+    ut_ok = i_direct || (ut_hit && acc_fault({1'b0, 1'b1, i_supv_now}, ut_acc_hit) == FT_NONE);
   end
+  logic [35:0] i_fast_pa;
+  assign i_fast_pa = i_direct ? i_direct_pa : ut_pa;
+
   // The fill happens one cycle after the MMU's answer, from a registered
-  // copy of it: fetch address → the TLB's CAM → PTE mux → the entry was the
-  // module's longest path. A translation change in between drops the fill.
+  // copy of it (the TLB's CAM → PTE mux → the entry is long). A
+  // translation change in between drops the fill.
   logic        ut_fill, ut_fill_q;
   logic [19:0] ut_fill_vtag;
   logic [23:0] ut_fill_ppn;
   logic [2:0]  ut_fill_acc;
-  assign ut_fill = i_xlat_now && !ut_use && xi_r.hit && !xi_r.busy && mcntl[MC_EN] && !mcntl[MC_BM];
+  assign ut_fill = is == I_XLAT && xi_r.hit && !xi_r.busy && mcntl[MC_EN] && !mcntl[MC_BM];
   always_ff @(posedge clk) begin
-    ut_fill_vtag <= i_va_now[31:12];
+    ut_fill_vtag <= i_va[31:12];
     ut_fill_ppn  <= xi_r.pa[35:12];
     ut_fill_acc  <= xi_r.acc;
     if (rst || tlb_changed) begin
@@ -307,18 +320,19 @@ module cpu_module
     end
   end
 
+  // The MMU's lookup port, from the registered VA only
   always_comb begin
     xi = '0;
-    xi.valid = i_xlat_now && !ut_use;
-    xi.va = i_va_now;
-    xi.at = {1'b0, 1'b1, i_supv_now};
+    xi.valid = is == I_XLAT;
+    xi.va = i_va;
+    xi.at = {1'b0, 1'b1, i_supv};
     xi.no_fault = 1'b0;
     wk_req_i = xi.valid && xi_r.miss && !xi_r.busy && wk_owner == 2'd0;
   end
-  assign i_hit_now    = i_xlat_now && (ut_use || (xi_r.hit && !xi_r.busy));
-  assign ic_req       = i_hit_now || (is == I_CACHE && !ic_done);
-  assign ic_pa        = i_hit_now ? (ut_use ? ut_pa : xi_r.pa) : ic_pa_q;
-  assign ic_cacheable = i_hit_now ? cacheable_pa(ut_use ? ut_pa : xi_r.pa) : ic_cacheable_q;
+  assign i_hit_now    = i_new && ut_ok;
+  assign ic_req       = i_hit_now || (is == I_CACHE && !ic_done);   // held until done
+  assign ic_pa        = i_hit_now ? i_fast_pa : ic_pa_q;
+  assign ic_cacheable = i_hit_now ? cacheable_pa(i_fast_pa) : ic_cacheable_q;
   assign ic_idx       = i_hit_now ? i_va_now[11:3] : ic_pa_q[11:3];
 
   // The response: a cache answer the cycle it comes, a fault from the register
@@ -339,31 +353,36 @@ module cpu_module
       ic_pa_q <= '0; ic_cacheable_q <= 1'b0;
     end else begin
       case (is)
-        I_IDLE, I_CACHE, I_XLAT: begin
+        I_IDLE, I_CACHE: begin
           if (is == I_CACHE && !ic_done) begin
             // waiting for the cache
-          end else if (i_xlat_now) begin
-            if (i_new) begin i_va <= ifr.va; i_supv <= ifr.supv; end
-            if (ut_use) begin
-              ic_pa_q <= ut_pa;
-              ic_cacheable_q <= cacheable_pa(ut_pa);
+          end else if (i_new) begin
+            i_va <= ifr.va; i_supv <= ifr.supv;
+            if (ut_ok) begin
+              ic_pa_q <= i_fast_pa;
+              ic_cacheable_q <= cacheable_pa(i_fast_pa);
               is <= I_CACHE;
-            end else if (xi_r.busy) begin
-              is <= I_XLAT;                 // the data side had the lookup: again next cycle
-            end else if (xi_r.hit) begin
-              ic_pa_q <= xi_r.pa;
-              ic_cacheable_q <= cacheable_pa(xi_r.pa);
-              is <= I_CACHE;
-            end else if (xi_r.fault) begin
-              ifs_q.valid <= 1'b1; ifs_q.fault <= 2'd1;
-              is <= I_IDLE;
-            end else if (wk_req_i) begin
-              is <= I_WALK;
             end else begin
-              is <= I_WALK_WAIT;          // the walker is busy for the data side
+              is <= I_XLAT;                // the micro-TLB missed: the MMU's TLB next
             end
           end else begin
             is <= I_IDLE;
+          end
+        end
+        I_XLAT: begin
+          if (xi_r.busy) begin
+            // the data side had the lookup: again next cycle
+          end else if (xi_r.hit) begin
+            ic_pa_q <= xi_r.pa;
+            ic_cacheable_q <= cacheable_pa(xi_r.pa);
+            is <= I_CACHE;                 // the cache request goes out next cycle, from the register
+          end else if (xi_r.fault) begin
+            ifs_q.valid <= 1'b1; ifs_q.fault <= 2'd1;
+            is <= I_IDLE;
+          end else if (wk_req_i) begin
+            is <= I_WALK;
+          end else begin
+            is <= I_WALK_WAIT;             // the walker is busy for the data side
           end
         end
         I_WALK: begin
@@ -371,7 +390,7 @@ module cpu_module
             if (wk_fault) begin ifs_q.valid <= 1'b1; ifs_q.fault <= 2'd1; is <= I_IDLE; end
             else is <= I_XLAT;
           end else if (wk_owner != 2'd2) begin
-            is <= I_WALK_WAIT;            // the data side took the walker
+            is <= I_WALK_WAIT;             // the data side took the walker
           end
         end
         I_WALK_WAIT: begin
@@ -707,7 +726,7 @@ module cpu_module
   // walker and both caches, and the memory port
   assign dbg_w_o[0] = {dbg_pipe, 5'd0, mem_req_o.write, mem_req_o.burst, mem_req_o.lock, mem_req_o.be};
   assign dbg_w_o[1] = dmr.va;
-  assign dbg_w_o[2] = {dmr.valid, dmr.write, dmr.atomic, dmr.size, 3'd0, dmr.asi,
+  assign dbg_w_o[2] = {4'd0, dmr.valid, dmr.write, dmr.atomic, dmr.size, 3'd0, dmr.asi,
                        ds, is, 1'b0, owner_q, locked_q, mem_req_o.valid};
   assign dbg_w_o[3] = ifr.va;
   assign dbg_w_o[4] = {dbg_ic, dbg_dc, dbg_mmu, ifr.valid, ifs.valid, dms.ack, mem_rsp_i.ack, wk_owner, mcntl[0], 1'b0};

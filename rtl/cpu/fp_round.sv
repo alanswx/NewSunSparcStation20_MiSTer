@@ -18,10 +18,16 @@
 // Input: sign, exp and a 58-bit significand whose leading one may be
 // anywhere, value = man * 2^(exp - 55) (so a normalised input has its
 // leading one at bit 55), plus a sticky bit for everything below.
+//
+// Two stages: normalisation and the tininess test are registered, the
+// subnormal shift, rounding and packing follow in the next cycle, so the
+// result appears one clock after v_i (dbl_i, rd_i and uf_trap_i must hold
+// for both cycles; the FPU keeps them for the whole operation).
 
 module fp_round
   import fpu_pkg::*;
 (
+  input  logic        clk,
   input  fp_wide_t    v_i,
   input  logic        dbl_i,
   input  logic [1:0]  rd_i,
@@ -45,18 +51,18 @@ module fp_round
 
   // 1. Normalise: leading one to bit 57
   logic [5:0]  lz;
-  logic [57:0] mn;
-  logic signed [13:0] en;
-  logic        is_zero;
+  logic [57:0] mn1;
+  logic signed [13:0] en1;
+  logic        is_zero1;
 
   always_comb begin
     lz = 6'd0;
-    is_zero = v_i.man == '0;
+    is_zero1 = v_i.man == '0;
     for (int i = 57; i >= 0; i--) begin
       if (v_i.man[i]) begin lz = 6'(57 - i); break; end
     end
-    mn = v_i.man << lz;
-    en = v_i.exp + 14'sd2 - 14'(lz);     // leading one at 57: value = mn * 2^(en - 57)
+    mn1 = v_i.man << lz;
+    en1 = v_i.exp + 14'sd2 - 14'(lz);    // leading one at 57: value = mn * 2^(en - 57)
   end
 
   // 2. Tininess after rounding: round at the precision as a normal and
@@ -64,19 +70,28 @@ module fp_round
   logic signed [13:0] emin, emax;
   logic [52:0] kept_n;
   logic        guard_n, sticky_n, up_n, carry_n;
-  logic        tiny;
+  logic        tiny1;
 
   always_comb begin
     emin = dbl_i ? -14'sd1022 : -14'sd126;
     emax = dbl_i ?  14'sd1023 :  14'sd127;
     if (dbl_i) begin
-      kept_n = mn[57:5]; guard_n = mn[4]; sticky_n = (|mn[3:0]) | v_i.sticky;
+      kept_n = mn1[57:5]; guard_n = mn1[4]; sticky_n = (|mn1[3:0]) | v_i.sticky;
     end else begin
-      kept_n = {mn[57:34], 29'd0}; guard_n = mn[33]; sticky_n = (|mn[32:0]) | v_i.sticky;
+      kept_n = {mn1[57:34], 29'd0}; guard_n = mn1[33]; sticky_n = (|mn1[32:0]) | v_i.sticky;
     end
     up_n = round_up_f(rd_i, v_i.sign, dbl_i ? kept_n[0] : kept_n[29], guard_n, sticky_n);
     carry_n = up_n && (dbl_i ? (&kept_n) : (&kept_n[52:29]));
-    tiny = !is_zero && ((en < emin - 14'sd1) || (en == emin - 14'sd1 && !carry_n));
+    tiny1 = !is_zero1 && ((en1 < emin - 14'sd1) || (en1 == emin - 14'sd1 && !carry_n));
+  end
+
+  // The stage register
+  logic [57:0] mn;
+  logic signed [13:0] en;
+  logic        is_zero, tiny, sign, sticky_in;
+  always_ff @(posedge clk) begin
+    mn <= mn1; en <= en1; is_zero <= is_zero1; tiny <= tiny1;
+    sign <= v_i.sign; sticky_in <= v_i.sticky;
   end
 
   // 3. The real rounding: shift a tiny result down to the subnormal
@@ -98,7 +113,7 @@ module fp_round
     shift_s = tiny ? (emin - en) : 14'sd0;
     shift = (shift_s > 14'sd63) ? 7'd63 : 7'(shift_s);
     ms = mn >> shift;
-    sticky_s = v_i.sticky;
+    sticky_s = sticky_in;
     for (int i = 0; i < 58; i++) if (i < int'(shift) && mn[i]) sticky_s = 1'b1;
     if (dbl_i) begin
       kept   = ms[57:5];
@@ -110,7 +125,7 @@ module fp_round
       sticky = (|ms[32:0]) | sticky_s;
     end
     inexact = guard | sticky;
-    round_up = round_up_f(rd_i, v_i.sign, dbl_i ? kept[0] : kept[29], guard, sticky);
+    round_up = round_up_f(rd_i, sign, dbl_i ? kept[0] : kept[29], guard, sticky);
     {carry, kept_r} = {1'b0, kept} + (round_up ? (dbl_i ? 54'd1 : (54'd1 << 29)) : 54'd0);
     e_r = tiny ? emin : en;
     if (carry) begin
@@ -132,18 +147,18 @@ module fp_round
     fbits = '0;
     subnormal_out = tiny && !kept_r[52];   // rounding may have made it the smallest normal
     if (is_zero) begin
-      bits_o = {v_i.sign, 63'd0};
-      flags_o[FX_NX] = v_i.sticky;
+      bits_o = {sign, 63'd0};
+      flags_o[FX_NX] = sticky_in;
     end else if (of) begin
       flags_o[FX_OF] = 1'b1;
       flags_o[FX_NX] = 1'b1;
       case (rd_i)
-        RD_ZERO: bits_o = dbl_i ? {v_i.sign, 11'h7FE, {52{1'b1}}} : {v_i.sign, 8'hFE, {23{1'b1}}, 32'd0};
-        RD_PINF: bits_o = v_i.sign ? (dbl_i ? {1'b1, 11'h7FE, {52{1'b1}}} : {1'b1, 8'hFE, {23{1'b1}}, 32'd0})
+        RD_ZERO: bits_o = dbl_i ? {sign, 11'h7FE, {52{1'b1}}} : {sign, 8'hFE, {23{1'b1}}, 32'd0};
+        RD_PINF: bits_o = sign ? (dbl_i ? {1'b1, 11'h7FE, {52{1'b1}}} : {1'b1, 8'hFE, {23{1'b1}}, 32'd0})
                                    : (dbl_i ? {1'b0, 11'h7FF, 52'd0} : {1'b0, 8'hFF, 23'd0, 32'd0});
-        RD_MINF: bits_o = v_i.sign ? (dbl_i ? {1'b1, 11'h7FF, 52'd0} : {1'b1, 8'hFF, 23'd0, 32'd0})
+        RD_MINF: bits_o = sign ? (dbl_i ? {1'b1, 11'h7FF, 52'd0} : {1'b1, 8'hFF, 23'd0, 32'd0})
                                    : (dbl_i ? {1'b0, 11'h7FE, {52{1'b1}}} : {1'b0, 8'hFE, {23{1'b1}}, 32'd0});
-        default: bits_o = dbl_i ? {v_i.sign, 11'h7FF, 52'd0} : {v_i.sign, 8'hFF, 23'd0, 32'd0};
+        default: bits_o = dbl_i ? {sign, 11'h7FF, 52'd0} : {sign, 8'hFF, 23'd0, 32'd0};
       endcase
     end else begin
       flags_o[FX_NX] = inexact;
@@ -154,7 +169,7 @@ module fp_round
         ebits = dbl_i ? 11'(e_r + 14'sd1023) : 11'(e_r + 14'sd127);
       end
       fbits = kept_r[51:0];
-      bits_o = dbl_i ? {v_i.sign, ebits, fbits} : {v_i.sign, ebits[7:0], fbits[51:29], 32'd0};
+      bits_o = dbl_i ? {sign, ebits, fbits} : {sign, ebits[7:0], fbits[51:29], 32'd0};
     end
   end
 

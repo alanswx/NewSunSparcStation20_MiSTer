@@ -381,6 +381,7 @@ module iu
   // uses its target in E at once to redirect the fetch, and the forwarding
   // path only has the load's value once it is acked. (OpenBIOS on the
   // hybrid: ld [%g1+0x240],%g1; jmpl %g1 — the jump took the old %g1.)
+  /* verilator lint_off UNUSEDSIGNAL */
   function automatic logic d_uses_rd_of(input dec_t ld, input logic dbl);
     logic u;
     u = 1'b0;
@@ -394,6 +395,7 @@ module iu
     end
     return u;
   endfunction
+  /* verilator lint_on UNUSEDSIGNAL */
   logic e_is_load, m_load_pending;
   assign e_is_load = e_valid && (e_dec.cls == C_LOAD || e_dec.cls == C_ATOMIC);
   assign m_load_pending = m_valid && !m_trap && (m_dec.cls == C_LOAD || m_dec.cls == C_ATOMIC) &&
@@ -977,7 +979,10 @@ module iu
   logic [2:0]  cr_cwp [CT_RING];
   logic        cr_trap [CT_RING];
   longint      cr_cyc [CT_RING];
-  int          cr_n, cr_i;
+  int          cr_n;
+  /* verilator lint_off UNUSEDSIGNAL */
+  int          cr_i;                  // a loop index of the dump below
+  /* verilator lint_on UNUSEDSIGNAL */
   logic [31:0] ring_pc;
   int          ring_tt;
   logic        ring_on, ring_done;
@@ -997,7 +1002,9 @@ module iu
         ring_done <= 1'b1;
         $display("ctring: trap tt=%02x at pc=%08x, cycle %0d; the last %0d commits:", w_tt, w_pc, ct_cyc, cr_n < CT_RING ? cr_n : CT_RING);
         for (int k = (cr_n < CT_RING ? 0 : cr_n - CT_RING); k < cr_n; k++) begin
+          /* verilator lint_off BLKSEQ */
           cr_i = k % CT_RING;
+          /* verilator lint_on BLKSEQ */
           if (cr_rd[cr_i] == 8'hff)
             $display("ct %0d pc=%08x i=%08x%s rd=0(-)=00000000 icc=%x y=%08x cwp=%0d", cr_cyc[cr_i], cr_pc[cr_i], cr_inst[cr_i], cr_trap[cr_i] ? " TRAP" : "", cr_icc[cr_i], cr_y[cr_i], cr_cwp[cr_i]);
           else
