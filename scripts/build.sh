@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Full Quartus flow for one revision: build_id, synthesis, fit, assemble, STA.
-#   scripts/build.sh 5|20 [--seed N] [--log FILE]
-# Output: output_files/SunSparcStation{5,20}.rbf and a summary of the fit
-# (resources) and of the worst slack per clock.
+#   scripts/build.sh 20 [--seed N] [--log FILE]
+# Output: output_files/SunSparcStation20.rbf and a summary of the fit
+# (resources) and of the worst slack per clock. The new core has only the
+# SS20 revision (SunSparcStation.qpf, SunSparcStation20.qsf).
 #
 # The stages run one by one (not --flow compile) so the register count after
 # synthesis can be checked before the long fit: an array that fails to infer
@@ -15,6 +16,7 @@
 set -u
 . "$(dirname "$0")/common.sh"
 REV=$(rev_of "${1:-}") || exit 2; shift
+[ -f "$REV.qsf" ] || { log "no $REV.qsf: this tree builds SunSparcStation20 only"; exit 2; }
 SEED=""; LOG="build_${REV}.log"
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -26,8 +28,16 @@ done
 : "${MAX_REGISTERS:=150000}"
 Q="$QUARTUS_BIN"
 [ -x "$Q/quartus_sh" ] || { log "no quartus_sh in $Q (set QUARTUS_BIN in scripts/local.env)"; exit 1; }
-if pgrep -f "quartus_(map|fit|asm|sta|sh)" >/dev/null; then
-    log "another Quartus flow is running; refusing to start a second one"; exit 1
+# One flow per project directory: two flows on the same db/ corrupt it.
+# Flows of other projects (the machine is shared) are not our business.
+# Match on the process name and the working directory, never with
+# "pgrep -f": its pattern is in this script's own command line.
+busy=""
+for pid in $(ps -eo pid=,comm= | awk '$2 ~ /^quartus_(map|fit|asm|sta|sh)$/ {print $1}'); do
+    [ "$(readlink "/proc/$pid/cwd" 2>/dev/null)" = "$PWD" ] && busy="$busy $pid"
+done
+if [ -n "$busy" ]; then
+    log "a Quartus flow is already running in $PWD (pid$busy); refusing to start a second one"; exit 1
 fi
 : > "$LOG"
 # build_id.v is the version date the OSD shows. It is written here rather

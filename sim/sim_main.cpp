@@ -5,7 +5,7 @@
 // terminal on ttya. The run ends when the console prints a --stop string
 // (exit 0), a --fail string (exit 1), or after --cycles (exit 2).
 //
-//   Vsim_top --rom tests/cpu/out/ss5/cputest.rom --stop "PASS" --cycles 50M
+//   Vsim_top --rom tests/cpu/out/ss20/cputest.rom --stop "PASS" --cycles 50M
 //   Vsim_top --rom boot.rom --hd0 netbsd.img --send "ok =>boot disk\r"
 //
 // Cycle accounting: one cycle is one clk_sys period; with the PLL stub every
@@ -31,7 +31,7 @@
 #include <vector>
 
 #ifndef SIM_SYSFREQ
-#define SIM_SYSFREQ 65000000
+#define SIM_SYSFREQ 55000000
 #endif
 
 static double now_s() {
@@ -487,8 +487,9 @@ static void on_signal(int) { g_stop = 1; }
 
 static void usage() {
     fprintf(stderr,
-        "usage: Vsim_top --rom FILE [options]\n"
-        "  --rom FILE          boot PROM image (downloaded as boot.rom, index 0)\n"
+        "usage: Vsim_top [--rom FILE] [options]\n"
+        "  --rom FILE          boot PROM image (downloaded as boot.rom, index 0; without\n"
+        "                      one there is no download)\n"
         "  --hd0 FILE, --hd1 FILE, --cd FILE   SCSI images (--hd1 selects HD0+HD1)\n"
         "  --cd-audio N        the CD has N audio tracks of 2 s after the image (track 1):\n"
         "                      Main's track table and audio windows (CD audio)\n"
@@ -503,8 +504,7 @@ static void usage() {
         "  --video             console on the screen (default: ttya)\n"
         "  --noautoboot        OSD AutoBoot OFF\n"
         "  --cg3               CG3 instead of TCX\n"
-        "  --nocache           OSD Cachena OFF\n"
-        "  --l2tlb             OSD L2TLB On (the MMU's 128-entry second-level TLB,\n"
+        "  --l2tlb             OSD L2 TLB On (the MMU's second-level TLB,\n"
         "                      used when software also sets MCNTL bit 6)\n"
         "  --frame FILE.ppm    save the last complete video frame at the end\n"
         "  --ram-fill BYTE     every RAM byte starts as BYTE (default 0; the board's DDR holds\n"
@@ -544,7 +544,7 @@ int main(int argc, char **argv) {
     bool sd_log = false;
     int ram_fill = -1;            // --ram-fill: every RAM byte starts as this (the board's DDR holds leftovers; the sim's is zeros)
     bool readonly = false, video = false, noautoboot = false, cg3 = false,
-         nocache = false, l2tlb = false, quiet = false, progress = false, stress = false, gaps = false,
+         l2tlb = false, quiet = false, progress = false, stress = false, gaps = false,
          full_download = false, eth = false, eth_loop = false;
     int sd_latency = 40;
     struct tm rtc_tm = {};
@@ -573,7 +573,6 @@ int main(int argc, char **argv) {
         else if (a == "--video") video = true;
         else if (a == "--noautoboot") noautoboot = true;
         else if (a == "--cg3") cg3 = true;
-        else if (a == "--nocache") nocache = true;
         else if (a == "--l2tlb") l2tlb = true;
         else if (a == "--frame") frame_path = next();
         else if (a == "--ram-fill") ram_fill = (int)strtoul(next().c_str(), nullptr, 0) & 0xFF;
@@ -598,10 +597,8 @@ int main(int argc, char **argv) {
         else if (a[0] == '+') ;   // a plusarg for the design ($value$plusargs)
         else usage();
     }
-    if (rom.empty()) usage();
-
     std::vector<uint8_t> romdata;
-    {
+    if (!rom.empty()) {
         FILE *f = fopen(rom.c_str(), "rb");
         if (!f) { perror(rom.c_str()); return 3; }
         uint8_t b[65536];
@@ -642,18 +639,18 @@ int main(int argc, char **argv) {
     if (!trace_path.empty()) { fprintf(stderr, "this model was built without --trace\n"); return 3; }
 #endif
 
-    // Options and fixed inputs
-    t->opt_disks2 = !hd[1].empty();
-    t->opt_cdrom = hd[2].empty() ? 0 : 1;
-    t->opt_noautoboot = noautoboot;
-    t->opt_serial = !video;
-    t->opt_cg3 = cg3;
-    t->opt_nocache = nocache;
-    t->opt_l2tlb = l2tlb;
-    t->opt_wb = 0;
-    t->opt_aow = 0;
-    t->opt_iommu = 0;
-    t->opt_eth = eth;
+    // The OSD status word, bit for bit as on the board (rtl/machine/
+    // ss20_osd.sv, scripts/setopt.sh); 0 is every option's default.
+    {
+        uint32_t st0 = 0;
+        if (noautoboot) st0 |= 1u << 8;     // Auto boot Off
+        if (!video) st0 |= 1u << 9;         // console on ttya
+        if (cg3) st0 |= 1u << 10;           // CG3
+        if (!l2tlb) st0 |= 1u << 17;        // L2 TLB Off (the board's default is On)
+        if (!eth) st0 |= 1u << 24;          // Network Off (value 1)
+        t->status[0] = st0;
+        t->status[1] = t->status[2] = t->status[3] = 0;
+    }
     t->uart_rxd = 1;
     t->ddr_busy = 0;
     t->ddr_dout_ready = 0;
@@ -700,7 +697,7 @@ int main(int argc, char **argv) {
     // whole download, paced at 32 cycles a word, costs millions of cycles.
     const uint32_t OBRAM = 0x1D000000;
     size_t dl_pos = 0;
-    if (!full_download) {
+    if (!full_download && !romdata.empty()) {
         ddr.backdoor(OBRAM, romdata.data(), romdata.size());
         dl_pos = romdata.size() - 2;
     }
@@ -760,8 +757,8 @@ int main(int argc, char **argv) {
             if (cyc == 48) t->img_mounted = 0;
             // hps_io raises ioctl_download well before the first word; the
             // loader needs a few cycles to enter its download state.
-            if (cyc == 64) t->ioctl_download = 1;
-            if (cyc == 80) dl_phase = 1;
+            if (cyc == 64) t->ioctl_download = !romdata.empty();
+            if (cyc == 80) { dl_phase = romdata.empty() ? 2 : 1; phase_at = cyc; }
             break;
         case 1:                       // 16-bit words, spaced as hps_io would
             if (dl_sub == 0 && !iowait) {

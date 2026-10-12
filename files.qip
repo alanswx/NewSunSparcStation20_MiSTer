@@ -1,0 +1,7 @@
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/machine/ss20_osd.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/video_timing.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/machine/ss20_machine.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/mister/ddram_arb.sv
+set_global_assignment -name QIP_FILE rtl/pll.qip
+set_global_assignment -name SDC_FILE SunSparcStation.sdc
+set_global_assignment -name SYSTEMVERILOG_FILE SunSparcStation.sv
