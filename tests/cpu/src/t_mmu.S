@@ -331,6 +331,43 @@ BEGIN(t_mmu_ifault, "mmu: an instruction access fault sets the SFSR once (FAV, n
         nop
 END
 
+/* An annulled delay slot whose fetch faults takes no trap (V8: it is not
+ * executed); the next instruction's fetch, on the same unmapped page, must
+ * then fault and trap. The IU held all fetches after a faulted one until
+ * its trap, and the annulled slot never trapped: the pipe drained and the
+ * machine froze for good — no instruction, so no interrupt either
+ * (Solaris at Xsun's first client, 2026-10-12). Here: an untaken bne,a in
+ * the last word of page MT_P_INVALID - 1, its slot the first word of the
+ * invalid page; the trap must come at the slot + 4. */
+BEGIN(t_mmu_annul_ifault, "mmu: an annulled delay slot on an unmapped page takes no trap; the next fetch does (no hang)")
+        call mmu_tables_init
+        nop
+        call mmu_on
+        nop
+        mov 0x300, %l6
+        lda [%l6] 4, %g0                /* clear the SFSR */
+        set MT_PAGE(MT_P_INVALID) - 8, %l0
+        set 0x80a00000, %o0             /* cmp %g0, %g0 (Z = 1) */
+        st %o0, [%l0]
+        set 0x32800002, %o0             /* bne,a .+8: not taken, slot annulled */
+        st %o0, [%l0 + 4]
+        flush %l0
+        flush %l0 + 4
+        set 1f, %o0
+        st %o0, [%g7 + V_TRAP_RESUME]
+        EXPECT_TRAP(TT_IACC)
+        jmpl %l0, %g0
+        nop
+1:      CHECK_TRAPPED(TT_IACC, 1)
+        ld [%g7 + V_TRAP_PC], %l1
+        set MT_PAGE(MT_P_INVALID) + 4, %l2
+        EXPECT_R(%l1, %l2, 2)           /* the slot + 4, not the slot */
+        st %g0, [%g7 + V_TRAP_RESUME]
+        lda [%l6] 4, %g0
+        call mmu_off
+        nop
+END
+
 /* A store to a page whose TLB entry has M = 0 (the page was only read so
  * far): the walk sets M in the PTE and the entry is updated in place — one
  * entry for the page, not two. The SRMMU inserted the walk's result into a

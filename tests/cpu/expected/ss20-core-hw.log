@@ -48,6 +48,7 @@ PASS mmu: a changed PTE is seen after the matching ASI 3 flush, not before
 PASS mmu: ASI 3 probes page/segment/region/context/entire; 0 on invalid, reserved
 PASS mmu: SFSR L/AT/FT/FAV/OW and SFAR on invalid, reserved, protection, privilege faults; NF
 PASS mmu: an instruction access fault sets the SFSR once (FAV, no OW)
+PASS mmu: an annulled delay slot on an unmapped page takes no trap; the next fetch does (no hang)
 PASS mmu: a store after a load to a page sets M in the PTE and updates the one TLB entry (no duplicate, no endless walk)
 PASS mmu: a window trap in W squashes the walk of the load behind the SAVE before it starts (deep recursion, cold TLB)
 PASS cache: SS20 flash clear (ASI 0x36/0x37) drops stale lines
@@ -86,4 +87,4 @@ PASS buserr: through a mapping: load tt 0x29 (AT 1, SFAR), fetch tt 0x21 (FT 5, 
 SKIP dma: a transfer at a line every two cycles into cached lines, under stores and an I-cache flash clear, is what the module reads
 SKIP dma: a transfer into lines the module keeps reloading meanwhile ends with memory's data in the cache
 SKIP irq: an interrupt never resumes into an annulled delay slot (ba,a / be,a untaken / bn,a under a level-10 source)
-CPUTEST DONE pass=81 fail=0 skip=5
+CPUTEST DONE pass=82 fail=0 skip=5

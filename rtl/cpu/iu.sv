@@ -213,10 +213,27 @@ module iu
   // until its trap flushes, so that a second fault on the same page is not
   // recorded over the first (SFSR.OW; Solaris reads OW as "re-probe" and
   // loops: t_mmu_ifault)
-  logic ifault_hold;
+  // The hold lasts while that instruction is still on its way to its trap:
+  // in the buffer, or in D/E/M/W with an instruction-access tt. A faulted
+  // fetch that never traps — an annulled delay slot (bne,a not taken, its
+  // slot on an unmapped page), or one dropped behind a taken DCTI's slot —
+  // releases it; holding on would leave the pipe empty for good, and an
+  // empty pipe takes no interrupt (Solaris froze at Xsun's first client,
+  // 2026-10-12: #HANGC with fetch va = the annulled slot + 4).
+  function automatic logic is_ifault_tt(input logic [7:0] t);
+    return t == TT_INST_ACCESS_EXC || t == TT_INST_ACCESS_ERR;
+  endfunction
+  logic ifault_hold, ifault_live;
+  logic d_annul_now;            // (assigned with D below)
+  assign ifault_live = (f_have && f_buf_fault != 2'd0) ||
+                       (d_valid && d_trap && is_ifault_tt(d_tt) && !d_annul_now) ||
+                       (e_valid && e_trap && is_ifault_tt(e_tt)) ||
+                       (m_valid && m_trap && is_ifault_tt(m_tt)) ||
+                       (w_valid && w_trap && is_ifault_tt(w_tt));
   always_ff @(posedge clk) begin
     if (rst || flush) ifault_hold <= 1'b0;
     else if (rsp_valid && ifetch_rsp_i.fault != 2'd0) ifault_hold <= 1'b1;
+    else if (!ifault_live) ifault_hold <= 1'b0;
   end
 
   // Issue a new fetch when nothing is outstanding (or its response arrives
@@ -454,7 +471,6 @@ module iu
   endfunction
 
   // The instruction in D is annulled: marked earlier, or the DCTI in E says so now
-  logic d_annul_now;
   assign d_annul_now = d_annulled | (slot_in_d & annul_slot);
 
   // The decoded instruction and its register values move from D
