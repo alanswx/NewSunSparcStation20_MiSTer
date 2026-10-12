@@ -80,7 +80,34 @@ module cpu_sim
   cpu_module #(.HAS_FPU(1'b1), .RAM_MB(12'd16)) u_cpu (
     .clk(cpu_clk), .rst, .mid_i(4'd8), .irl_i(h_irl), .cache_en_i(1'b1),
     .mem_req_o(cmr), .mem_rsp_i(cms), .snoop_i(csn), .snoop_hold_o(c_hold),
-    .wd_reset_o(wd_reset), .si_reset_o(si_reset), .halt_o(halt));
+    .wd_reset_o(wd_reset), .si_reset_o(si_reset), .halt_o(halt),
+    .dbg_commit_o(dbg_commit), .dbg_trap_o(dbg_trap), .dbg_tt_o(dbg_tt), .dbg_pc_o(dbg_pc),
+    .dbg_psr_o(dbg_psr), .dbg_w_o(dbg_w));
+
+  // the board's hang reporter, as cpu_plomb has it (+hangdump prints its
+  // line, decoded from its serial output; it fires after 2^20 cycles
+  // without a commit or 2^26 without a trap)
+  logic        dbg_commit, dbg_trap, dbg_txd, dbg_act;
+  logic [15:0] pbm_dbg;
+  logic [7:0]  dbg_tt;
+  logic [31:0] dbg_pc, dbg_psr;
+  logic [5:0][31:0] dbg_w;
+  hang_dump #(.DIV(8), .CBITS(20), .TBITS(26)) u_hang (
+    .clk(cpu_clk), .rst, .commit_i(dbg_commit), .trap_i(dbg_trap), .tt_i(dbg_tt), .pc_i(dbg_pc),
+    .psr_i(dbg_psr), .w_i(dbg_w), .x_i(32'd0), .txd_o(dbg_txd), .act_o(dbg_act));
+  int hd_st = 0, hd_cnt = 0;
+  logic [7:0] hd_b;
+  always @(posedge cpu_clk) begin
+    if (hd_st == 0) begin
+      if (dbg_act && !dbg_txd) begin hd_st = 1; hd_cnt = 0; end
+    end else begin
+      hd_cnt++;
+      if (hd_cnt == 4 + 8 * hd_st) begin
+        if (hd_st <= 8) hd_b[hd_st - 1] = dbg_txd;
+        if (hd_st == 9) begin $write("%c", hd_b); $fflush(); hd_st = 0; end else hd_st++;
+      end
+    end
+  end
 
   // ---- the harness's DMA engine (t_dma_snoop): registers at 0xE_0000_1000 ----
   // +0 ID "DMA1", +4 destination PA, +8 lines, +C seed (a write starts the
@@ -153,7 +180,7 @@ module cpu_sim
     .clk, .rst, .cpu_edge_i(cpu_edge), .cpu_ld_i(cpu_ld), .req_i(pb_in_q), .rsp_o(pms_b),
     .sn_valid_o(psn_valid), .sn_line_o(psn_line), .sn_full_i(psn_full),
     .pb_req, .pb_a, .pb_ah, .pb_asi, .pb_d, .pb_be, .pb_mode, .pb_burst, .pb_cont, .pb_cache, .pb_lock, .pb_dack,
-    .pb_ack, .pb_dreq, .pb_rd, .pb_code);
+    .pb_ack, .pb_dreq, .pb_rd, .pb_code, .dbg_o(pbm_dbg));
   plomb_slave_model u_pbs (
     .clk, .rst, .jitter, .raw,
     .pb_req, .pb_a, .pb_ah, .pb_d, .pb_be, .pb_mode, .pb_dack,

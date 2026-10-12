@@ -81,7 +81,8 @@ module srmmu
   input  logic [31:0] sysconf_i,       // ASI 4 VA 0xD00: the suite's "which machine" register
   output logic [31:0] mcntl_o,
   input  logic        wd_i,            // a watchdog reset is taken: EM, BM
-  output logic        si_reset_o       // software-internal reset requested (0x700 bit 1)
+  output logic        si_reset_o,      // software-internal reset requested (0x700 bit 1)
+  output logic [7:0]  dbg_o            // walker state, for the board's hang reporter
 );
 
   // ---------------------------------------------------------------------
@@ -313,6 +314,7 @@ module srmmu
 
   // The PTE to insert
   tlb_entry_t new_entry;
+  assign dbg_o = {ws, w_owner, w_rep, w_fault, w_probe};
   always_comb begin
     new_entry = '0;
     new_entry.vtag = w_va[31:12];

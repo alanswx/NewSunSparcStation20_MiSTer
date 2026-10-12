@@ -38,7 +38,15 @@ module cpu_module
 
   output logic        wd_reset_o,     // a watchdog reset was taken (one cycle)
   output logic        si_reset_o,     // software-internal reset requested (one cycle)
-  output logic        halt_o          // the IU is in error mode (until the watchdog)
+  output logic        halt_o,         // the IU is in error mode (until the watchdog)
+
+  // for the board's hang reporter (rtl/hybrid/hang_dump.sv)
+  output logic        dbg_commit_o,
+  output logic        dbg_trap_o,
+  output logic [7:0]  dbg_tt_o,
+  output logic [31:0] dbg_pc_o,
+  output logic [31:0] dbg_psr_o,
+  output logic [5:0][31:0] dbg_w_o
 );
 
   import mmu_pkg::*;
@@ -58,9 +66,13 @@ module cpu_module
   logic [2:0]  iu_cwp;
   logic        iu_rst;              // reset or the watchdog
 
+  logic [15:0] dbg_pipe;
+  logic [7:0]  dbg_mmu, dbg_ic, dbg_dc;
+
   iu #(.HAS_FPU(HAS_FPU)) u_iu (
     .clk, .rst(iu_rst), .ifetch_req_o(ifr), .ifetch_rsp_i(ifs), .dmem_req_o(dmr), .dmem_rsp_i(dms),
-    .fpu_req_o(fpr), .fpu_rsp_i(fps), .irl_i, .error_o(iu_error), .cwp_o(iu_cwp), .halt_o(iu_halt));
+    .fpu_req_o(fpr), .fpu_rsp_i(fps), .irl_i, .error_o(iu_error), .cwp_o(iu_cwp), .halt_o(iu_halt),
+    .dbg_commit_o, .dbg_trap_o, .dbg_tt_o, .dbg_pc_o, .dbg_psr_o, .dbg_pipe_o(dbg_pipe));
 
   generate
     if (HAS_FPU) begin : g_fpu
@@ -111,7 +123,7 @@ module cpu_module
     .berr_valid_i(be_valid), .berr_at_i(be_at), .berr_va_i(be_va), .berr_no_fault_i(be_no_fault), .berr_masked_o(be_masked),
     .mem_req_o(mem_w), .mem_rsp_i(mem_w_r),
     .sysconf_i({RAM_MB, 12'd0, 3'd0, SS20, 2'b00, NCPU_M1}),
-    .mcntl_o(mcntl), .wd_i(wd_now), .si_reset_o(si_reset_o));
+    .mcntl_o(mcntl), .wd_i(wd_now), .si_reset_o(si_reset_o), .dbg_o(dbg_mmu));
 
   logic ie, de, nf;
   assign ie = mcntl[MC_IE] && cache_en_i;
@@ -145,7 +157,7 @@ module cpu_module
     .flash_v_i(ic_flash_v), .flash_l_i(ic_flash_l), .flash_busy_o(ic_flash_busy),
     .diag_req_i(ic_dg_req), .diag_we_i(dmr.write), .diag_tag_i(!dmr.asi[0]), .diag_va_i(dmr.va), .diag_wdata_i(diag_wdata),
     .diag_done_o(ic_dg_done), .diag_rdata_o(ic_dg_rdata),
-    .mem_req_o(mem_i), .mem_rsp_i(mem_i_r));
+    .mem_req_o(mem_i), .mem_rsp_i(mem_i_r), .dbg_o(dbg_ic));
 
   logic        dc_req, dc_we, dc_atomic, dc_cacheable, dc_done, dc_err;
   logic [35:0] dc_pa;
@@ -170,7 +182,7 @@ module cpu_module
     .flash_v_i(dc_flash_v), .flash_l_i(dc_flash_l), .flash_busy_o(dc_flash_busy),
     .diag_req_i(dc_dg_req), .diag_we_i(dmr.write), .diag_tag_i(!dmr.asi[0]), .diag_va_i(dmr.va), .diag_wdata_i(diag_wdata),
     .diag_done_o(dc_dg_done), .diag_rdata_o(dc_dg_rdata),
-    .mem_req_o(mem_d), .mem_rsp_i(mem_d_r));
+    .mem_req_o(mem_d), .mem_rsp_i(mem_d_r), .dbg_o(dbg_dc));
 
   // ---------------------------------------------------------------------
   // The memory-port arbiter: walker > data > instruction; the owner keeps
@@ -689,5 +701,16 @@ module cpu_module
 `endif
   logic unused_ok;
   assign unused_ok = &{1'b0, iu_halt, iu_cwp, be_masked, xd_r.pte_c, xi_r.pte_c, xd_r.acc, xd_r.busy, ifr.supv, dmr.va[7:0]};
+
+  // the hang reporter's words: the IU's pipeline, the data request, the
+  // fetch, the states of the data side, instruction side, arbiter, MMU
+  // walker and both caches, and the memory port
+  assign dbg_w_o[0] = {dbg_pipe, 5'd0, mem_req_o.write, mem_req_o.burst, mem_req_o.lock, mem_req_o.be};
+  assign dbg_w_o[1] = dmr.va;
+  assign dbg_w_o[2] = {dmr.valid, dmr.write, dmr.atomic, dmr.size, 3'd0, dmr.asi,
+                       ds, is, 1'b0, owner_q, locked_q, mem_req_o.valid};
+  assign dbg_w_o[3] = ifr.va;
+  assign dbg_w_o[4] = {dbg_ic, dbg_dc, dbg_mmu, ifr.valid, ifs.valid, dms.ack, mem_rsp_i.ack, wk_owner, mcntl[0], 1'b0};
+  assign dbg_w_o[5] = {mem_req_o.pa[35:32], mem_req_o.pa[27:0]};
 
 endmodule

@@ -60,7 +60,12 @@ module cpu_plomb
   input  logic        pb_ack,
   input  logic        pb_dreq,
   input  logic [31:0] pb_rd,
-  input  logic [1:0]  pb_code
+  input  logic [1:0]  pb_code,
+
+  // the hang reporter's serial line (hang_dump.sv), muxed onto the console
+  // by the core while dbg_act_o is high
+  output logic        dbg_txd_o,
+  output logic        dbg_act_o
 );
   // The module's memory port passes through a register in the CPU clock
   // domain in both directions: its request before the shim, the shim's
@@ -86,14 +91,32 @@ module cpu_plomb
   cpu_module #(.HAS_FPU(1'b1), .RAM_MB(12'(RAM_MB)), .SS20(1'b1), .NCPU_M1(2'd0)) u_cpu (
     .clk(clk_cpu), .rst, .mid_i(4'(MID)), .irl_i, .cache_en_i,
     .mem_req_o(rq_cpu), .mem_rsp_i(rs_cpu), .snoop_i(sn_cpu), .snoop_hold_o(hold_cpu),
-    .wd_reset_o, .si_reset_o, .halt_o);
+    .wd_reset_o, .si_reset_o, .halt_o,
+    .dbg_commit_o(dbg_commit), .dbg_trap_o(dbg_trap), .dbg_tt_o(dbg_tt), .dbg_pc_o(dbg_pc),
+    .dbg_psr_o(dbg_psr), .dbg_w_o(dbg_w));
 
   plomb_master #(.MID(4'(MID)), .FIN_EDGES(3)) u_pb (
     .clk, .rst, .cpu_edge_i, .cpu_ld_i, .req_i(rq), .rsp_o(rs),
     .sn_valid_o(own_valid), .sn_line_o(own_line), .sn_full_i(sn_full),
     .pb_req, .pb_a, .pb_ah, .pb_asi, .pb_d, .pb_be, .pb_mode, .pb_burst,
     .pb_cont, .pb_cache, .pb_lock, .pb_dack,
-    .pb_ack, .pb_dreq, .pb_rd, .pb_code);
+    .pb_ack, .pb_dreq, .pb_rd, .pb_code, .dbg_o(dbg_pb));
+
+  // ---- the hang reporter ----
+  logic        dbg_commit, dbg_trap;
+  logic [7:0]  dbg_tt;
+  logic [31:0] dbg_pc, dbg_psr;
+  logic [5:0][31:0] dbg_w;
+  logic [15:0] dbg_pb, dbg_pb_c;
+  logic [7:0]  dbg_bus_c;
+  always_ff @(posedge clk_cpu) begin          // sampled across the clocks: debug only
+    dbg_pb_c  <= dbg_pb;
+    dbg_bus_c <= {pb_req, pb_ack, pb_dreq, pb_lock, pb_code, sn_full, hold};
+  end
+  hang_dump u_hang (
+    .clk(clk_cpu), .rst, .commit_i(dbg_commit), .trap_i(dbg_trap), .tt_i(dbg_tt), .pc_i(dbg_pc),
+    .psr_i(dbg_psr), .w_i(dbg_w), .x_i({dbg_pb_c, dbg_bus_c, rq.valid, rs_cpu.ack, rs_cpu.err, 5'd0}),
+    .txd_o(dbg_txd_o), .act_o(dbg_act_o));
 
   // ---- the snoops: own and DMA write beats, one per CPU cycle ----
   // a DMA line is snooped again 128 bus cycles later: its write reaches the

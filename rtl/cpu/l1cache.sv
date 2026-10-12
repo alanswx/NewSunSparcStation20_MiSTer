@@ -85,7 +85,8 @@ module l1cache
 
   // Memory port
   output mem_pkg::mem_req_t mem_req_o,
-  input  mem_pkg::mem_rsp_t mem_rsp_i
+  input  mem_pkg::mem_rsp_t mem_rsp_i,
+  output logic [7:0]  dbg_o            // request / snoop-queue / fill states, for the hang reporter
 );
 
   localparam int WAYS    = ICACHE ? 5 : 4;
@@ -277,6 +278,7 @@ module l1cache
   // ---------------------------------------------------------------------
   typedef enum logic [1:0] {F_IDLE, F_READ, F_WRITE} fstate_t;
   fstate_t          fs;
+  assign dbg_o = {st, qs, fs};
   logic             f_kind_l;                 // 1: the lock sweep
   logic [SET_W-1:0] f_set;
   assign flash_busy_o = fs != F_IDLE;

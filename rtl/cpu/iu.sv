@@ -63,7 +63,14 @@ module iu
   input  logic [3:0]  irl_i,          // the interrupt controller's level, 0 = none
   output logic        error_o,        // error mode: halted after a trap with ET = 0
   output logic [2:0]  cwp_o,          // for debugging
-  output logic        halt_o          // = error_o
+  output logic        halt_o,         // = error_o
+  // for the board's hang reporter (rtl/hybrid/hang_dump.sv)
+  output logic        dbg_commit_o,   // an instruction commits (its PC in dbg_pc_o)
+  output logic        dbg_trap_o,     // a trap is taken (tt in dbg_tt_o, PC in dbg_pc_o)
+  output logic [7:0]  dbg_tt_o,
+  output logic [31:0] dbg_pc_o,
+  output logic [31:0] dbg_psr_o,
+  output logic [15:0] dbg_pipe_o
 );
 
   // =====================================================================
@@ -911,6 +918,14 @@ module iu
   // error). The register read for an FP store is addressed from E.
   logic w_commit;
   assign w_commit = w_valid && !w_stall && !w_trap && !error;
+
+  assign dbg_commit_o = w_commit;
+  assign dbg_trap_o   = w_take_trap;
+  assign dbg_tt_o     = w_tt;
+  assign dbg_pc_o     = w_pc;
+  assign dbg_psr_o    = psr_word(icc, ef, pil, s, ps, et, cwp);
+  assign dbg_pipe_o   = {d_valid, e_valid, m_valid, w_valid, m_is_mem, m_acked, w_stall, error,
+                         d_hazard, w_trap, w_second, 1'b0, irl_i};
   always_comb begin
     fpu_req_o = '0;
     fpu_req_o.rd_addr    = e_dec.rd;

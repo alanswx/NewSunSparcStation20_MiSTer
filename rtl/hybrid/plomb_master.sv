@@ -82,7 +82,8 @@ module plomb_master
   input  logic        pb_ack,
   input  logic        pb_dreq,
   input  logic [31:0] pb_rd,
-  input  logic [1:0]  pb_code       // 00 = OK, anything else an error
+  input  logic [1:0]  pb_code,      // 00 = OK, anything else an error
+  output logic [15:0] dbg_o         // state, for the hang reporter (hang_dump.sv)
 );
   typedef enum logic [1:0] {S_IDLE, S_FENCE, S_RUN, S_FIN} st_t;
   st_t st;
@@ -145,6 +146,7 @@ module plomb_master
   assign rcv_pa = beat_pa(rcv);
 
   logic issue, fencing;
+  assign dbg_o = {st, wfence, f_issued, iss, rcv, f_tries[5:2]};
   assign issue    = st == S_RUN && iss < n_beats && !(rq.write && sn_full_i);   // a write waits for a snoop slot
   assign fencing  = st == S_FENCE && !f_issued;
   assign pb_req   = issue || fencing;
