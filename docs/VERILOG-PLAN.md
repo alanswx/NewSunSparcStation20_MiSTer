@@ -114,9 +114,17 @@ Decisions (change them here if needed):
   PTE says C = 0 (this was the VHDL core's E3 fix). Write-back is out.
 - **TLB:** large enough that OpenBIOS's Forth does not thrash it (the old
   core's 4-entry DTLB cost ~2× at `ok`, see
-  [legacy/PLAN.md](legacy/PLAN.md) E4). Plan for 16-32 fully associative
-  entries plus a PTP cache, and keep the SuperSPARC 64-entry
-  **diagnostic TLB image (ASI 6)** for the POST.
+  [legacy/PLAN.md](legacy/PLAN.md) E4). The first version copies the
+  Viking's 64 fully associative entries (Viking doc §4.11: one CAM over
+  the four mapping sizes, limited-history LRU, lock bits, the ASI 6
+  image) in flops: ~9,200 ALMs, half the CPU module (2026-10-12 fit).
+  **Decided (2026-10-12): keep all 64 entries, with the CAM built from
+  RAM** — the 36 compared bits (VPN 20 + context 16) in nine 4-bit
+  slices, each a 16-row RAM of 64-bit match vectors; a lookup ANDs the
+  nine vectors; a fill writes 16 rows (mapping sizes above 4 KB set
+  their ignored slices to "match all"); used/lock bits and the ASI 6
+  image stay exact. Target: the MMU at a few thousand ALMs. Done before
+  phase 9 (two CPUs must fit: ~11k ALMs each at most), not before.
 - **The interconnect is our own simple protocol** (request/grant, 36-bit
   PA, 32-byte line bursts, a snoop broadcast on writes). It does not
   model MBus signal by signal. Document it in `docs/arch/bus.md` before
@@ -250,6 +258,10 @@ M (1-2 weeks), L (several weeks), XL (a month or more).
   `net-solaris`, `obp-testnet`.
 
 ### Phase 9: SMP (L)
+- First, the CPU's size: the RAM-built TLB CAM (§2 "TLB") and the FPU's
+  align/normalise shifters on DSP blocks, so that a CPU module is at
+  most ~11k ALMs (it was ~19k on 2026-10-12, the old core's ~7.3k) and
+  two fit with the system at 55 MHz (`syn/cpu_timing/run.sh` measures).
 - 2 CPUs (then 3-4 if timing allows): MID per module, the per-CPU
   interrupt and timer registers, IPIs (soft interrupts), `ldstub`/`swap`
   atomic across CPUs, snoop invalidation, the arbiter-enable register
