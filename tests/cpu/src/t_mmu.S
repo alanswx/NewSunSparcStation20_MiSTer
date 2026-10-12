@@ -382,3 +382,129 @@ BEGIN(t_mmu_store_m, "mmu: a store after a load to a page sets M in the PTE and 
         EXPECT(%l3, 0x60, 3)
         EXPECT(%l4, 0x40, 4)            /* the one entry has M */
         END
+
+/* A trap in W must not let the access of the instruction behind it start.
+ * wo_rec recurses deeper than the register windows; every level does a
+ * SAVE immediately followed by a load from a page not yet in the TLB (the
+ * TLB is flushed first), so window-overflow traps meet loads that need a
+ * table walk. The IU presented the load while the SAVE trapped (two
+ * cycles in W); the walk ran on, and its answer was delivered to the
+ * overflow handler's first spill store — a spill lost, or, for a fault,
+ * a data access exception with ET = 0 (NetBSD at init, 2026-10-11). The
+ * sum of the loaded words and the depths must come out right. Runs from
+ * cached RAM so that the load issues right behind the SAVE. */
+
+/* wo_rec(n %o0, page %o1) -> %o0 = sum over the levels of
+ * (word at the level's page + its n); each level uses the next page */
+wo_rec:
+        save %sp, -96, %sp
+        ld [%i1], %l0                   /* right behind the SAVE: a walk */
+        add %l0, %i0, %l0               /* word + n */
+        subcc %i0, 1, %o0               /* n - 1 */
+        bl 1f                           /* n == 0: the leaf */
+        mov %l0, %i0
+        set 0x1000, %o3
+        call wo_rec                     /* PC-relative: works in the copy */
+        add %i1, %o3, %o1
+        add %l0, %o0, %i0
+1:      ret
+        restore
+wo_rec_end:
+
+/* wo_frec(n %o0, va %o1): the same shape, but the load behind the SAVE
+ * faults (an invalid page): each level arms the trap catcher for tt 9
+ * first; the catcher records the fault and skips the load */
+wo_frec:
+        mov TT_DACC, %g1
+        st %g1, [%g7 + V_TRAP_EXPECT]
+        save %sp, -96, %sp
+        ld [%i1], %l0                   /* right behind the SAVE: walks, faults */
+        subcc %i0, 1, %o0
+        bl 1f
+        nop
+        call wo_frec
+        mov %i1, %o1
+1:      ret
+        restore
+wo_frec_end:
+
+#define WO_DEPTH        12              /* > NWINDOWS */
+#define WO_RAM          MT_PAGE(53)
+#define WO_PAGES        MT_PAGE(0)      /* pages 0-12: identity, cacheable */
+
+BEGIN(t_mmu_trap_squash, "mmu: a window trap in W squashes the walk of the load behind the SAVE before it starts (deep recursion, cold TLB)")
+        call mmu_tables_init
+        nop
+        /* the word at each page: 0x100 * (page index + 1), through the bypass */
+        set WO_PAGES, %l0
+        mov 0, %l1
+1:      add %l1, 1, %o0
+        sll %o0, 8, %o0
+        sta %o0, [%l0] 0x20
+        set 0x1000, %o1
+        add %l0, %o1, %l0
+        cmp %l1, WO_DEPTH
+        bl 1b
+        add %l1, 1, %l1
+        call mmu_on
+        nop
+        set wo_rec, %l0
+        set wo_rec_end, %l1
+        set WO_RAM, %l2
+2:      ld [%l0], %o0
+        st %o0, [%l2]
+        add %l0, 4, %l0
+        cmp %l0, %l1
+        blu 2b
+        add %l2, 4, %l2
+        /* the copied code's call is PC-relative within the copy */
+        set WO_RAM, %l5
+        mov 2, %o0                      /* fill the I-cache (shallow) */
+        set WO_PAGES, %o1
+        jmpl %l5, %o7
+        nop
+        mov 0x400, %o0                  /* flush the TLB: every page cold */
+        sta %g0, [%o0] 0x03
+        mov WO_DEPTH, %o0
+        set WO_PAGES, %o1
+        jmpl %l5, %o7
+        nop
+        mov %o0, %l6
+        /* the faulting recursion, from RAM as well */
+        set wo_frec, %l0
+        set wo_frec_end, %l1
+        set WO_RAM + 0x400, %l2
+3:      ld [%l0], %o0
+        st %o0, [%l2]
+        add %l0, 4, %l0
+        cmp %l0, %l1
+        blu 3b
+        add %l2, 4, %l2
+        set WO_RAM + 0x400, %l5
+        mov 2, %o0                      /* warm the I-cache: a valid page, no fault */
+        set WO_PAGES, %o1
+        jmpl %l5, %o7
+        nop
+        st %g0, [%g7 + V_TRAPS]
+        mov -1, %o0
+        st %o0, [%g7 + V_TRAP_SEEN]
+        mov 0x400, %o0
+        sta %g0, [%o0] 0x03             /* cold TLB */
+        mov WO_DEPTH, %o0
+        set MT_PAGE(MT_P_INVALID), %o1
+        jmpl %l5, %o7
+        nop
+        mov -1, %o0
+        st %o0, [%g7 + V_TRAP_EXPECT]
+        ld [%g7 + V_TRAPS], %l4         /* one fault a level */
+        ld [%g7 + V_TRAP_SEEN], %l3
+        mov 0x300, %o0
+        lda [%o0] 4, %g0                /* clear the SFSR */
+        call mmu_off
+        nop
+        EXPECT(%l3, TT_DACC, 2)
+        EXPECT(%l4, WO_DEPTH + 1, 3)
+        /* sum over k = 0..DEPTH of (0x100*(k+1) + (DEPTH-k)) */
+        set ((WO_DEPTH + 1) * (WO_DEPTH + 2) / 2) * 0x100 + (WO_DEPTH * (WO_DEPTH + 1) / 2), %l7
+        EXPECT_R(%l6, %l7, 1)
+        END

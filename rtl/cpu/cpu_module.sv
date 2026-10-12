@@ -675,6 +675,18 @@ module cpu_module
     end
   end
 
+`ifndef SYNTHESIS
+  // synthesis translate_off
+  // The IU withdrew its data request while the data side was working on it
+  // (a trap flushed M): the answer would land on the next request
+  logic dmr_valid_q;
+  always_ff @(posedge clk) begin
+    dmr_valid_q <= dmr.valid;
+    if (dmr_valid_q && !dmr.valid && ds != D_IDLE && !dms_q.ack)
+      $error("cpu_module: data request withdrawn mid-access (ds=%0d va=%08x): its answer would land on the next request", ds, dmr.va);
+  end
+  // synthesis translate_on
+`endif
   logic unused_ok;
   assign unused_ok = &{1'b0, iu_halt, iu_cwp, be_masked, xd_r.pte_c, xi_r.pte_c, xd_r.acc, xd_r.busy, ifr.supv, dmr.va[7:0]};
 

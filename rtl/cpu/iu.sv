@@ -796,7 +796,13 @@ module iu
 
   always_comb begin
     dmem_req_o = '0;
-    dmem_req_o.valid  = m_is_mem & ~m_acked;
+    // Not while the instruction in W is trapping: the trap flushes M, and an
+    // access already begun (a table walk, a fill, a locked read) would run
+    // for a squashed instruction and its answer -- even a fault -- land on
+    // the next request (NetBSD at init: a walk fault for a store to user
+    // page 0x24000 was delivered to a load of 0; the kernel ended in error
+    // mode). Once an access starts, nothing older can trap any more.
+    dmem_req_o.valid  = m_is_mem & ~m_acked & ~(w_valid & w_trap);
     dmem_req_o.write  = m_dec.cls == C_STORE || m_dec.cls == C_FPSTORE;
     dmem_req_o.atomic = m_dec.cls == C_ATOMIC;
     dmem_req_o.asi    = m_dec.alt ? m_dec.asi : (s ? ASI_SUPV_DATA : ASI_USER_DATA);

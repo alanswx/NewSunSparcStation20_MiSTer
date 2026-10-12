@@ -330,3 +330,4 @@ BEGIN(t_irq_annul, "irq: an interrupt never resumes into an annulled delay slot 
 2:      EXPECT(%l4, 1, 2)
         END
 8:      SKIP_TEST
+
