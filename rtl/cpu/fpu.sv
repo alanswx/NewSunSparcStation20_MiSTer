@@ -497,6 +497,9 @@ module fpu
           end
         end
         S_ROUND: begin
+          // fin_* load only here: from the operands (latched entering S_START)
+          // the align/add/round path has five cycles, from mul_p2 three
+          // (a multicycle constraint in the board build's SDC)
           ex <= S_DONE;
           fin_bits <= res_direct ? res_bits : rnd_bits;
           fin_flags <= res_direct ? res_flags : (rnd_flags | res_flags);
