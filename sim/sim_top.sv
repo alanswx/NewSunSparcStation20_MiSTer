@@ -1,18 +1,22 @@
-// sim_top - the machine as the Verilator harness sees it.
+// SPDX-License-Identifier: GPL-2.0-or-later
 //
-// ss_core (lowered from VHDL by sim/gen_verilog.sh) plus the DDR3 arbiter
-// from the real top, with the MiSTer side flattened to plain ports: one
-// Avalon DDR slave, the hps_io ioctl and SD-block interfaces, the UART and
-// the video signals. sim_main.cpp models everything on the far side of
-// those ports. The OSD options are ports too, decoded as in
-// SunSparcStation.sv.
+// sim_top: the machine as the Verilator harness (sim_main.cpp) sees it.
+//
+// rtl/machine/ss20_machine with the MiSTer side flattened to plain ports:
+// the DDR3 Avalon port, the hps_io download and SD-block interfaces, the
+// RTC, ttya and the video signals. The OSD status word goes through the
+// same decoder as on the board (ss20_osd), so the harness sets options the
+// way a user does. sim_main.cpp models everything beyond these ports.
+//
+// One clock: the machine's clock and the pixel clock are the same here, so
+// a frame takes 1344 x 806 cycles.
 
 module sim_top
 (
 	input         clk,
 	input         reset,
 
-	// DDR3 (after ddram_arb), 64-bit words
+	// DDR3, 64-bit words in the FPGA's window
 	input         ddr_busy,
 	output  [7:0] ddr_burstcnt,
 	output [28:0] ddr_addr,
@@ -23,7 +27,7 @@ module sim_top
 	input  [63:0] ddr_dout,
 	input         ddr_dout_ready,
 
-	// hps_io: ROM download
+	// hps_io: downloads
 	input         ioctl_download,
 	input   [7:0] ioctl_index,
 	input         ioctl_wr,
@@ -31,7 +35,7 @@ module sim_top
 	input  [15:0] ioctl_dout,
 	output        ioctl_wait,
 
-	// hps_io: SD blocks, slots 0 (HD0), 1 (HD1), 2 (CD)
+	// hps_io: SD blocks, slots 0/1 disks, 2 CD, 3 NVRAM
 	input   [3:0] img_mounted,
 	input         img_readonly,
 	input  [63:0] img_size,
@@ -42,7 +46,7 @@ module sim_top
 	output  [3:0] sd_rd,
 	output  [3:0] sd_wr,
 	input   [3:0] sd_ack,
-	output  [5:0] sd_blk_cnt,
+	output  [5:0] sd_blk_cnt,      // the disks' (slots 0-2 share it; slot 3 is one block)
 	input  [12:0] sd_buff_addr,
 	input  [15:0] sd_buff_dout,
 	output [15:0] sd_buff_din0,
@@ -57,18 +61,8 @@ module sim_top
 	output        uart_txd,
 	input         uart_rxd,
 
-	// OSD options
-	input         opt_disks2,     // O[1]: HD0+HD1
-	input   [1:0] opt_cdrom,      // O[5:4]
-	input         opt_noautoboot, // O[8]
-	input         opt_serial,     // O[9]: console on ttya
-	input         opt_cg3,        // O[10]
-	input         opt_nocache,    // O[16]
-	input         opt_l2tlb,      // O[17]
-	input         opt_wb,         // O[18]
-	input         opt_aow,        // O[19]
-	input   [1:0] opt_iommu,      // O[21:20]
-	input         opt_eth,        // O[26:24] not Off: the Ethernet mailbox
+	// the OSD status word (status[127:0] of hps_io)
+	input [127:0] status,
 
 	// video
 	output  [7:0] vga_r,
@@ -82,221 +76,116 @@ module sim_top
 	output        led_user
 );
 
-wire        vram_clk, dram_clk;
-wire        vram_wait, dram_wait;
-wire  [7:0] vram_bc, dram_bc;
-wire [28:0] vram_addr, dram_addr;
-wire [63:0] vram_rdata, dram_rdata, vram_wdata, dram_wdata;
-wire        vram_rvalid, dram_rvalid;
-wire        vram_rd, dram_rd, vram_wr, dram_wr;
-wire  [7:0] vram_be, dram_be;
-wire        eth_wait, cpu_wait;
-wire  [7:0] eth_bc, cpu_bc;
-wire [28:0] eth_addr, cpu_addr;
-wire [63:0] eth_rdata, cpu_rdata, eth_wdata, cpu_wdata;
-wire        eth_rvalid, cpu_rvalid;
-wire        eth_rd, cpu_rd, eth_wr, cpu_wr;
-wire  [7:0] eth_be, cpu_be;
+wire       opt_autoboot, opt_serial, opt_cg3, opt_l2tlb, opt_eth;
+wire [7:0] opt_kbd_layout;
+wire [9:0] opt_ram_mb;
 
-// As in SunSparcStation.sv: the Ethernet mailbox merged into the CPU's port,
-// that merged with video.
-ddram_arb ddram_arb_eth
+ss20_osd osd
 (
-	.clk(clk),
-	.reset(reset),
-
-	.m0_waitrequest(eth_wait),
-	.m0_burstcount(eth_bc),
-	.m0_address(eth_addr),
-	.m0_read(eth_rd),
-	.m0_write(eth_wr),
-	.m0_writedata(eth_wdata),
-	.m0_byteenable(eth_be),
-	.m0_readdata(eth_rdata),
-	.m0_readdatavalid(eth_rvalid),
-
-	.m1_waitrequest(cpu_wait),
-	.m1_burstcount(cpu_bc),
-	.m1_address(cpu_addr),
-	.m1_read(cpu_rd),
-	.m1_write(cpu_wr),
-	.m1_writedata(cpu_wdata),
-	.m1_byteenable(cpu_be),
-	.m1_readdata(cpu_rdata),
-	.m1_readdatavalid(cpu_rvalid),
-
-	.s_waitrequest(dram_wait),
-	.s_burstcount(dram_bc),
-	.s_address(dram_addr),
-	.s_read(dram_rd),
-	.s_write(dram_wr),
-	.s_writedata(dram_wdata),
-	.s_byteenable(dram_be),
-	.s_readdata(dram_rdata),
-	.s_readdatavalid(dram_rvalid)
+	.status_i(status),
+	.autoboot_o(opt_autoboot),
+	.serial_o(opt_serial),
+	.cg3_o(opt_cg3),
+	.kbd_layout_o(opt_kbd_layout),
+	.l2tlb_o(opt_l2tlb),
+	.ram_mb_o(opt_ram_mb),
+	.eth_o(opt_eth)
 );
 
-ddram_arb ddram_arb
-(
-	.clk(clk),
-	.reset(reset),
+wire [31:0] sd_lba[4];
+wire  [5:0] sd_blk_cnt_a[4];
+wire [15:0] sd_buff_din[4];
 
-	.m0_waitrequest(vram_wait),
-	.m0_burstcount(vram_bc),
-	.m0_address(vram_addr),
-	.m0_read(vram_rd),
-	.m0_write(vram_wr),
-	.m0_writedata(vram_wdata),
-	.m0_byteenable(vram_be),
-	.m0_readdata(vram_rdata),
-	.m0_readdatavalid(vram_rvalid),
+assign sd_lba0 = sd_lba[0];
+assign sd_lba1 = sd_lba[1];
+assign sd_lba2 = sd_lba[2];
+assign sd_lba3 = sd_lba[3];
+assign sd_buff_din0 = sd_buff_din[0];
+assign sd_buff_din1 = sd_buff_din[1];
+assign sd_buff_din2 = sd_buff_din[2];
+assign sd_buff_din3 = sd_buff_din[3];
+// The harness serves the lowest requesting slot first and reads its count
+// here; pick the same slot.
+wire [3:0] sd_req = sd_rd | sd_wr;
+assign sd_blk_cnt = sd_req[0] ? sd_blk_cnt_a[0] :
+                    sd_req[1] ? sd_blk_cnt_a[1] : sd_blk_cnt_a[2];
 
-	.m1_waitrequest(dram_wait),
-	.m1_burstcount(dram_bc),
-	.m1_address(dram_addr),
-	.m1_read(dram_rd),
-	.m1_write(dram_wr),
-	.m1_writedata(dram_wdata),
-	.m1_byteenable(dram_be),
-	.m1_readdata(dram_rdata),
-	.m1_readdatavalid(dram_rvalid),
-
-	.s_waitrequest(ddr_busy),
-	.s_burstcount(ddr_burstcnt),
-	.s_address(ddr_addr),
-	.s_read(ddr_rd),
-	.s_write(ddr_we),
-	.s_writedata(ddr_din),
-	.s_byteenable(ddr_be),
-	.s_readdata(ddr_dout),
-	.s_readdatavalid(ddr_dout_ready)
-);
-
-wire [2:0] scsi_conf   = opt_disks2 ? 3'd2 : 3'd0;
-wire [7:0] reset_mask_rev = (opt_iommu==0) ? 8'h26 :
-                            (opt_iommu==1) ? 8'h11 :
-                            (opt_iommu==2) ? 8'h23 : 8'h30;
-
-wire       clk_sys, vga_ce, vga_clk;
+wire       vid_ce, uart_rts, uart_dtr;
+wire [2:0] kbd_led_status, kbd_led_use;
 wire [15:0] audio_l, audio_r;
-wire        fb_pal_clk, fb_pal_wr;
-wire [23:0] fb_pal_d;
-wire  [7:0] fb_pal_a;
-wire        led_power;
-wire        ps2_kbd_clk_in, ps2_kbd_data_in, ps2_mouse_clk_in, ps2_mouse_data_in;
-wire  [2:0] ps2_kbd_led_status, ps2_kbd_led_use;
 
-ss_core ss_core
+ss20_machine machine
 (
-	.clk_50m(clk),
-	.clk_sys(clk_sys),
-	.reset(reset),
-	.vga_r(vga_r),
-	.vga_g(vga_g),
-	.vga_b(vga_b),
-	.vga_hs(vga_hs),
-	.vga_vs(vga_vs),
-	.vga_de(vga_de),
-	.vga_ce(vga_ce),
-	.vga_clk(vga_clk),
-	.audio_l(audio_l),
-	.audio_r(audio_r),
-	.fb_pal_clk(fb_pal_clk),
-	.fb_pal_d(fb_pal_d),
-	.fb_pal_a(fb_pal_a),
-	.fb_pal_wr(fb_pal_wr),
-	.led_disk(led_disk),
-	.led_user(led_user),
-	.led_power(led_power),
+	.clk(clk),
+	.rst(reset),
+	.clk_vid(clk),
 
-	.ddram_clk(vram_clk),
-	.ddram_waitrequest(vram_wait),
-	.ddram_burstcount(vram_bc),
-	.ddram_address(vram_addr),
-	.ddram_readdata(vram_rdata),
-	.ddram_readdatavalid(vram_rvalid),
-	.ddram_read(vram_rd),
-	.ddram_writedata(vram_wdata),
-	.ddram_byteenable(vram_be),
-	.ddram_write(vram_wr),
+	.opt_autoboot_i(opt_autoboot),
+	.opt_serial_i(opt_serial),
+	.opt_cg3_i(opt_cg3),
+	.opt_kbd_layout_i(opt_kbd_layout),
+	.opt_l2tlb_i(opt_l2tlb),
+	.opt_ram_mb_i(opt_ram_mb),
+	.opt_eth_i(opt_eth),
 
-	.ddram2_clk(dram_clk),
-	.ddram2_waitrequest(cpu_wait),
-	.ddram2_burstcount(cpu_bc),
-	.ddram2_address(cpu_addr),
-	.ddram2_readdata(cpu_rdata),
-	.ddram2_readdatavalid(cpu_rvalid),
-	.ddram2_read(cpu_rd),
-	.ddram2_writedata(cpu_wdata),
-	.ddram2_byteenable(cpu_be),
-	.ddram2_write(cpu_wr),
+	.ddr_busy_i(ddr_busy),
+	.ddr_burstcnt_o(ddr_burstcnt),
+	.ddr_addr_o(ddr_addr),
+	.ddr_rd_o(ddr_rd),
+	.ddr_we_o(ddr_we),
+	.ddr_din_o(ddr_din),
+	.ddr_be_o(ddr_be),
+	.ddr_dout_i(ddr_dout),
+	.ddr_dout_ready_i(ddr_dout_ready),
 
-	.reset_mask_rev(reset_mask_rev),
-	.kbm_layout(8'h21),
-	.wback(opt_wb),
-	.aow(opt_aow),
-	.cachena(~opt_nocache),
-	.l2tlbena(opt_l2tlb),
+	.ioctl_download_i(ioctl_download),
+	.ioctl_index_i(ioctl_index),
+	.ioctl_wr_i(ioctl_wr),
+	.ioctl_addr_i({2'b00, ioctl_addr}),
+	.ioctl_dout_i(ioctl_dout),
+	.ioctl_wait_o(ioctl_wait),
 
-	.vga_on(1'b1),
-	.scsi_conf(scsi_conf),
-	.scsi_cdconf(opt_cdrom == 2'd2 ? 2'd2 : 2'd1),   // the CD is always there (OSD)
-	.ram_sel(2'd0),
-	.tcx(~opt_cg3),
-	.autoboot(~opt_noautoboot),
-	.viboot(~opt_serial),
+	.img_mounted_i(img_mounted),
+	.img_readonly_i(img_readonly),
+	.img_size_i(img_size),
+	.sd_lba_o(sd_lba),
+	.sd_blk_cnt_o(sd_blk_cnt_a),
+	.sd_rd_o(sd_rd),
+	.sd_wr_o(sd_wr),
+	.sd_ack_i(sd_ack),
+	.sd_buff_addr_i(sd_buff_addr),
+	.sd_buff_dout_i(sd_buff_dout),
+	.sd_buff_din_o(sd_buff_din),
+	.sd_buff_wr_i(sd_buff_wr),
 
-	.img_mounted(img_mounted),
-	.img_readonly(img_readonly),
-	.img_size(img_size),
-	.sd_lba0(sd_lba0),
-	.sd_lba1(sd_lba1),
-	.sd_lba2(sd_lba2),
-	.sd_lba3(sd_lba3),
-	.sd_rd(sd_rd),
-	.sd_wr(sd_wr),
-	.sd_ack(sd_ack),
-	.sd_blk_cnt(sd_blk_cnt),
-	.sd_buff_addr(sd_buff_addr),
-	.sd_buff_dout(sd_buff_dout),
-	.sd_buff_din0(sd_buff_din0),
-	.sd_buff_din1(sd_buff_din1),
-	.sd_buff_din2(sd_buff_din2),
-	.sd_buff_din3(sd_buff_din3),
-	.sd_buff_wr(sd_buff_wr),
+	.rtc_i(rtc),
 
-	.ioctl_download(ioctl_download),
-	.ioctl_index(ioctl_index),
-	.ioctl_wr(ioctl_wr),
-	.ioctl_addr(ioctl_addr),
-	.ioctl_dout(ioctl_dout),
-	.ioctl_wait(ioctl_wait),
-	.rtc(rtc),
+	.uart_txd_o(uart_txd),
+	.uart_rxd_i(uart_rxd),
+	.uart_rts_o(uart_rts),
+	.uart_cts_i(1'b0),
+	.uart_dtr_o(uart_dtr),
+	.uart_dsr_i(1'b0),
 
-	// no PS/2 devices: the lines idle high
-	.ps2_kbd_clk_out(1'b1),
-	.ps2_kbd_data_out(1'b1),
-	.ps2_kbd_clk_in(ps2_kbd_clk_in),
-	.ps2_kbd_data_in(ps2_kbd_data_in),
-	.ps2_kbd_led_status(ps2_kbd_led_status),
-	.ps2_kbd_led_use(ps2_kbd_led_use),
-	.ps2_mouse_clk_out(1'b1),
-	.ps2_mouse_data_out(1'b1),
-	.ps2_mouse_clk_in(ps2_mouse_clk_in),
-	.ps2_mouse_data_in(ps2_mouse_data_in),
+	// no keyboard or mouse events yet
+	.ps2_key_i(11'd0),
+	.ps2_mouse_i(25'd0),
+	.kbd_led_status_o(kbd_led_status),
+	.kbd_led_use_o(kbd_led_use),
 
-	.ddram3_waitrequest(eth_wait),
-	.ddram3_burstcount(eth_bc),
-	.ddram3_address(eth_addr),
-	.ddram3_readdata(eth_rdata),
-	.ddram3_readdatavalid(eth_rvalid),
-	.ddram3_read(eth_rd),
-	.ddram3_writedata(eth_wdata),
-	.ddram3_byteenable(eth_be),
-	.ddram3_write(eth_wr),
-	.eth_ena(opt_eth),
-	.uart_txd(uart_txd),
-	.uart_rxd(uart_rxd)
+	.vid_ce_o(vid_ce),
+	.vid_r_o(vga_r),
+	.vid_g_o(vga_g),
+	.vid_b_o(vga_b),
+	.vid_hs_o(vga_hs),
+	.vid_vs_o(vga_vs),
+	.vid_de_o(vga_de),
+
+	.audio_l_o(audio_l),
+	.audio_r_o(audio_r),
+
+	.led_disk_o(led_disk),
+	.led_user_o(led_user)
 );
 
 endmodule
