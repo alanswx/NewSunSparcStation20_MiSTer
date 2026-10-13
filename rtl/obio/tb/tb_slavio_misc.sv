@@ -24,7 +24,8 @@ module tb_slavio_misc;
     .clk, .rst, .rst_swr_i(rst_swr), .rst_switch_i(rst_switch), .wd_i(1'b0), .bus_i(req), .bus_o(rsp),
     .leds_o(leds), .led_o(led), .fd_tc_o(fd_tc), .fd_density_i(fd_density),
     .power_off_o(power_off), .pwr_fail_i(pwr_fail), .pwr_irq_o(pwr_irq),
-    .diag_sw_i(diag_sw), .sw_reset_o(sw_reset));
+    .diag_sw_i(diag_sw), .cfg_cg3_i(1'b1), .cfg_noautoboot_i(1'b0), .cfg_serial_i(1'b0), .cfg_ram_mb_i(10'd464),
+    .sw_reset_o(sw_reset));
 
   task automatic cycles(input int n);
     repeat (n) @(posedge clk);
@@ -68,6 +69,10 @@ module tb_slavio_misc;
     bus_read(SYSCTL, v);  check32(v, 32'h0, "system control: no status bits after POR");
     rd8(AUX0, b);         check(b == 8'hC0, "Aux 0: bits 7:6 read 1, the rest 0");
     rd8(POWER, b);        check(b == 8'h00, "power register clear");
+    bus_read(AUX0, v);        check32(v, 32'hC012_0044, "TACUS word 0: HWCONF 0x12, video present, CG3");
+    bus_read(AUX0 + 8, v);    check32(v, 32'd55_000_000, "TACUS +8: the CPU clock");
+    bus_read(AUX0 + 'h1C, v); check32(v, 32'h5A00_01D0, "TACUS +0x1C: 0x5A and 464 MB");
+    bus_read(AUX0 + 'h18, v); check32(v, 32'h0, "TACUS +0x18: no Direct SD");
     check(!power_off && !pwr_irq && !led, "outputs quiet");
 
     // ---- LEDs: 16-bit write-only register ----

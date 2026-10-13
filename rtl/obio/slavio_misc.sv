@@ -27,13 +27,27 @@
 //             "local-watchdog" in the reset search order; wdtest).
 //             Writing a 0 to a status bit clears it; a 1 has no effect.
 //
+// The Aux 0 page is also the TACUS core's private configuration block,
+// which the OpenBIOS build in bios/ (CONFIG_TACUS) reads as 32-bit words
+// (bios/openbios arch/sparc32/openbios.c, entry.S TACUS_RAMSIZE,
+// libopenbios/video_common.c; docs/legacy/HARDWARE_GAPS.md "AUX1"):
+//   +0x00     bits 31:24 the Sun Aux 0 byte above; 23:16 HWCONF (0x12, the
+//             MiSTer: no Direct SD probe, no video-encoder setup); bit 6
+//             video present (0 with the OSD's serial console: OpenBIOS's
+//             nographic); bit 3 AutoBoot off (OSD); bit 2 CG3 (OSD)
+//   +0x08     the CPU clock in Hz (the cpu node's clock-frequency)
+//   +0x1C     0x5A in bits 31:24, the OSD's memory size in MB in 11:0
+//   others    0 (+0x04 the I2C bus, +0x18 the old Direct SD controller)
+//
 // `rst` is every reset (POR, SW_RST, the reset switch); rst_swr_i and
 // rst_switch_i, sampled during rst, say which kind it was, for the status
 // bits (§12: SWR_STAT is 1 after SWR only, RST.SW after the switch only).
 
 module slavio_misc
   import iobus_pkg::*;
-(
+#(
+  parameter int CLK_HZ = 55_000_000
+)(
   input  logic     clk,
   input  logic     rst,
   input  logic     rst_swr_i,         // this reset is a software reset
@@ -51,6 +65,10 @@ module slavio_misc
   input  logic        pwr_fail_i,     // sets the power-fail interrupt
   output logic        pwr_irq_o,      // the power-fail interrupt (level 15 source)
   input  logic        diag_sw_i,
+  input  logic        cfg_cg3_i,       // TACUS configuration (OSD)
+  input  logic        cfg_noautoboot_i,
+  input  logic        cfg_serial_i,    // console on ttya: "no video" to OpenBIOS
+  input  logic [9:0]  cfg_ram_mb_i,
   output logic        sw_reset_o      // pulse: software reset requested
 );
 
@@ -90,7 +108,7 @@ module slavio_misc
       if (access && bus_i.we) begin
         if (sel_leds && (bus_i.be[3] | bus_i.be[2]))
           leds_o <= bus_i.wdata[31:16];
-        if (sel_aux0) begin
+        if (sel_aux0 && bus_i.addr[4:2] == 3'd0 && bus_i.be[3]) begin
           led_o     <= wbyte[0];
           fd_tc_o   <= wbyte[1];
           aux0_rsvd <= wbyte[4:2];
@@ -116,7 +134,14 @@ module slavio_misc
   always_comb begin
     rdata = '0;
     if (sel_leds)   rdata = {leds_o, 16'h0};
-    if (sel_aux0)   rdata = {4{2'b11, fd_density_i, aux0_rsvd, 1'b0, led_o}};
+    if (sel_aux0)
+      case (bus_i.addr[4:2])
+        3'd0:    rdata = {2'b11, fd_density_i, aux0_rsvd, 1'b0, led_o, 8'h12, 8'h00,
+                          1'b0, !cfg_serial_i, 2'b00, cfg_noautoboot_i, cfg_cg3_i, 2'b00};
+        3'd2:    rdata = CLK_HZ;
+        3'd7:    rdata = {8'h5A, 14'h0, cfg_ram_mb_i};
+        default: rdata = '0;
+      endcase
     if (sel_power)  rdata = {4{2'b00, pwr_fail, 4'b0000, power_off_o}};
     if (sel_sysctl) rdata = {27'h0, wd_stat, rstsw_stat, diag_sw_i, swr_stat, 1'b0};
   end
@@ -133,6 +158,6 @@ module slavio_misc
 
   logic unused_ok;
   assign unused_ok = &{1'b0, bus_i.pair, bus_i.be[1:0], bus_i.addr[IOB_AW-1:24], wbyte[7:5],
-                       bus_i.addr[19:13], bus_i.addr[11:2]};
+                       bus_i.addr[19:13], bus_i.addr[11:5]};
 
 endmodule

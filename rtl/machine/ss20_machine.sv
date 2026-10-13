@@ -296,11 +296,13 @@ module ss20_machine #(
   // 5: the system registers (LEDs, AUXIO, power, system control/status)
   logic [15:0] leds;
   logic        aux_led;
-  slavio_misc u_misc (
+  slavio_misc #(.CLK_HZ(CLK_HZ)) u_misc (
     .clk, .rst(rst || !run), .rst_swr_i(rst_swr), .rst_switch_i(1'b0), .wd_i(wd_reset),
     .bus_i(iob_q[5]), .bus_o(iob_r[5]),
     .leds_o(leds), .led_o(aux_led), .fd_tc_o(), .fd_density_i(1'b0), .power_off_o(),
-    .pwr_fail_i(1'b0), .pwr_irq_o(), .diag_sw_i(1'b0), .sw_reset_o(sw_reset));
+    .pwr_fail_i(1'b0), .pwr_irq_o(), .diag_sw_i(1'b0),
+    .cfg_cg3_i(opt_cg3_i), .cfg_noautoboot_i(!opt_autoboot_i), .cfg_serial_i(opt_serial_i),
+    .cfg_ram_mb_i(opt_ram_mb_i), .sw_reset_o(sw_reset));
 
   // 6: SBus slot F (DMA2, ESP, LANCE: phases 7-8), 7: slot 2 (TCX: phase
   // 6): not yet; their registers read 0
@@ -439,7 +441,7 @@ module ss20_machine #(
   assign vid_ce_o = 1'b1;
 
   /* verilator lint_off UNUSEDSIGNAL */
-  wire unused_inputs = ^{opt_autoboot_i, opt_serial_i, opt_cg3_i, opt_kbd_layout_i, opt_l2tlb_i,
+  wire unused_inputs = ^{opt_kbd_layout_i, opt_l2tlb_i,
                          opt_eth_i, sd_ack_i[2:0], img_mounted_i[2:0], uart_cts_i, uart_dsr_i,
                          ps2_key_i, ps2_mouse_i, frame, leds, rtc_i[63:56], cpu_tt, cpu_pc, cpu_commit, cpu_trap, cpu_halt, cpu_req.pa[27:24]};
   /* verilator lint_on UNUSEDSIGNAL */
