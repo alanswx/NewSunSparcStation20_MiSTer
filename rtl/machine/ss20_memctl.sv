@@ -79,14 +79,20 @@ module ss20_memctl
   // ---------------------------------------------------------------- decode
   logic is_ram, is_low_empty, is_prom;
   always_comb begin
-    is_ram       = req_i.pa[35:32] == 4'h0 && {2'b00, req_i.pa[31:20]} < {4'd0, ram_mb_i};
+    // SIMM slot 7 (PA 0x1C00_0000-0x1FFF_FFFF) holds 16 MB at most (the DDR
+    // above it is the PROM, the VRAM and the scaler's): with more than
+    // 448 MB it is a 16 MB SIMM repeating every 16 MB (t_mem_slot7)
+    is_ram       = req_i.pa[35:32] == 4'h0 &&
+                   (req_i.pa[31:26] == 6'b000111 ? ram_mb_i > 10'd448
+                                                 : {2'b00, req_i.pa[31:20]} < {4'd0, ram_mb_i});
     is_low_empty = req_i.pa[35:32] == 4'h0 && !is_ram;
     is_prom      = req_i.pa[35:24] == 12'hFF0;
   end
 
   logic [28:0] word_now;
   assign word_now = is_prom ? ddr_word(DDR_BASE, PROM_BASE[28:0] | {10'd0, req_i.pa[18:0]})
-                            : ddr_word(DDR_BASE, req_i.pa[28:0]);
+                            : ddr_word(DDR_BASE, req_i.pa[28:26] == 3'b111 ? {3'b111, 2'b00, req_i.pa[23:0]}
+                                                                           : req_i.pa[28:0]);
 
   // ------------------------------------------------- reads in flight
   // DDR returns a read's beats however the machine is reset meanwhile, so
