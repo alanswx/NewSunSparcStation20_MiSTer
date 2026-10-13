@@ -62,8 +62,7 @@
 // THC_MISC to 0; nothing in OpenBIOS enables the video, so VIDEN starts set.
 
 module tcx
-  import iobus_pkg::*;
-  import ss20_ddr_pkg::*;
+  import iobus_pkg::*, ss20_ddr_pkg::*;
 #(
   parameter int BURST = 32               // scan read burst length
 )(

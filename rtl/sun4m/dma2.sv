@@ -73,9 +73,7 @@
 // integrator's to add.
 
 module dma2
-  import iobus_pkg::*;
-  import sbus_pkg::*;
-  import mem_pkg::*;
+  import iobus_pkg::*, sbus_pkg::*, mem_pkg::*;
 (
   input  logic      clk,
   input  logic      rst,

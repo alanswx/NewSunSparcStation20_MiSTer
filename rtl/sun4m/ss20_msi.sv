@@ -83,9 +83,7 @@
 // completes a write before the next access).
 
 module ss20_msi
-  import iobus_pkg::*;
-  import mem_pkg::*;
-  import sbus_pkg::*;
+  import iobus_pkg::*, mem_pkg::*, sbus_pkg::*;
 #(
   parameter logic [7:0]  IMPL_VER  = 8'h13,         // SS20 (QEMU sun4m.c, t_msi)
   // Masters 8 and 9 on (§5.1.2), and EN<F> on, unlike §5.1.2's POR state:
