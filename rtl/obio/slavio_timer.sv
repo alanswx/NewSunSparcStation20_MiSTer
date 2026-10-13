@@ -26,7 +26,7 @@
 //   +C  User Timer start/stop (RW, processor sets only): bit 0 RUN. No
 //       effect on a counter/timer (those always run).
 //   +10 Timer configuration (RW, system set only): bit N = 1 makes
-//       processor N's counter a User Timer.
+//       processor N's counter a User Timer. All four bits are kept.
 //
 // The counters tick every 500 ns in bit 9. A counter/timer counts up from
 // 0x200; when the next tick would make the 22-bit count equal the limit,
@@ -165,13 +165,17 @@ module slavio_timer
 
   assign irq_sys = sys_l;
 
-  // Timer configuration
+  // Timer configuration: four bits whatever NCPU (OBP 2.25's POST "PROCn
+  // User Timer Test" writes all ones and expects 0xF back); bits beyond the
+  // processors fitted do nothing
+  logic [3:0] cfg;
   always_ff @(posedge clk) begin
     if (rst)
-      user_mode <= '0;
+      cfg <= '0;
     else if (wr_cfg)
-      user_mode <= bus_i.wdata[NCPU-1:0];
+      cfg <= bus_i.wdata[3:0];
   end
+  assign user_mode = cfg[NCPU-1:0];
 
   // Processor counters
   genvar n;
@@ -270,7 +274,7 @@ module slavio_timer
       case (word)
         3'd0:    rdata = {sys_l, sys_limit, 9'd0};
         3'd1:    rdata = {sys_l, sys_count, 9'd0};
-        3'd4:    rdata = 32'(user_mode);
+        3'd4:    rdata = {28'd0, cfg};
         default: rdata = '0;
       endcase
     end else if (cpu_valid) begin

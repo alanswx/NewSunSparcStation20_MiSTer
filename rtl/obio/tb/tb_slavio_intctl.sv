@@ -14,7 +14,7 @@ module tb_slavio_intctl;
   localparam logic [19:0] SPEND = 20'h0, MASK = 20'h4, MCLR = 20'h8, MSET = 20'hC, TARGET = 20'h10;
 
   localparam logic [31:0] MA = 32'd1 << SI_MA;
-  localparam logic [31:0] ALL = SI_IMPLEMENTED | MA;
+  localparam logic [31:0] ALL = 32'hF87F_FFFF;   // every mask bit that exists (VME's too)
 
   logic clk, rst;
   initial begin clk = 0; rst = 1; end
@@ -63,7 +63,7 @@ module tb_slavio_intctl;
     cycles(2);
 
     // ---- reset: all masks set, target 0, nothing pending (§12) ----
-    bus_read(SYS + MASK, v);    check32(v, ALL, "mask: all implemented bits and MA set");
+    bus_read(SYS + MASK, v);    check32(v, ALL, "mask: every mask bit and MA set");
     bus_read(SYS + TARGET, v);  check32(v, 32'h0, "target 0");
     bus_read(SYS + SPEND, v);   check32(v, 32'h0, "nothing pending");
     bus_read(CPU0 + PEND, v);   check32(v, 32'h0, "cpu0 nothing pending");
@@ -144,7 +144,12 @@ module tb_slavio_intctl;
     check(irl == '0, "and raise nothing");
     src = '0; cycles(3);
     bus_write(SYS + MCLR, 32'h0000_007F);
-    bus_read(SYS + MASK, v);    check32(v, 32'h7800_0000, "VME mask bits stay 0; only level 15 still masked");
+    bus_read(SYS + MASK, v);    check32(v, 32'h7800_0000, "VME mask bits cleared; only level 15 still masked");
+    bus_write(SYS + MSET, 32'hFFFF_FFFF);
+    bus_read(SYS + MASK, v);    check32(v, 32'hF87F_FFFF, "mask set: bits 26:23 read 0 (POST System Interrupt Regs)");
+    bus_write(SYS + MCLR, 32'hF87F_FFFF);
+    bus_read(SYS + MASK, v);    check32(v, 32'h0, "mask clear: all 0");
+    bus_write(SYS + MSET, 32'h7800_0000);
 
     // ---- the per-processor timer: level 14, directed, not steered ----
     bus_write(SYS + TARGET, 32'h0);

@@ -168,6 +168,9 @@ module ss20_machine #(
   // ---------------------------------------------------- memory and I/O --
   mem_req_t    io_req;
   mem_rsp_t    io_rsp;
+  logic        mem_acc;               // memctl -> emc: the ECC model
+  logic [3:0]      ecc_fix_v;
+  logic [3:0][5:0] ecc_fix_bit;
   logic        mc_rd, mc_we;
   logic [7:0]  mc_bc, mc_be;
   logic [28:0] mc_addr;
@@ -188,7 +191,7 @@ module ss20_machine #(
     .io_req_o(io_req), .io_rsp_i(io_rsp),
     .ddr_wait_i(mm_wait), .ddr_burstcnt_o(mc_bc), .ddr_addr_o(mc_addr), .ddr_rd_o(mc_rd),
     .ddr_we_o(mc_we), .ddr_din_o(mc_din), .ddr_be_o(mc_be),
-    .ddr_dout_i(mm_dout), .ddr_dout_ready_i(mm_rdv), .state_o());
+    .ddr_dout_i(mm_dout), .ddr_dout_ready_i(mm_rdv), .ram_acc_o(mem_acc), .fix_v_i(ecc_fix_v), .fix_bit_i(ecc_fix_bit), .state_o());
 
   // DDR3, through two rtl/mister/ddram_arb levels: the TCX's scan-out
   // first (it must not underrun), then the memory controller (or the
@@ -263,7 +266,7 @@ module ss20_machine #(
 
   // ------------------------------------------------- the system devices --
   // interrupt sources and strobes of the devices below
-  logic irq_tcx, irq_aud, irq_msi, irq_esp, irq_le, irq_fdc, fd_tc;
+  logic irq_tcx, irq_aud, irq_msi, irq_esp, irq_le, irq_fdc, irq_mem, fd_tc;
   // 0: keyboard (A) / mouse (B) ESCC, with the Sun keyboard and mouse
   // made from hps_io's PS/2 events
   logic irq_kbd, irq_ser;
@@ -376,6 +379,7 @@ module ss20_machine #(
     isrc[SI_SC] = irq_esp;
     isrc[SI_E] = irq_le;
     isrc[SI_FL] = irq_fdc;
+    isrc[SI_M] = irq_mem;
   end
   logic [0:0][3:0] irl_v;
   slavio_intctl #(.NCPU(1)) u_intctl (
@@ -489,8 +493,11 @@ module ss20_machine #(
     .mts_err_i(1'b0), .mts_err_to_i(1'b0), .mts_err_pa_i(36'd0), .mts_err_siz_i(3'd0),
     .mts_err_s_i(1'b0), .mts_err_mid_i(4'd0), .irq_err_o(irq_msi), .arb_en_o());
 
-  // 11: the memory controller's registers (the SMC at 0xF_0000_0000)
-  emc u_emc (.clk, .rst(rst_m), .bus_i(iob_q[11]), .bus_o(iob_r[11]));
+  // 11: the memory controller's registers (the SMC at 0xF_0000_0000),
+  // watching main-memory accesses for the ECC errors firmware injects
+  emc u_emc (.clk, .rst(rst_m), .bus_i(iob_q[11]), .bus_o(iob_r[11]),
+    .mem_v_i(mem_acc), .mem_req_i(mb_req), .mem_mid_i(mb_mid),
+    .fix_v_o(ecc_fix_v), .fix_bit_o(ecc_fix_bit), .irq_o(irq_mem));
 
   /* verilator lint_on PINCONNECTEMPTY */
 
