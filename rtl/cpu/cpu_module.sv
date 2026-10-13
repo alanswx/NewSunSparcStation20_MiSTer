@@ -285,22 +285,25 @@ module cpu_module
   // translated through the MMU. A hit must still pass the permission check
   // (else the MMU records the fault); everything is dropped whenever a
   // translation may have changed (tlb_changed).
+  // The PPNs are in MLAB (asynchronous read at the hit's index: off the
+  // critical paths, which run through the tag compare to the hit).
   localparam int UT = 8;
   logic        ut_v [UT];
   logic [19:0] ut_vtag [UT];
-  logic [23:0] ut_ppn [UT];
+  (* ramstyle = "MLAB, no_rw_check" *) logic [23:0] ut_ppn [UT];
   logic [2:0]  ut_acc [UT];
   logic [2:0]  ut_wp;
   logic        ut_hit, ut_ok;
   logic [35:0] ut_pa;
-  logic [2:0]  ut_acc_hit;
+  logic [2:0]  ut_acc_hit, ut_k;
   always_comb begin
-    ut_hit = 1'b0; ut_pa = '0; ut_acc_hit = '0;
+    ut_hit = 1'b0; ut_k = '0; ut_acc_hit = '0;
     for (int k = 0; k < UT; k++) begin
       if (ut_v[k] && ut_vtag[k] == i_va_now[31:12]) begin
-        ut_hit = 1'b1; ut_pa = {ut_ppn[k], i_va_now[11:0]}; ut_acc_hit = ut_acc[k];
+        ut_hit = 1'b1; ut_k = 3'(k); ut_acc_hit = ut_acc[k];
       end
     end
+    ut_pa = {ut_ppn[ut_k], i_va_now[11:0]};
     ut_ok = i_direct || (ut_hit && acc_fault({1'b0, 1'b1, i_supv_now}, ut_acc_hit) == FT_NONE);
   end
   logic [35:0] i_fast_pa;
@@ -314,6 +317,8 @@ module cpu_module
   logic [23:0] ut_fill_ppn;
   logic [2:0]  ut_fill_acc;
   assign ut_fill = is == I_XLAT && xi_r.hit && !xi_r.busy && mcntl[MC_EN] && !mcntl[MC_BM];
+  always_ff @(posedge clk)
+    if (!(rst || tlb_changed) && ut_fill_q) ut_ppn[ut_wp] <= ut_fill_ppn;
   always_ff @(posedge clk) begin
     ut_fill_vtag <= i_va[31:12];
     ut_fill_ppn  <= xi_r.pa[35:12];
@@ -327,7 +332,6 @@ module cpu_module
       if (ut_fill_q) begin
         ut_v[ut_wp]    <= 1'b1;
         ut_vtag[ut_wp] <= ut_fill_vtag;
-        ut_ppn[ut_wp]  <= ut_fill_ppn;
         ut_acc[ut_wp]  <= ut_fill_acc;
         ut_wp <= ut_wp + 3'd1;
       end
@@ -513,20 +517,21 @@ module cpu_module
   localparam int DUT = 8;
   logic        dut_v [DUT];
   logic [19:0] dut_vtag [DUT];
-  logic [23:0] dut_ppn [DUT];
+  (* ramstyle = "MLAB, no_rw_check" *) logic [23:0] dut_ppn [DUT];   // as ut_ppn
   logic [2:0]  dut_acc [DUT];
   logic        dut_m [DUT];
   logic [2:0]  dut_wp;
   logic        dut_hit, dut_ok, dut_m_hit;
   logic [35:0] dut_pa;
-  logic [2:0]  dut_acc_hit;
+  logic [2:0]  dut_acc_hit, dut_k;
   always_comb begin
-    dut_hit = 1'b0; dut_pa = '0; dut_acc_hit = '0; dut_m_hit = 1'b0;
+    dut_hit = 1'b0; dut_k = '0; dut_acc_hit = '0; dut_m_hit = 1'b0;
     for (int k = 0; k < DUT; k++) begin
       if (dut_v[k] && dut_vtag[k] == dmr.va[31:12]) begin
-        dut_hit = 1'b1; dut_pa = {dut_ppn[k], dmr.va[11:0]}; dut_acc_hit = dut_acc[k]; dut_m_hit = dut_m[k];
+        dut_hit = 1'b1; dut_k = 3'(k); dut_acc_hit = dut_acc[k]; dut_m_hit = dut_m[k];
       end
     end
+    dut_pa = {dut_ppn[dut_k], dmr.va[11:0]};
     dut_ok = d_direct || (dut_hit && acc_fault(d_at, dut_acc_hit) == FT_NONE && (!d_at[2] || dut_m_hit));
   end
   logic [35:0] d_fast_pa;
@@ -546,6 +551,8 @@ module cpu_module
     for (int k = 0; k < DUT; k++)
       if (dut_v[k] && dut_vtag[k] == dut_fill_vtag) begin dut_dup = 1'b1; dut_dup_idx = 3'(k); end
   end
+  always_ff @(posedge clk)
+    if (!(rst || tlb_changed) && dut_fill_q) dut_ppn[dut_dup ? dut_dup_idx : dut_wp] <= dut_fill_ppn;
   always_ff @(posedge clk) begin
     dut_fill_vtag <= dmr.va[31:12];
     dut_fill_ppn  <= xd_r.pa[35:12];
@@ -560,11 +567,10 @@ module cpu_module
       if (dut_fill_q) begin
         // a page already held (its copy refused a store: M was clear) is replaced in place
         if (dut_dup) begin
-          dut_ppn[dut_dup_idx] <= dut_fill_ppn; dut_acc[dut_dup_idx] <= dut_fill_acc; dut_m[dut_dup_idx] <= dut_fill_m;
+          dut_acc[dut_dup_idx] <= dut_fill_acc; dut_m[dut_dup_idx] <= dut_fill_m;
         end else begin
           dut_v[dut_wp]    <= 1'b1;
           dut_vtag[dut_wp] <= dut_fill_vtag;
-          dut_ppn[dut_wp]  <= dut_fill_ppn;
           dut_acc[dut_wp]  <= dut_fill_acc;
           dut_m[dut_wp]    <= dut_fill_m;
           dut_wp <= dut_wp + 3'd1;

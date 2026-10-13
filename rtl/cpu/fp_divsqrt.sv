@@ -9,8 +9,8 @@
 //   restoring digit recurrences.
 //
 // Divide: q = floor(a * 2^57 / b), a and b the 53-bit significands in
-// [2^52, 2^53): a/b in (1/2, 2), so q in (2^56, 2^58): the top bit is
-// a >= b, then 57 restoring steps.
+// [2^52, 2^53): a/b in (1/2, 2), so q in (2^56, 2^58): 58 restoring
+// steps, the first (rem - b, no doubling) giving the top bit, a >= b.
 // Square root: the radicand is a * 2^60 (or a * 2^61 for an odd exponent,
 // which makes the exponent even), at most 114 bits; its integer root is
 // formed over 58 iterations (two radicand bits each), q in [2^56, 2^57).
@@ -40,12 +40,16 @@ module fp_divsqrt
   logic signed [13:0] exp;
   logic [52:0]  den;
 
-  // One step of each recurrence
-  logic [61:0] rem2, sq_trial, dv_trial;
+  // One step of either recurrence, on one subtractor: sqrt, two radicand
+  // bits down minus (4q + 1); divide, 2 rem - b (rem - b in the first step,
+  // which gives the quotient's top bit, a >= b)
+  logic        first;
+  logic [61:0] t_x, trial;
   always_comb begin
-    rem2     = {rem[59:0], rad[115:114]};           // sqrt: two radicand bits down
-    sq_trial = rem2 - {2'b00, q, 2'b01};            // minus (4q + 1)
-    dv_trial = {rem[60:0], 1'b0} - {9'd0, den};     // divide: 2 rem - b
+    if (is_sqrt)    t_x = {rem[59:0], rad[115:114]};
+    else if (first) t_x = rem;
+    else            t_x = {rem[60:0], 1'b0};
+    trial = t_x - (is_sqrt ? {2'b00, q, 2'b01} : {9'd0, den});
   end
 
   always_ff @(posedge clk) begin
@@ -53,7 +57,7 @@ module fp_divsqrt
     if (rst) begin
       run <= 1'b0;
       cnt <= '0;
-      rem <= '0; rad <= '0; q <= '0; den <= '0; sign <= 1'b0; exp <= '0; is_sqrt <= 1'b0;
+      rem <= '0; rad <= '0; q <= '0; den <= '0; sign <= 1'b0; exp <= '0; is_sqrt <= 1'b0; first <= 1'b0;
     end else if (start_i) begin
       run <= 1'b1;
       is_sqrt <= sqrt_i;
@@ -71,12 +75,12 @@ module fp_divsqrt
           exp <= b_i.exp >>> 1;
         end
       end else begin
-        cnt <= 6'd57;
+        cnt <= 6'd58;
         sign <= a_i.sign ^ b_i.sign;
         den <= b_i.man;
-        // the first quotient bit (2^57) is a >= b; the remainder follows
-        if (a_i.man >= b_i.man) begin rem <= 62'(a_i.man) - 62'(b_i.man); q <= 58'd1; end
-        else                    begin rem <= 62'(a_i.man);                q <= 58'd0; end
+        rem <= 62'(a_i.man);
+        q <= '0;
+        first <= 1'b1;
         rad <= '0;
         exp <= a_i.exp - b_i.exp;
       end
@@ -86,14 +90,10 @@ module fp_divsqrt
         done_o <= 1'b1;
       end else begin
         cnt <= cnt - 6'd1;
-        if (is_sqrt) begin
-          rad <= rad << 2;
-          if (!sq_trial[61]) begin rem <= sq_trial; q <= {q[56:0], 1'b1}; end
-          else               begin rem <= rem2;     q <= {q[56:0], 1'b0}; end
-        end else begin
-          if (!dv_trial[61]) begin rem <= dv_trial;         q <= {q[56:0], 1'b1}; end
-          else               begin rem <= {rem[60:0], 1'b0}; q <= {q[56:0], 1'b0}; end
-        end
+        first <= 1'b0;
+        if (is_sqrt) rad <= rad << 2;
+        if (!trial[61]) begin rem <= trial; q <= {q[56:0], 1'b1}; end
+        else            begin rem <= t_x;   q <= {q[56:0], 1'b0}; end
       end
     end
   end

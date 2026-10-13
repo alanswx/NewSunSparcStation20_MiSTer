@@ -135,8 +135,20 @@ module ss20_msi
   logic [18:0] diag_va_q;                 // VA[30:12]
 
   logic [18:0] tag_q [NTLB];              // VA[30:12]
-  logic [23:0] ppn_q [NTLB];              // PA[35:12]
-  logic [NTLB-1:0] v_q, w_q, c_q;
+  logic [NTLB-1:0] v_q, w_q;
+  // {PPN (PA[35:12]), C} in MLAB, one copy per read port (the hit, the
+  // diagnostic read); a fill and a bus write never come in the same cycle
+  // (a TLB write stops the fill)
+  logic        pd_we;
+  logic [3:0]  pd_wa, hit_idx;
+  logic [24:0] pd_wd, pd_hit, pd_diag;
+  (* ramstyle = "MLAB, no_rw_check" *) logic [24:0] pd_hit_m  [NTLB];
+  (* ramstyle = "MLAB, no_rw_check" *) logic [24:0] pd_diag_m [NTLB];
+  always_ff @(posedge clk)
+    if (pd_we) begin
+      pd_hit_m[pd_wa]  <= pd_wd;
+      pd_diag_m[pd_wa] <= pd_wd;
+    end
   logic [3:0]  rr_q;                      // next victim
 
   assign irq_err_o = afsr_q[31];
@@ -165,21 +177,23 @@ module ss20_msi
   assign w_aer   = wr & rd_hit_ok & (word == 12'h402);
   assign w_sbcfg = wr & rd_hit_ok & (word[11:2] == 10'h101);
 
-  // The tag comparators are shared by the translation, the address flush
-  // and the diagnostic comparator; the bus has them first.
-  logic        bus_cmp;
+  // Two sets of tag comparators: the bus's (the address flush and the
+  // diagnostic comparator) and the translation's, so that the translation
+  // does not wait on (or sit at the end of) the bus's long path through
+  // the interconnect.
   logic [18:0] cmp_va;
-  logic [NTLB-1:0] match;
+  logic [NTLB-1:0] match, dv_match;
   logic [PW-1:0] cur_q;
   dvma_req_t   creq;
 
   assign creq    = dvma_req_i[cur_q];
-  assign bus_cmp = access & rd_hit_ok & ((word == 12'h006) | (word == 12'h054));
-  assign cmp_va  = (access & (word == 12'h006)) ? bus_i.wdata[30:12] :
-                   (access & (word == 12'h054)) ? diag_va_q : creq.va[30:12];
+  assign cmp_va  = (word == 12'h006) ? bus_i.wdata[30:12] : diag_va_q;
 
   always_comb
-    for (int i = 0; i < NTLB; i++) match[i] = (tag_q[i] == cmp_va);
+    for (int i = 0; i < NTLB; i++) begin
+      match[i]    = tag_q[i] == cmp_va;
+      dv_match[i] = tag_q[i] == creq.va[30:12];
+    end
 
   // ---------------------------------------------------------------------
   // Read data
@@ -196,7 +210,7 @@ module ss20_msi
         12'h001: rdata = {iba_q, 10'b0};
         12'h04?: if (de_q) rdata = {1'b1, tag_q[idx], 8'b0, rr_q + idx};
         12'h054: if (de_q) rdata = {16'b0, match};
-        12'h08?: if (de_q) rdata = {ppn_q[idx], c_q[idx], 4'b0, w_q[idx], v_q[idx], 1'b0};
+        12'h08?: if (de_q) rdata = {pd_diag, 4'b0, w_q[idx], v_q[idx], 1'b0};
         12'h400: rdata = afsr_q;
         12'h401: rdata = afar_q;
         12'h402: rdata = aer_q;
@@ -242,17 +256,21 @@ module ss20_msi
   logic [NTLB-1:0] hit_vec;
   logic            hit, hit_w;
   logic [23:0]     hit_ppn;
-  assign hit_vec = match & v_q;
+  assign hit_vec = dv_match & v_q;
   assign hit     = |hit_vec;
+  // The PPN's RAM address: the hit's index. Two valid entries with the
+  // same tag, which only diagnostic writes can make, give the lower one's
+  // PPN.
   always_comb begin
     hit_w   = 1'b0;
-    hit_ppn = '0;
-    for (int i = 0; i < NTLB; i++)
-      if (hit_vec[i]) begin
-        hit_w   = hit_w | w_q[i];
-        hit_ppn = hit_ppn | ppn_q[i];
-      end
+    hit_idx = '0;
+    for (int i = 0; i < NTLB; i++) hit_w = hit_w | (hit_vec[i] & w_q[i]);
+    for (int i = NTLB - 1; i >= 0; i--)
+      if (hit_vec[i]) hit_idx = 4'(i);
   end
+  assign pd_hit  = pd_hit_m[hit_idx];
+  assign pd_diag = pd_diag_m[idx];
+  assign hit_ppn = pd_hit[24:1];
 
   // The walked IOPTE
   logic [31:0] pte;
@@ -304,15 +322,13 @@ module ss20_msi
             st_q <= S_ACC;
           end else if (!in_range) begin
             st_q <= S_FAULT;
-          end else if (!bus_cmp) begin
-            if (hit) begin
-              pa_q <= {hit_ppn, creq.va[11:0]};
-              st_q <= (creq.write & ~hit_w) ? S_FAULT : S_ACC;
-            end else begin
-              pte_pa_q <= pte_pa;
-              stale_q  <= tlb_change;
-              st_q     <= S_WALK;
-            end
+          end else if (hit) begin
+            pa_q <= {hit_ppn, creq.va[11:0]};
+            st_q <= (creq.write & ~hit_w) ? S_FAULT : S_ACC;
+          end else begin
+            pte_pa_q <= pte_pa;
+            stale_q  <= tlb_change;
+            st_q     <= S_WALK;
           end
         S_WALK:
           if (mem_rsp_i.ack) begin
@@ -408,8 +424,6 @@ module ss20_msi
       // TLB: fill, then the bus's changes on top
       if (fill) begin
         tag_q[rr_q] <= creq.va[30:12];
-        ppn_q[rr_q] <= pte[31:8];
-        c_q[rr_q]   <= pte[7];
         w_q[rr_q]   <= pte[2];
         v_q[rr_q]   <= 1'b1;
         rr_q        <= rr_q + 4'd1;
@@ -418,15 +432,18 @@ module ss20_msi
       if (w_flpg)  v_q <= v_q & ~match;
       if (w_tag)   tag_q[idx] <= bus_i.wdata[30:12];
       if (w_data) begin
-        ppn_q[idx] <= bus_i.wdata[31:8];
-        c_q[idx]   <= bus_i.wdata[7];
         w_q[idx]   <= bus_i.wdata[2];
         v_q[idx]   <= bus_i.wdata[1];
       end
     end
   end
 
+  // the PPN/C write (the RAMs above)
+  assign pd_we = !rst && (fill || w_data);
+  assign pd_wa = w_data ? idx : rr_q;
+  assign pd_wd = w_data ? bus_i.wdata[31:7] : pte[31:7];
+
   logic unused_ok;
-  assign unused_ok = &{1'b0, bus_i.be, bus_i.pair, bus_i.addr[1:0], creq.valid, pte[6:3], pte[0]};
+  assign unused_ok = &{1'b0, pd_hit[0], bus_i.be, bus_i.pair, bus_i.addr[1:0], creq.valid, pte[6:3], pte[0]};
 
 endmodule

@@ -43,27 +43,54 @@ module fpu
 );
 
   // ---------------------------------------------------------------------
-  // Registers: 16 pairs
+  // Registers: 16 pairs, as two 16 x 32 halves (even, odd register) in
+  // MLAB with asynchronous reads, one copy per read port (the store's rd,
+  // the FPop's rs1 and rs2): in flops with 16:1 muxes they cost ~1k ALMs.
+  // One write port: the IU serialises FP instructions and holds an FP load
+  // while the FPU is busy (dp_wr included), so a load and the datapath
+  // never write in the same cycle (the datapath would win).
   // ---------------------------------------------------------------------
-  logic [63:0] regs [16];
-
-  logic        dp_wr;                  // the datapath's write
-  logic [4:0]  dp_wr_addr;
+  logic        dp_wr;                  // the datapath's write: the latched FPop's rd and result
+  logic [4:0]  dp_wr_addr;             // (they hold until the next FPop, which waits for dp_wr)
   logic        dp_wr_dbl;
   logic [63:0] dp_wr_data;             // a single in [63:32]
 
-  always_ff @(posedge clk) begin
-    if (req_i.wr_valid) begin
-      if (req_i.wr_dbl)          regs[req_i.wr_addr[4:1]] <= req_i.wr_data;
-      else if (req_i.wr_addr[0]) regs[req_i.wr_addr[4:1]][31:0] <= req_i.wr_data[31:0];
-      else                       regs[req_i.wr_addr[4:1]][63:32] <= req_i.wr_data[31:0];
-    end
+  logic        rf_we_hi, rf_we_lo;
+  logic [3:0]  rf_wa;
+  logic [31:0] rf_wd_hi, rf_wd_lo;
+  logic        rf_we, rf_dbl, rf_odd;
+  logic [63:0] rf_d;                   // a double, or the single in [31:0]
+  always_comb begin
     if (dp_wr) begin
-      if (dp_wr_dbl)          regs[dp_wr_addr[4:1]] <= dp_wr_data;
-      else if (dp_wr_addr[0]) regs[dp_wr_addr[4:1]][31:0] <= dp_wr_data[63:32];
-      else                    regs[dp_wr_addr[4:1]][63:32] <= dp_wr_data[63:32];
+      rf_we = 1'b1; rf_wa = dp_wr_addr[4:1]; rf_dbl = dp_wr_dbl; rf_odd = dp_wr_addr[0];
+      rf_d = dp_wr_dbl ? dp_wr_data : {32'd0, dp_wr_data[63:32]};
+    end else begin
+      rf_we = req_i.wr_valid; rf_wa = req_i.wr_addr[4:1]; rf_dbl = req_i.wr_dbl; rf_odd = req_i.wr_addr[0];
+      rf_d = req_i.wr_data;
     end
+    rf_we_hi = rf_we && (rf_dbl || !rf_odd);
+    rf_we_lo = rf_we && (rf_dbl || rf_odd);
+    rf_wd_hi = rf_dbl ? rf_d[63:32] : rf_d[31:0];
+    rf_wd_lo = rf_d[31:0];
   end
+
+  // (module-level arrays: Quartus ignores ramstyle on arrays declared in a
+  // generate block)
+  logic [3:0]  rf_ra [3];
+  logic [63:0] rf_rd [3];
+  (* ramstyle = "MLAB, no_rw_check" *) logic [31:0] rf_hi0 [16];
+  (* ramstyle = "MLAB, no_rw_check" *) logic [31:0] rf_lo0 [16];
+  (* ramstyle = "MLAB, no_rw_check" *) logic [31:0] rf_hi1 [16];
+  (* ramstyle = "MLAB, no_rw_check" *) logic [31:0] rf_lo1 [16];
+  (* ramstyle = "MLAB, no_rw_check" *) logic [31:0] rf_hi2 [16];
+  (* ramstyle = "MLAB, no_rw_check" *) logic [31:0] rf_lo2 [16];
+  always_ff @(posedge clk) begin
+    if (rf_we_hi) begin rf_hi0[rf_wa] <= rf_wd_hi; rf_hi1[rf_wa] <= rf_wd_hi; rf_hi2[rf_wa] <= rf_wd_hi; end
+    if (rf_we_lo) begin rf_lo0[rf_wa] <= rf_wd_lo; rf_lo1[rf_wa] <= rf_wd_lo; rf_lo2[rf_wa] <= rf_wd_lo; end
+  end
+  assign rf_rd[0] = {rf_hi0[rf_ra[0]], rf_lo0[rf_ra[0]]};
+  assign rf_rd[1] = {rf_hi1[rf_ra[1]], rf_lo1[rf_ra[1]]};
+  assign rf_rd[2] = {rf_hi2[rf_ra[2]], rf_lo2[rf_ra[2]]};
 
   // ---------------------------------------------------------------------
   // FSR, the queue, the state
@@ -72,13 +99,14 @@ module fpu
   logic [4:0] fsr_tem, fsr_aexc, fsr_cexc;
   logic [2:0] fsr_ftt;
   logic [1:0] fsr_fcc;
-  logic [63:0] fq;
+  logic [63:0] fq;                     // the latched FPop: frozen while qne (no FPop runs
+                                       // in fp_exception_pending or fp_exception)
   logic        qne;
 
   typedef enum logic [1:0] {FP_EXECUTE, FP_PENDING, FP_EXCEPTION} fstate_t;
   fstate_t state;
 
-  typedef enum logic [2:0] {S_IDLE, S_START, S_WAIT, S_ROUND, S_DONE} exstate_t;
+  typedef enum logic [2:0] {S_IDLE, S_UNPA, S_NORM, S_START, S_WAIT, S_ROUND, S_DONE} exstate_t;
   exstate_t ex;
 
   always_comb begin
@@ -86,7 +114,7 @@ module fpu
     rsp_o.busy        = (ex != S_IDLE) | dp_wr;
     rsp_o.exc_pending = state == FP_PENDING;
     rsp_o.exc_state   = state == FP_EXCEPTION;
-    rsp_o.rd_data     = regs[req_i.rd_addr[4:1]];
+    rsp_o.rd_data     = rf_rd[0];
     rsp_o.fsr         = {fsr_rd, 2'b00, fsr_tem, 1'b0, 2'b00, 3'b000, fsr_ftt, qne, 1'b0, fsr_fcc, fsr_aexc, fsr_cexc};
     rsp_o.fq          = fq;
   end
@@ -95,11 +123,9 @@ module fpu
   // The FPop: decode
   // ---------------------------------------------------------------------
   logic [8:0] opf;
-  logic [4:0] rs1, rs2, rd;
+  logic [4:0] rd;
   logic       is_fpop2;
   assign opf = req_i.fpop_inst[13:5];
-  assign rs1 = req_i.fpop_inst[18:14];
-  assign rs2 = req_i.fpop_inst[4:0];
   assign rd  = req_i.fpop_inst[29:25];
   assign is_fpop2 = req_i.fpop_inst[19];        // op3 0x35
 
@@ -144,18 +170,43 @@ module fpu
     if (!is_fpop2 && (op == O_CMP || op == O_CMPE)) op = O_UNIMPL;
   end
 
-  // Operands: the pair, a single taken from its half into [63:32]
+  // Operands: the pair, a single taken from its half into [63:32]. Idle,
+  // the registers the FPop presented names; running, the latched FPop's
+  // (the registers do not change until its result is written), so the
+  // operand patterns are read again rather than kept. One unpacker: rs2's
+  // operand as the FPop is taken, rs1's in the next cycle (S_UNPA, only
+  // for the two-operand ops).
   logic [63:0] a_bits, b_bits, a_pair, b_pair;
-  assign a_pair = regs[rs1[4:1]];
-  assign b_pair = regs[rs2[4:1]];
+  logic        idle, o_dbl, o_a_odd, o_b_odd;
+  logic [4:0]  o_rs1, o_rs2;
+  assign idle    = ex == S_IDLE;
+  assign o_rs1   = idle ? req_i.fpop_inst[18:14] : c_inst[18:14];
+  assign o_rs2   = idle ? req_i.fpop_inst[4:0] : c_inst[4:0];
+  assign o_dbl   = idle ? src_dbl : c_src_dbl;
+  assign o_a_odd = o_rs1[0];
+  assign o_b_odd = o_rs2[0];
+  assign rf_ra[0] = req_i.rd_addr[4:1];
+  assign rf_ra[1] = o_rs1[4:1];
+  assign rf_ra[2] = o_rs2[4:1];
+  assign a_pair = rf_rd[1];
+  assign b_pair = rf_rd[2];
   always_comb begin
-    a_bits = src_dbl ? a_pair : (rs1[0] ? {a_pair[31:0], 32'd0} : {a_pair[63:32], 32'd0});
-    b_bits = src_dbl ? b_pair : (rs2[0] ? {b_pair[31:0], 32'd0} : {b_pair[63:32], 32'd0});
+    a_bits = o_dbl ? a_pair : (o_a_odd ? {a_pair[31:0], 32'd0} : {a_pair[63:32], 32'd0});
+    b_bits = o_dbl ? b_pair : (o_b_odd ? {b_pair[31:0], 32'd0} : {b_pair[63:32], 32'd0});
   end
 
-  fp_t a, b;
-  fp_unpack u_ua (.dbl_i(src_dbl), .bits_i(a_bits), .v_o(a));
-  fp_unpack u_ub (.dbl_i(src_dbl), .bits_i(b_bits), .v_o(b));
+  fp_t u_v;
+  fp_unpack u_unp (.dbl_i(o_dbl), .bits_i(idle ? b_bits : a_bits), .v_o(u_v));
+
+  logic two_op;
+  assign two_op = op == O_ADD || op == O_SUB || op == O_MUL || op == O_DIV || op == O_CMP || op == O_CMPE;
+
+  // A subnormal operand is normalised in S_NORM, a bit a cycle
+  /* verilator lint_off UNUSEDSIGNAL */
+  function automatic logic denorm(input fp_t v);
+    return !v.man[52] && !v.zero && !v.inf && !v.nan;
+  endfunction
+  /* verilator lint_on UNUSEDSIGNAL */
 
   // ---------------------------------------------------------------------
   // The execution: a small state machine around the datapath
@@ -166,7 +217,10 @@ module fpu
   logic [4:0]  c_rd;
   logic [31:0] c_inst, c_pc;
   fp_t         c_a, c_b;
-  logic [63:0] c_a_bits, c_b_bits;
+  logic        c_two;                  // a two-operand op: c_a is an operand
+  logic [63:0] c_a_bits, c_b_bits;     // = a_bits, b_bits while running
+  assign c_a_bits = a_bits;
+  assign c_b_bits = b_bits;
 
   // Datapath results
   fp_wide_t    wide;                   // what goes to the rounder
@@ -184,7 +238,9 @@ module fpu
   logic [4:0]  res_flags_q;
   logic        res_direct_q, res_is_cmp_q;
   logic [1:0]  res_fcc_q;
+  logic     rnd_busy;
   fp_round u_round (.clk, .v_i(wide_q), .dbl_i(c_dst_dbl), .rd_i(fsr_rd), .uf_trap_i(fsr_tem[FX_UF]),
+                    .hold_i(ex == S_ROUND), .busy_o(rnd_busy),
                     .bits_o(rnd_bits), .flags_o(rnd_flags));
 
   // Divide / square root
@@ -193,12 +249,10 @@ module fpu
   fp_divsqrt u_ds (.clk, .rst, .start_i(ds_start), .sqrt_i(c_op == O_SQRT), .a_i(c_a), .b_i(c_b),
                    .busy_o(ds_busy), .done_o(ds_done), .r_o(ds_r));
 
-  // Multiply: 53x53, registered twice
-  logic [105:0] mul_p1, mul_p2;
-  always_ff @(posedge clk) begin
-    mul_p1 <= c_a.man * c_b.man;
-    mul_p2 <= mul_p1;
-  end
+  // Multiply: 53x53, registered (c_a and c_b hold for the whole operation:
+  // the product is settled one cycle after S_START, well before it is used)
+  logic [105:0] mul_p1;
+  always_ff @(posedge clk) mul_p1 <= c_a.man * c_b.man;
 
   // Add/sub: align to the larger exponent, 58-bit significands with the
   // leading one at 55 (three guard bits below), a sticky for what falls
@@ -211,15 +265,20 @@ module fpu
   logic signed [13:0] e_big1;
   logic [57:0] ma, mb, m_big1, m_small, m_small_al1;
   logic [13:0] ediff;
+  // F?TOi uses the same shifter: rs2's significand down by 52 - exp
+  // (below, with the result in m_small_al[34:3]).
+  logic        al_b;                   // shift b
   always_comb begin
     sub_eff1 = (c_op == O_SUB) ^ c_a.sign ^ c_b.sign;
     a_bigger1 = (c_a.exp > c_b.exp) || (c_a.exp == c_b.exp && c_a.man >= c_b.man);
+    al_b = a_bigger1 || c_op == O_FTOI;
     ma = {2'b0, c_a.man, 3'b0};
     mb = {2'b0, c_b.man, 3'b0};
     e_big1  = a_bigger1 ? c_a.exp : c_b.exp;
     m_big1  = a_bigger1 ? ma : mb;
-    m_small = a_bigger1 ? mb : ma;
-    ediff = 14'(a_bigger1 ? (c_a.exp - c_b.exp) : (c_b.exp - c_a.exp));
+    m_small = al_b ? mb : ma;
+    if (c_op == O_FTOI) ediff = 14'sd52 - c_b.exp;
+    else ediff = 14'(a_bigger1 ? (c_a.exp - c_b.exp) : (c_b.exp - c_a.exp));
     al_sticky1 = 1'b0;
     if (ediff > 14'd60) begin
       m_small_al1 = '0;
@@ -273,18 +332,15 @@ module fpu
 
   // Integer conversions
   logic [31:0] itof_abs;
-  logic [5:0]  ftoi_sh;
-  logic [52:0] ftoi_mi;
   logic [31:0] ftoi_iv;
   logic        ftoi_inexact;
   always_comb begin
     itof_abs = c_b_bits[63] ? (32'd0 - c_b_bits[63:32]) : c_b_bits[63:32];
-    // value = man * 2^(exp - 52), 0 <= exp <= 31: integer part = man >> (52 - exp)
-    ftoi_sh = 6'(14'sd52 - c_b.exp);
-    ftoi_mi = c_b.man >> ftoi_sh;
-    ftoi_inexact = 1'b0;
-    for (int i = 0; i < 53; i++) if (i < int'(ftoi_sh) && c_b.man[i]) ftoi_inexact = 1'b1;
-    ftoi_iv = ftoi_mi[31:0];
+    // value = man * 2^(exp - 52), 0 <= exp <= 31: integer part = man >> (52 - exp),
+    // from the aligner ({man, 3'b0} shifted: the integer at [34:3], what fell off
+    // in [2:0] and the sticky)
+    ftoi_iv = m_small_al[34:3];
+    ftoi_inexact = al_sticky | (|m_small_al[2:0]);
   end
 
   // The direct results and the wide operand for the rounder, per op
@@ -347,8 +403,8 @@ module fpu
           // p = man_a * man_b in [2^104, 2^106): value = p * 2^(ea + eb - 104);
           // the top 58 bits, the rest sticky: man * 2^(ea + eb - 56) = man * 2^(exp - 55)
           wide.sign = c_a.sign ^ c_b.sign;
-          wide.man = mul_p2[105:48];
-          wide.sticky = |mul_p2[47:0];
+          wide.man = mul_p1[105:48];
+          wide.sticky = |mul_p1[47:0];
           wide.exp = c_a.exp + c_b.exp - 14'sd1;
         end
       end
@@ -409,7 +465,7 @@ module fpu
         if (c_b.nan) begin
           res_flags[FX_NV] = 1'b1; res_bits = {32'h7FFF_FFFF, 32'd0};
         end else if (c_b.inf || c_b.exp > 14'sd31 ||
-                     (c_b.exp == 14'sd31 && !(c_b.sign && ftoi_mi[31:0] == 32'h8000_0000))) begin
+                     (c_b.exp == 14'sd31 && !(c_b.sign && ftoi_iv == 32'h8000_0000))) begin
           // (a negative value that truncates to exactly -2^31 is in range)
           res_flags[FX_NV] = 1'b1;
           res_bits = {c_b.sign ? 32'h8000_0000 : 32'h7FFF_FFFF, 32'd0};
@@ -452,6 +508,10 @@ module fpu
   // ---------------------------------------------------------------------
   logic [63:0] fin_bits;
   logic [4:0]  fin_flags;
+  assign dp_wr_addr = c_rd;
+  assign dp_wr_dbl  = c_dst_dbl;
+  assign dp_wr_data = fin_bits;
+  assign fq         = {c_pc, c_inst};
   logic [1:0]  wait_cnt;
   logic        ds_ok;                  // the divide/square-root unit finished
 
@@ -463,11 +523,9 @@ module fpu
       state <= FP_EXECUTE;
       fsr_rd <= '0; fsr_tem <= '0; fsr_aexc <= '0; fsr_cexc <= '0; fsr_ftt <= '0; fsr_fcc <= '0;
       qne <= 1'b0;
-      fq <= '0;
       c_op <= O_UNIMPL; c_src_dbl <= 1'b0; c_dst_dbl <= 1'b0; c_rd <= '0; c_inst <= '0; c_pc <= '0;
-      c_a <= '0; c_b <= '0; c_a_bits <= '0; c_b_bits <= '0;
+      c_a <= '0; c_b <= '0; c_two <= 1'b0;
       wait_cnt <= '0; ds_ok <= 1'b0;
-      dp_wr_addr <= '0; dp_wr_dbl <= 1'b0; dp_wr_data <= '0;
       fin_bits <= '0; fin_flags <= '0;
     end else begin
       // ldfsr: everything but ver, ftt, qne and the reserved bits
@@ -494,7 +552,21 @@ module fpu
           if (req_i.fpop_valid) begin
             c_op <= op; c_src_dbl <= src_dbl; c_dst_dbl <= dst_dbl; c_rd <= rd;
             c_inst <= req_i.fpop_inst; c_pc <= req_i.fpop_pc;
-            c_a <= a; c_b <= b; c_a_bits <= a_bits; c_b_bits <= b_bits;
+            c_b <= u_v;
+            c_two <= two_op;
+            ex <= two_op ? S_UNPA : denorm(u_v) ? S_NORM : S_START;
+          end
+        end
+        S_UNPA: begin
+          c_a <= u_v;
+          ex <= (denorm(u_v) || denorm(c_b)) ? S_NORM : S_START;
+        end
+        S_NORM: begin
+          if (c_two && denorm(c_a)) begin
+            c_a.man <= {c_a.man[51:0], 1'b0}; c_a.exp <= c_a.exp - 14'sd1;
+          end else if (denorm(c_b)) begin
+            c_b.man <= {c_b.man[51:0], 1'b0}; c_b.exp <= c_b.exp - 14'sd1;
+          end else begin
             ex <= S_START;
           end
         end
@@ -513,7 +585,7 @@ module fpu
         end
         S_WAIT: begin
           // the pipeline after the operands: align, add, result select,
-          // normalise (mul_p2 is ready with the add); then S_ROUND packs.
+          // normalise (mul_p1 is ready before the add); then S_ROUND packs.
           // A divide or square root waits for its unit, then for the
           // result select and normalise registers.
           if ((c_op == O_DIV || c_op == O_SQRT) && !res_direct && !ds_ok) begin
@@ -525,22 +597,23 @@ module fpu
           end
         end
         S_ROUND: begin
-          ex <= S_DONE;
-          fin_bits <= res_direct_q ? res_bits_q : rnd_bits;
-          fin_flags <= res_direct_q ? res_flags_q : (rnd_flags | res_flags_q);
+          // (a tiny result: the rounder denormalises it first)
+          if (res_direct_q || !rnd_busy) begin
+            ex <= S_DONE;
+            fin_bits <= res_direct_q ? res_bits_q : rnd_bits;
+            fin_flags <= res_direct_q ? res_flags_q : (rnd_flags | res_flags_q);
+          end
         end
         S_DONE: begin
           ex <= S_IDLE;
           if (c_op == O_UNIMPL) begin
             fsr_ftt <= FTT_UNIMPLEMENTED;
-            fq <= {c_pc, c_inst};
             qne <= 1'b1;
             state <= FP_PENDING;
           end else if ((fin_flags & fsr_tem) != 5'd0) begin
             // an enabled exception: no result, aexc and fcc unchanged, the FQ holds the op
             fsr_ftt <= FTT_IEEE;
             fsr_cexc <= fin_flags;
-            fq <= {c_pc, c_inst};
             qne <= 1'b1;
             state <= FP_PENDING;
           end else begin
@@ -551,9 +624,6 @@ module fpu
               fsr_fcc <= res_fcc_q;
             end else begin
               dp_wr <= 1'b1;
-              dp_wr_addr <= c_rd;
-              dp_wr_dbl <= c_dst_dbl;
-              dp_wr_data <= fin_bits;
             end
           end
         end
@@ -564,6 +634,6 @@ module fpu
 
   logic unused_ok;
   assign unused_ok = &{1'b0, ds_busy, req_i.rd_addr[0], req_i.fsr_wdata[29:28], req_i.fsr_wdata[22:12],
-                       ftoi_mi[52:32], m_small_al[57:56]};
+                       m_small_al[57:56]};
 
 endmodule

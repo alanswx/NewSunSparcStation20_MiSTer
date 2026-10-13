@@ -1306,19 +1306,22 @@ module scsi_targets #(
                 default: ;
               endcase
             end else begin                          // pages
+              // the page and the byte in it first, then one page_byte
+              // (one copy of its decode rather than six)
               k_v = j_v - hdr_v - bd_v;
+              pg_v = ms_page;
               if (ms_page == 6'h3F) begin
                 if (tgt == 2'd2) begin
-                  if (k_v < 12)      b_v = page_byte(6'h01, k_v, ms_pc, 1'b1, cyl_v, vol0, vol1);
-                  else if (k_v < 32) b_v = page_byte(6'h08, k_v - 12, ms_pc, 1'b1, cyl_v, vol0, vol1);
-                  else               b_v = page_byte(6'h2A, k_v - 32, ms_pc, 1'b1, cyl_v, vol0, vol1);
+                  if (k_v < 12)      pg_v = 6'h01;
+                  else if (k_v < 32) begin pg_v = 6'h08; k_v = k_v - 12; end
+                  else               begin pg_v = 6'h2A; k_v = k_v - 32; end
                 end else begin
-                  if (k_v < 12)      b_v = page_byte(6'h01, k_v, ms_pc, 1'b0, cyl_v, vol0, vol1);
-                  else if (k_v < 36) b_v = page_byte(6'h04, k_v - 12, ms_pc, 1'b0, cyl_v, vol0, vol1);
-                  else               b_v = page_byte(6'h08, k_v - 36, ms_pc, 1'b0, cyl_v, vol0, vol1);
+                  if (k_v < 12)      pg_v = 6'h01;
+                  else if (k_v < 36) begin pg_v = 6'h04; k_v = k_v - 12; end
+                  else               begin pg_v = 6'h08; k_v = k_v - 36; end
                 end
-              end else
-                b_v = page_byte(ms_page, k_v, ms_pc, tgt == 2'd2, cyl_v, vol0, vol1);
+              end
+              b_v = page_byte(pg_v, k_v, ms_pc, tgt == 2'd2, cyl_v, vol0, vol1);
             end
           end
           G_SUBCH: begin

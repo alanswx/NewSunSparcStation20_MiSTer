@@ -235,7 +235,7 @@ module l1cache
   // Snoop / invalidation queue
   // ---------------------------------------------------------------------
   localparam int SQ_DEPTH = 16;
-  logic [31:0] sq_line [SQ_DEPTH];  // {force, line[35:5]}: force ignores the mid rule
+  logic [31:0] sq_head;             // entry sq_rd: {force, line[35:5]}: force ignores the mid rule
   logic [3:0]  sq_wr, sq_rd;
   logic [4:0]  sq_count;
   logic        sq_push, sq_push2;
@@ -254,6 +254,32 @@ module l1cache
   // (the hybrid: two), so a few snoops are still on their way, and the
   // module's own flush ASIs may push invalidations meanwhile.
   assign snoop_hold_o = sq_count >= 5'd10;
+
+  // The entries in two MLAB banks by the index's bit 0 (asynchronous read):
+  // the two pushes of a cycle go to consecutive entries, one per bank. In
+  // flops with their muxes the queue cost ~300 ALMs a cache.
+  logic [1:0]  sqb_we;
+  logic [2:0]  sqb_wa [2];
+  logic [31:0] sqb_wd [2];
+  logic [2:0]  sq_wr1;               // (sq_wr + 1) / 2
+  assign sq_wr1 = sq_wr[3:1] + {2'b0, sq_wr[0]};
+  always_comb
+    for (int b = 0; b < 2; b++) begin
+      sqb_we[b] = !rst && ((sq_push && sq_push2) || ((sq_push || sq_push2) && sq_wr[0] == b[0]));
+      sqb_wa[b] = sq_wr[0] == b[0] ? sq_wr[3:1] : sq_wr1;
+      sqb_wd[b] = (sq_wr[0] == b[0] && sq_push) ? sq_in1 : sq_in2;
+    end
+  // (module-level arrays: Quartus ignores ramstyle in a generate block)
+  (* ramstyle = "MLAB, no_rw_check" *) logic [31:0] sqb0 [8];
+  (* ramstyle = "MLAB, no_rw_check" *) logic [31:0] sqb1 [8];
+  logic [31:0] sqb_rd [2];
+  always_ff @(posedge clk) begin
+    if (sqb_we[0]) sqb0[sqb_wa[0]] <= sqb_wd[0];
+    if (sqb_we[1]) sqb1[sqb_wa[1]] <= sqb_wd[1];
+  end
+  assign sqb_rd[0] = sqb0[sq_rd[3:1]];
+  assign sqb_rd[1] = sqb1[sq_rd[3:1]];
+  assign sq_head = sqb_rd[sq_rd[0]];
   typedef enum logic [1:0] {Q_IDLE, Q_CMP, Q_WRITE, Q_RETRY} qstate_t;
   qstate_t     qs;
   logic [31:0] q_cur;
@@ -384,7 +410,7 @@ module l1cache
     end else if (q_retry_go) begin
       tb_addr = q_set;
     end else if (snoop_rd_go) begin
-      tb_addr = sq_line[sq_rd][6 -: SET_W];
+      tb_addr = sq_head[6 -: SET_W];
     end else if (flash_go) begin
       tb_addr = f_set;
       if (fs == F_WRITE && !f_kind_l) begin
@@ -587,20 +613,15 @@ module l1cache
       end
 
       // ---- the snoop queue: read the set's tags, compare, clear the valid bit ----
-      if (sq_push && sq_push2) begin
-        sq_line[sq_wr] <= sq_in1; sq_line[sq_wr + 4'd1] <= sq_in2;
-        sq_wr <= sq_wr + 4'd2;
-      end else if (sq_push || sq_push2) begin
-        sq_line[sq_wr] <= sq_push ? sq_in1 : sq_in2;
-        sq_wr <= sq_wr + 4'd1;
-      end
+      if (sq_push && sq_push2)      sq_wr <= sq_wr + 4'd2;    // the entries: g_sqb
+      else if (sq_push || sq_push2) sq_wr <= sq_wr + 4'd1;
       sq_count <= sq_count + {3'd0, sq_pushes} - {4'd0, snoop_rd_go};
 `ifndef SYNTHESIS
       if (sq_count + {3'd0, sq_pushes} > 5'(SQ_DEPTH))
         $error("l1cache(ICACHE=%0d): snoop queue overflow (%0d + %0d)", ICACHE, sq_count, sq_pushes);
 `endif
       if (snoop_rd_go) begin              // the next entry: its set's tags are read now
-        q_cur <= sq_line[sq_rd];
+        q_cur <= sq_head;
         sq_rd <= sq_rd + 4'd1;
       end
       case (qs)

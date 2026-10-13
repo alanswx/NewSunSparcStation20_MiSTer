@@ -20,9 +20,12 @@
 // leading one at bit 55), plus a sticky bit for everything below.
 //
 // Two stages: normalisation and the tininess test are registered, the
-// subnormal shift, rounding and packing follow in the next cycle, so the
-// result appears one clock after v_i (dbl_i, rd_i and uf_trap_i must hold
-// for both cycles; the FPU keeps them for the whole operation).
+// rounding and packing follow in the next cycle, so the result appears one
+// clock after v_i (dbl_i, rd_i and uf_trap_i must hold for both cycles;
+// the FPU keeps them for the whole operation). A tiny result is shifted
+// down to the subnormal position in the stage register, a bit a cycle,
+// while hold_i is up (busy_o until it is there, at most 58 cycles; tiny
+// results are rare and a barrel shifter with its sticky costs ~250 ALUTs).
 
 module fp_round
   import fpu_pkg::*;
@@ -32,6 +35,8 @@ module fp_round
   input  logic        dbl_i,
   input  logic [1:0]  rd_i,
   input  logic        uf_trap_i,     // TEM.UF: tiny alone raises UF
+  input  logic        hold_i,        // keep the stage register (denormalise it), do not load
+  output logic        busy_o,        // hold_i: the denormalisation is not over
   output logic [63:0] bits_o,        // the single in [63:32]
   output logic [4:0]  flags_o        // NV OF UF DZ NX (NV, DZ are the caller's)
 );
@@ -85,19 +90,26 @@ module fp_round
     tiny1 = !is_zero1 && ((en1 < emin - 14'sd1) || (en1 == emin - 14'sd1 && !carry_n));
   end
 
-  // The stage register
+  // The stage register; held, a tiny value moves down a bit a cycle to
+  // emin, what falls off into the sticky bit (all of it gone: the
+  // exponent no longer matters)
   logic [57:0] mn;
   logic signed [13:0] en;
   logic        is_zero, tiny, sign, sticky_in;
+  logic        dn_step;
+  assign dn_step = tiny && en < emin && mn != '0;
+  assign busy_o  = dn_step;
   always_ff @(posedge clk) begin
-    mn <= mn1; en <= en1; is_zero <= is_zero1; tiny <= tiny1;
-    sign <= v_i.sign; sticky_in <= v_i.sticky;
+    if (!hold_i) begin
+      mn <= mn1; en <= en1; is_zero <= is_zero1; tiny <= tiny1;
+      sign <= v_i.sign; sticky_in <= v_i.sticky;
+    end else if (dn_step) begin
+      mn <= mn >> 1; en <= en + 14'sd1; sticky_in <= sticky_in | mn[0];
+    end
   end
 
-  // 3. The real rounding: shift a tiny result down to the subnormal
-  //    position first, collecting sticky
-  logic signed [13:0] shift_s;
-  logic [6:0]  shift;
+  // 3. The real rounding (a tiny result is at the subnormal position by
+  //    now: the stage register's denormalisation)
   logic [57:0] ms;
   logic        sticky_s;
   logic [52:0] kept;
@@ -110,11 +122,8 @@ module fp_round
   logic        of;
 
   always_comb begin
-    shift_s = tiny ? (emin - en) : 14'sd0;
-    shift = (shift_s > 14'sd63) ? 7'd63 : 7'(shift_s);
-    ms = mn >> shift;
+    ms = mn;
     sticky_s = sticky_in;
-    for (int i = 0; i < 58; i++) if (i < int'(shift) && mn[i]) sticky_s = 1'b1;
     if (dbl_i) begin
       kept   = ms[57:5];
       guard  = ms[4];

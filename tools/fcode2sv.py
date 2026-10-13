@@ -44,13 +44,15 @@ module tcx_fcode (
   output logic [31:0] q
 );
 
-  always_ff @(posedge clk) begin
-    case (addr)''')
+  // An initialised array, not a case: Quartus kept the case in logic.
+  (* romstyle = "M10K" *) logic [31:0] rom [512];
+  initial begin''')
+    w += [0] * (512 - len(w))
     for i, v in enumerate(w):
-        out.append(f"      9'd{i}: q <= 32'h{v:08X};")
-    out.append('''      default: q <= 32'h0;
-    endcase
-  end
+        out.append(f"    rom[{i}] = 32'h{v:08X};")
+    out.append('''  end
+
+  always_ff @(posedge clk) q <= rom[addr];
 
 endmodule''')
     print('\n'.join(out))
