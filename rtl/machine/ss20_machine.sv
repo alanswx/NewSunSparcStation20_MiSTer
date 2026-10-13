@@ -257,13 +257,13 @@ module ss20_machine #(
     .s_write(dv_we), .s_writedata(dv_din), .s_byteenable(dv_be), .s_readdata(dv_dout),
     .s_readdatavalid(dv_rdv));
 
-  iob_req_t    iob_q [10];
-  iob_rsp_t    iob_r [10];
+  iob_req_t    iob_q [11];
+  iob_rsp_t    iob_r [11];
   ss20_iobridge u_io (.clk, .rst(rst_m), .req_i(io_req), .rsp_o(io_rsp), .io_o(iob_q), .io_i(iob_r));
 
   // ------------------------------------------------- the system devices --
   // interrupt sources and strobes of the devices below
-  logic irq_tcx, irq_msi, irq_esp, irq_le, irq_fdc, fd_tc;
+  logic irq_tcx, irq_aud, irq_msi, irq_esp, irq_le, irq_fdc, fd_tc;
   // 0: keyboard (A) / mouse (B) ESCC, with the Sun keyboard and mouse
   // made from hps_io's PS/2 events
   logic irq_kbd, irq_ser;
@@ -367,7 +367,7 @@ module ss20_machine #(
     isrc[SI_K] = irq_kbd;
     isrc[SI_S] = irq_ser;
     isrc[SI_T] = irq_tsys;
-    isrc[SI_SBUS_LSB + 4] = irq_tcx;      // SBus level 5 (the TCX FCode's intr 0x39)
+    isrc[SI_SBUS_LSB + 4] = irq_tcx | irq_aud;   // SBus level 5 (intr 0x39: the TCX, the audio card)
     isrc[SI_I] = irq_msi;
     isrc[SI_SC] = irq_esp;
     isrc[SI_E] = irq_le;
@@ -463,13 +463,20 @@ module ss20_machine #(
     .scan_readdata(sc_dout), .scan_readdatavalid(sc_rdv),
     .clk_vid, .vid_ce_o, .vid_r_o, .vid_g_o, .vid_b_o, .vid_hs_o, .vid_vs_o, .vid_de_o);
 
+  // 10: slot 3, the audio card (CS4231 + APC, its FCode PROM): TACUS
+  // OpenBIOS always declares it
+  logic [15:0] aud_l, aud_r;
+  cs4231 #(.CLK_HZ(CLK_HZ)) u_audio (
+    .clk, .rst(rst_m), .bus_i(iob_q[10]), .bus_o(iob_r[10]), .dvma_o(dvma_q[2]), .dvma_i(dvma_r[2]),
+    .irq_o(irq_aud), .audio_l_o(aud_l), .audio_r_o(aud_r));
+
   // 9: the floppy controller, with no drive
   fdc82077 u_fdc (.clk, .rst(rst_m), .bus_i(iob_q[9]), .bus_o(iob_r[9]), .tc_i(fd_tc), .irq_o(irq_fdc));
 
   // 8: the MSI: the IOMMU translating the SBus masters' DVMA, the M-to-S
   // registers, the MID register
-  sbus_pkg::dvma_req_t [1:0] dvma_q;      // 0 DMA2's ESP channel, 1 its LANCE channel
-  mem_rsp_t        [1:0] dvma_r;
+  sbus_pkg::dvma_req_t [2:0] dvma_q;      // 0 DMA2's ESP channel, 1 its LANCE channel, 2 the APC
+  mem_rsp_t        [2:0] dvma_r;
   ss20_msi u_msi (
     .clk, .rst(rst_m), .bus_i(iob_q[8]), .bus_o(iob_r[8]), .bus_mid_i(4'd8),
     .dvma_req_i(dvma_q), .dvma_rsp_o(dvma_r), .mem_req_o(dma_req), .mem_rsp_i(dma_rsp),
@@ -493,8 +500,9 @@ module ss20_machine #(
   assign sd_wr_o          = {nv_wr, esp_wr};
   assign kbd_led_status_o = {kb_leds[3], kb_leds[0], kb_leds[2]};   // Caps, Num, Scroll
   assign kbd_led_use_o    = 3'b111;
-  assign audio_l_o        = cd_l;       // (CD audio; the CS4231 and the beeper: phase 10)
-  assign audio_r_o        = cd_r;
+  // the CS4231 and CD audio, each at half level (the beeper: phase 10)
+  assign audio_l_o        = 16'(($signed({aud_l[15], aud_l}) + $signed({cd_l[15], cd_l})) >>> 1);
+  assign audio_r_o        = 16'(($signed({aud_r[15], aud_r}) + $signed({cd_r[15], cd_r})) >>> 1);
   assign led_disk_o       = esp_busy;
   assign led_user_o       = !aux_led;   // the Aux register's LED bit (0 = lit), as the board's LED
 

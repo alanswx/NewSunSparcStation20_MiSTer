@@ -27,6 +27,7 @@
 //   0xE_2000_0000-0xE_2FFF_FFFF   slave 7  slot 2 (the TCX)
 //   0xF_E000_0000-0xF_E00F_FFFF   slave 8  the MSI (IOMMU, M-to-S, MID)
 //   0xF_F170_0000                 slave 9  the floppy controller (82077)
+//   0xE_3000_0000-0xE_3FFF_FFFF   slave 10 slot 3 (the CS4231 + APC audio card)
 // The rest of the control space and slot E read 0 and ignore writes
 // (DEC-3): the EMC, the module control space. The
 // empty SBus slots 0, 1, 3 and the spaces PA[35:32] = 1-D time out with
@@ -38,7 +39,7 @@ module ss20_iobridge
   import mem_pkg::*;
   #(
   parameter int TIMEOUT = 64,
-  parameter int NS      = 10              // slaves
+  parameter int NS      = 11              // slaves
 )(
   input  logic                 clk,
   input  logic                 rst,
@@ -71,6 +72,7 @@ module ss20_iobridge
     end else if (req_i.pa[35:32] == 4'hE) begin
       case (req_i.pa[31:28])
         4'h2:    sel = 4'd7;
+        4'h3:    sel = 4'd10;
         4'hF:    sel = 4'd6;
         4'hE:    sel = R0;
         default: sel = TO;                // the empty slots
