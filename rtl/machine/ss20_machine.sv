@@ -31,7 +31,7 @@
 module ss20_machine #(
   parameter int CLK_HZ     = 55_000_000,
   parameter bit SKIP_CLEAR = 1'b0,       // simulation: its DDR model starts zeroed
-  parameter int NCPU       = 1           // CPU modules, MID 8 up (1 to 4; two do not fit yet)
+  parameter int NCPU       = 2           // CPU modules, MID 8 up (1 to 4; two fit the Cyclone V)
 )(
   input  logic         clk,
   input  logic         rst,            // synchronous to clk
@@ -441,7 +441,7 @@ module ss20_machine #(
       f_q[k].req = iob_q[6].req && f_sel == 2'(k) && !(k == 3 && le_bad);
     end
     if (f_pp) f_q[1].addr[5] = 1'b1;     // DMA2's P registers
-    iob_r[6] = le_bad_r ? '{ack: 1'b0, err: 1'b1, rdata: 32'd0} : f_r[f_sel];
+    iob_r[6] = le_bad_r ? {1'b0, 1'b1, 32'd0} : f_r[f_sel];   // (ack, err, rdata)
   end
 
   // a byte write to the LANCE's 16-bit ports is a size error: dropped,

@@ -52,8 +52,7 @@
 // controller accepts, with that request (mem_pkg) and its master's MID.
 
 module emc
-  import iobus_pkg::*;
-  import mem_pkg::*;
+  import iobus_pkg::*, mem_pkg::*;
 #(
   parameter int NENT      = 8,           // doublewords with injected check bits
   parameter int IRQ_DELAY = 32

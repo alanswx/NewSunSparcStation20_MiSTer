@@ -11,7 +11,7 @@
 // One clock: the machine's clock and the pixel clock are the same here, so
 // a frame takes 1344 x 806 cycles.
 
-module sim_top #(parameter int NCPU = 1)
+module sim_top #(parameter int NCPU = 2)
 (
 	input         clk,
 	input         reset,
