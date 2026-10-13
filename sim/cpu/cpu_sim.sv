@@ -229,7 +229,8 @@ module cpu_sim
     .clk, .rst, .rst_swr_i(1'b0), .rst_switch_i(1'b0), .wd_i(wd_reset),
     .bus_i(misc_req), .bus_o(misc_rsp),
     .leds_o(leds), .led_o(led), .fd_tc_o(fd_tc), .fd_density_i(1'b0), .power_off_o(power_off),
-    .pwr_fail_i(1'b0), .pwr_irq_o(pwr_irq), .diag_sw_i(1'b0), .sw_reset_o(misc_sw_reset));
+    .pwr_fail_i(1'b0), .pwr_irq_o(pwr_irq), .diag_sw_i(1'b0), .sw_reset_o(misc_sw_reset),
+    .cfg_cg3_i(1'b0), .cfg_noautoboot_i(1'b0), .cfg_serial_i(1'b1), .cfg_ram_mb_i(10'd16));
 
   // ---- the counter/timers (slavio_timer, page 3), for the benchmarks ----
   iob_req_t tmr_req;
