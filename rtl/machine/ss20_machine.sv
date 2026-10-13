@@ -260,8 +260,8 @@ module ss20_machine #(
     .s_write(dv_we), .s_writedata(dv_din), .s_byteenable(dv_be), .s_readdata(dv_dout),
     .s_readdatavalid(dv_rdv));
 
-  iob_req_t    iob_q [12];
-  iob_rsp_t    iob_r [12];
+  iob_req_t    iob_q [13];
+  iob_rsp_t    iob_r [13];
   logic        mts_err, mts_to;
   logic [35:0] mts_pa;
   logic [2:0]  mts_siz;
@@ -509,6 +509,10 @@ module ss20_machine #(
     .dvma_req_i(dvma_q), .dvma_rsp_o(dvma_r), .mem_req_o(dma_req), .mem_rsp_i(dma_rsp),
     .mts_err_i(mts_err), .mts_err_to_i(mts_to), .mts_err_pa_i(mts_pa), .mts_err_siz_i(mts_siz),
     .mts_err_s_i(1'b1), .mts_err_mid_i(mb_mid), .irq_err_o(irq_msi), .arb_en_o());
+
+  // 12: slot E, where a real SS20 has its DBRI: only the FCode image that
+  // names the node OBP 2.25's slot-e stub makes (DEC-4)
+  slote_fcode u_slote (.clk, .rst(rst_m), .bus_i(iob_q[12]), .bus_o(iob_r[12]));
 
   // 11: the memory controller's registers (the SMC at 0xF_0000_0000),
   // watching main-memory accesses for the ECC errors firmware injects

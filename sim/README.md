@@ -9,6 +9,7 @@ Verilator runs the same SystemVerilog that Quartus builds: `sim_top.sv` wraps
 | `sim_top.sv` | `ss20_machine` + the OSD decoder (`ss20_osd`), with the MiSTer side as plain ports |
 | `sim_main.cpp` | the harness: DDR3, ROM download, SD blocks, RTC, ttya, video frame, the Ethernet mailbox's host side |
 | `build.sh [20] [--trace]` | verilate and compile → `obj_ss20/Vsim_top` (`obj_ss20_trace/` with VCD support). The RTL list comes from `files.qip`, so the model and the Quartus build cannot drift apart |
+| `run-obp.sh ROM [--diag]` | Sun's OBP 2.25 (your own PROM image) on ttya to `ok`; makes a Sun-format NVRAM image once (`tools/obp_nvram.py`) |
 | `run-cputest.sh`, `run-nvram.sh`, `run-eth.sh`, `run-scsi.sh` | the CPU suite, NVRAM, Ethernet and SCSI runs against their expected logs. They need the CPU, the memory controller and the ported HPS blocks: phases 4-8 of the plan bring them back |
 | `cpu/`, `iu/` | the CPU module's and the IU's own harnesses (phases 1-3), independent of this one |
 | `vcd.py` | query a trace: `vcd.py F.vcd list REGEX`, `vcd.py F.vcd show REGEX… --from C --to C` |
@@ -44,6 +45,14 @@ sim/obj_ss20/Vsim_top --cycles 5M --frame sim/out/frame.ppm
   defaults are the board's except the console (ttya), the L2 TLB (Off) and
   the network (Off).
 - `--frame F.ppm`: save the last complete video frame.
+- `--ram MB`: the OSD memory option (464, 256, 128, 64). Sun's OBP clears
+  all of memory at every start: 64 saves minutes.
+- `+iolog`: print every I/O access (system space and SBus) as it completes.
+- `+prom_wait=N`: N cycles before every boot-PROM read, about the real
+  machine's byte-wide EPROM (36 is ~0.7 us an instruction). OBP 2.25's
+  POST (`diag-switch?` true) times its "PROCn Counter/Timer Test" with
+  instruction loops and reports "No interrupt received" on a fast PROM;
+  with `+prom_wait=36` the whole POST passes.
 - `--trace F.vcd --trace-from N`: a waveform, from a model built with
   `build.sh --trace`. Keep the window short.
 - `--ddr-log N`: print the first N DDR commands; `--ddr-stress`,

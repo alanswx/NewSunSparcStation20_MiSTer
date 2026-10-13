@@ -29,8 +29,9 @@
 //   0xF_F170_0000                 slave 9  the floppy controller (82077)
 //   0xE_3000_0000-0xE_3FFF_FFFF   slave 10 slot 3 (the CS4231 + APC audio card)
 //   0xF_0000_0000-0xF_000F_FFFF   slave 11 the memory controller's registers (emc)
-// The rest of the control space and slot E read 0 and ignore writes
-// (DEC-3): the module control space. The
+//   0xE_E000_0000-0xE_EFFF_FFFF   slave 12 slot E (no DBRI: slote_fcode)
+// The rest of the control space reads 0 and ignores writes (DEC-3): the
+// module control space. The
 // empty SBus slots 0, 1, 3 and the spaces PA[35:32] = 1-D time out with
 // err after TIMEOUT cycles (B1, A3). An SBus write (PA[35:32] = E) is
 // posted, as through the MSI's write buffer (Sun-4M §5.2.2): a time-out or
@@ -44,7 +45,7 @@ module ss20_iobridge
   import mem_pkg::*;
   #(
   parameter int TIMEOUT = 64,
-  parameter int NS      = 12              // slaves
+  parameter int NS      = 13              // slaves
 )(
   input  logic                 clk,
   input  logic                 rst,
@@ -87,7 +88,7 @@ module ss20_iobridge
         4'h2:    sel = 4'd7;
         4'h3:    sel = 4'd10;
         4'hF:    sel = 4'd6;
-        4'hE:    sel = R0;
+        4'hE:    sel = 4'd12;
         default: sel = TO;                // the empty slots
       endcase
     end else begin
