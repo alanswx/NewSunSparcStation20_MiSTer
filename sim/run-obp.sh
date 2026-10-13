@@ -10,9 +10,8 @@
 # and screen), then tools/obp_nvram.py sets input-device and output-device
 # to ttya and auto-boot? to false. The run uses a copy (the simulation
 # writes the image back). --diag sets diag-switch? (the POST runs, its
-# messages on ttya) and adds +prom_wait=36: the POST times its
-# counter/timer test with instruction loops on the real machine's slow
-# boot PROM (sim/README.md).
+# messages on ttya; ss20_memctl slows boot-mode PROM reads to the real
+# EPROM's pace, which its counter/timer test needs).
 #
 #   sim/run-obp.sh scratch/obp.rom --ram 64 --cycles 2G
 #   sim/run-obp.sh scratch/obp.rom --ram 64 --hd0 disk.img --send 'ok =>boot disk\r' --stop login:
@@ -53,7 +52,6 @@ fi
 RUN="$OUT/obp-run.nvr"
 if [ "$DIAG" = 1 ]; then
     python3 "$ROOT/tools/obp_nvram.py" "$NV" "$RUN" 'diag-switch?=true' > /dev/null
-    ARGS+=(+prom_wait=36)
 else
     python3 "$ROOT/tools/obp_nvram.py" "$NV" "$RUN" 'diag-switch?=false' > /dev/null
 fi

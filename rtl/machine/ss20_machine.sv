@@ -156,7 +156,7 @@ module ss20_machine #(
   mem_req_t    bus_req [NCPU+1];          // the CPUs, then DVMA
   mem_rsp_t    bus_rsp [NCPU+1];
   snoop_t      snoop;
-  logic [NCPU-1:0] snoop_holds, wd_resets;
+  logic [NCPU-1:0] snoop_holds, wd_resets, boot_modes;
   logic [NCPU-1:0][3:0] irl_v;
   logic        snoop_hold, wd_reset;
 
@@ -165,7 +165,7 @@ module ss20_machine #(
     cpu_module #(.HAS_FPU(1'b1), .SS20(1'b1), .NCPU_M1(2'(NCPU - 1))) u_cpu (
       .clk, .rst(rst_m), .mid_i(4'(8 + gc)), .irl_i(irl_v[gc]), .cache_en_i(1'b1), .ram_mb_i({2'b00, opt_ram_mb_i}),
       .mem_req_o(bus_req[gc]), .mem_rsp_i(bus_rsp[gc]), .snoop_i(snoop), .snoop_hold_o(snoop_holds[gc]),
-      .wd_reset_o(wd_resets[gc]), .si_reset_o(), .halt_o(),
+      .wd_reset_o(wd_resets[gc]), .si_reset_o(), .halt_o(), .boot_mode_o(boot_modes[gc]),
       .dbg_commit_o(), .dbg_trap_o(), .dbg_tt_o(), .dbg_pc_o(), .dbg_psr_o(), .dbg_w_o());
   end endgenerate
   assign snoop_hold = |snoop_holds;
@@ -200,8 +200,17 @@ module ss20_machine #(
     .clk, .rst(rst_m), .req_i(bus_req), .rsp_o(bus_rsp), .park_i(park),
     .req_o(mb_req), .rsp_i(mb_rsp), .mid_o(mb_mid));
 
-  ss20_memctl u_mem (
-    .clk, .rst(rst_m), .ram_mb_i(opt_ram_mb_i), .mid_i(mb_mid),
+  // the granted master's boot mode (DVMA, MID 0: never), for the PROM's
+  // boot-mode timing in the memory controller
+  logic mb_boot;
+  always_comb begin
+    mb_boot = 1'b0;
+    for (int n = 0; n < NCPU; n++)
+      if (mb_mid == 4'(8 + n)) mb_boot = boot_modes[n];
+  end
+
+  ss20_memctl #(.PROM_WAIT(CLK_HZ / 1_500_000)) u_mem (   // 36 at 55 MHz: ~0.65 us
+    .clk, .rst(rst_m), .ram_mb_i(opt_ram_mb_i), .mid_i(mb_mid), .boot_mode_i(mb_boot),
     .req_i(mb_req), .rsp_o(mb_rsp), .snoop_o(snoop), .snoop_hold_i(snoop_hold),
     .io_req_o(io_req), .io_rsp_i(io_rsp),
     .ddr_wait_i(mm_wait), .ddr_burstcnt_o(mc_bc), .ddr_addr_o(mc_addr), .ddr_rd_o(mc_rd),

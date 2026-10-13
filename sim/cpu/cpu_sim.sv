@@ -80,7 +80,7 @@ module cpu_sim
   cpu_module #(.HAS_FPU(1'b1)) u_cpu (
     .clk(cpu_clk), .rst, .mid_i(4'd8), .irl_i(h_irl), .cache_en_i(1'b1), .ram_mb_i(12'd16),
     .mem_req_o(cmr), .mem_rsp_i(cms), .snoop_i(csn), .snoop_hold_o(c_hold),
-    .wd_reset_o(wd_reset), .si_reset_o(si_reset), .halt_o(halt),
+    .wd_reset_o(wd_reset), .si_reset_o(si_reset), .halt_o(halt), .boot_mode_o(),
     .dbg_commit_o(dbg_commit), .dbg_trap_o(dbg_trap), .dbg_tt_o(dbg_tt), .dbg_pc_o(dbg_pc),
     .dbg_psr_o(dbg_psr), .dbg_w_o(dbg_w));
 

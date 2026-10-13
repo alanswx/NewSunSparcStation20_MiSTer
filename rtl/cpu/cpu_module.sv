@@ -40,6 +40,7 @@ module cpu_module
   output logic        wd_reset_o,     // a watchdog reset was taken (one cycle)
   output logic        si_reset_o,     // software-internal reset requested (one cycle)
   output logic        halt_o,         // the IU is in error mode (until the watchdog)
+  output logic        boot_mode_o,    // MCNTL.BM: fetches go to the boot PROM (the memory controller's PROM timing)
 
   // for the board's hang reporter (rtl/hybrid/hang_dump.sv)
   output logic        dbg_commit_o,
@@ -94,6 +95,7 @@ module cpu_module
   assign iu_rst = rst | wd_now;
   assign wd_reset_o = wd_now;
   assign halt_o = iu_error;
+  assign boot_mode_o = mcntl[MC_BM];
 
   // ---------------------------------------------------------------------
   // The MMU

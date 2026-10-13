@@ -48,11 +48,12 @@ sim/obj_ss20/Vsim_top --cycles 5M --frame sim/out/frame.ppm
 - `--ram MB`: the OSD memory option (464, 256, 128, 64). Sun's OBP clears
   all of memory at every start: 64 saves minutes.
 - `+iolog`: print every I/O access (system space and SBus) as it completes.
-- `+prom_wait=N`: N cycles before every boot-PROM read, about the real
-  machine's byte-wide EPROM (36 is ~0.7 us an instruction). OBP 2.25's
-  POST (`diag-switch?` true) times its "PROCn Counter/Timer Test" with
-  instruction loops and reports "No interrupt received" on a fast PROM;
-  with `+prom_wait=36` the whole POST passes.
+- `+prom_wait=N`: replaces ss20_memctl's PROM_WAIT (36 at 55 MHz, ~0.65 us),
+  the wait before every boot-PROM read a CPU makes in boot mode
+  (MCNTL.BM), the real machine's byte-wide EPROM pace. OBP 2.25's POST
+  (`diag-switch?` true) runs in boot mode and times its "PROCn
+  Counter/Timer Test" with instruction loops; `+prom_wait=0` makes boot
+  mode fast again (the POST then reports "No interrupt received").
 - `--trace F.vcd --trace-from N`: a waveform, from a model built with
   `build.sh --trace`. Keep the window short.
 - `--ddr-log N`: print the first N DDR commands; `--ddr-stress`,

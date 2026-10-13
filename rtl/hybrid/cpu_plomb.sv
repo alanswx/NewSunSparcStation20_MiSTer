@@ -92,7 +92,7 @@ module cpu_plomb
   cpu_module #(.HAS_FPU(1'b1), .SS20(1'b1), .NCPU_M1(2'd0)) u_cpu (
     .clk(clk_cpu), .rst, .mid_i(4'(MID)), .irl_i, .cache_en_i, .ram_mb_i(12'(RAM_MB)),
     .mem_req_o(rq_cpu), .mem_rsp_i(rs_cpu), .snoop_i(sn_cpu), .snoop_hold_o(hold_cpu),
-    .wd_reset_o, .si_reset_o, .halt_o,
+    .wd_reset_o, .si_reset_o, .halt_o, .boot_mode_o(),
     .dbg_commit_o(dbg_commit), .dbg_trap_o(dbg_trap), .dbg_tt_o(dbg_tt), .dbg_pc_o(dbg_pc),
     .dbg_psr_o(dbg_psr), .dbg_w_o(dbg_w));
 

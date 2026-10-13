@@ -35,13 +35,15 @@ module ss20_memctl
   import mem_pkg::*;
 #(
   parameter logic [28:0] DDR_BASE  = 29'h0400_0000,   // word address of ARM 0x2000_0000
-  parameter logic [31:0] PROM_BASE = 32'h1D00_0000    // core byte address of the PROM image
+  parameter logic [31:0] PROM_BASE = 32'h1D00_0000,   // core byte address of the PROM image
+  parameter int          PROM_WAIT = 36               // cycles before a boot-mode PROM read (below)
 )(
   input  logic        clk,
   input  logic        rst,
 
   input  logic [9:0]  ram_mb_i,           // installed memory, MB (the OSD's option)
   input  logic [3:0]  mid_i,              // the master's module ID (snoop source)
+  input  logic        boot_mode_i,        // that master is a CPU in boot mode (its MCNTL.BM)
 
   input  mem_req_t    req_i,
   output mem_rsp_t    rsp_o,
@@ -128,19 +130,22 @@ module ss20_memctl
   logic        burst_q;
   logic        ram_q;                     // the request is main memory (the EMC's corrections apply)
 
-  // Simulation only (+prom_wait=N): N cycles before each boot-PROM read,
-  // the access time of the real machine's byte-wide EPROM (about 0.7 us an
-  // instruction): OBP 2.25's POST times its counter/timer test by
-  // instruction loops (post-tests.md "PROCn Counter/Timer Test")
+  // A boot-PROM read by a CPU in boot mode waits PROM_WAIT cycles first:
+  // the real machine's byte-wide EPROM takes about 0.7 us an instruction,
+  // and OBP 2.25's POST, which runs in boot mode, times its counter/timer
+  // test with instruction loops (post-tests.md "PROCn Counter/Timer
+  // Test": a 2.1 s count within 0x80000 loop passes). Out of boot mode
+  // (OBP after the POST, an OS's PROM calls) the PROM is read at full
+  // speed. Simulation: +prom_wait=N replaces PROM_WAIT (0: no wait).
   logic [7:0]  prom_wait, pw_cnt;
 `ifndef SYNTHESIS
   initial begin
     logic [7:0] n;
-    if (!$value$plusargs("prom_wait=%d", n)) n = 8'd0;
+    if (!$value$plusargs("prom_wait=%d", n)) n = 8'(PROM_WAIT);
     prom_wait = n;
   end
 `else
-  assign prom_wait = 8'd0;
+  assign prom_wait = 8'(PROM_WAIT);
 `endif
   // the beat a read is at (a burst's in address order), for the EMC's
   // corrections
@@ -174,7 +179,7 @@ module ss20_memctl
               st <= S_RD_CMD;
             end else if (is_prom && !req_i.write) begin
               beats_left <= req_i.burst ? 3'd4 : 3'd1;
-              pw_cnt <= prom_wait;
+              pw_cnt <= boot_mode_i ? prom_wait : 8'd0;
               st <= S_RD_CMD;
             end else if (is_ram && req_i.write) begin
               wd_q <= req_i.wdata;
