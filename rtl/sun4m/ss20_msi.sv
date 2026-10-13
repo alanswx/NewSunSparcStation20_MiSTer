@@ -42,11 +42,15 @@
 //          writable; stored only: no bypass DVMA, see below).
 //   0x2000 MID (R): the MBus ID of the master doing this access (bus_mid_i).
 //
-// The DVMA path. Two master ports (0 = ESP DMA, 1 = LANCE DMA, both
-// on-board SBus devices) are granted round robin, a whole request (single
-// beat or 32-byte burst) at a time, and only while the arbiter enable's
-// EN<F> (bit 20, on-board devices) is set: clearing it parks both before
-// their next request (a granted request completes). The address:
+// The DVMA path. NDVMA master ports (0 = ESP DMA, 1 = LANCE DMA, 2 = the
+// slot-3 audio's APC; the first two on-board SBus devices) are granted
+// round robin (the port after the last one served that is asking), a whole
+// request (single beat or 32-byte burst) at a time, and only while the
+// arbiter enable's EN<F> (bit 20, on-board devices) is set: clearing it
+// parks them all before their next request (a granted request completes).
+// The APC is a slot-3 master, which EN<3> would govern on a real SS20; it
+// is parked by EN<F> with the others, as OpenBIOS writes neither. The
+// address:
 //   - ME = 0: pass-through, PA[31:0] = VA, PA[35:32] = 0 (§5.8.1; QEMU
 //     translates regardless, the specification is followed);
 //   - ME = 1: VA[31:X+1] must be all ones (X = 23 + RANGE) or the master
@@ -88,7 +92,8 @@ module ss20_msi
   parameter logic [7:0]  IMPL_VER  = 8'h13,         // SS20 (QEMU sun4m.c, t_msi)
   // Masters 8 and 9 on (§5.1.2), and EN<F> on, unlike §5.1.2's POR state:
   // OpenBIOS never writes this register, and the DVMA ports park on EN<F>.
-  parameter logic [31:0] AER_RESET = 32'h0010_0003
+  parameter logic [31:0] AER_RESET = 32'h0010_0003,
+  parameter int          NDVMA     = 3              // DVMA master ports (1 to 8)
 )(
   input  logic            clk,
   input  logic            rst,
@@ -97,8 +102,8 @@ module ss20_msi
   output iob_rsp_t        bus_o,
   input  logic [3:0]      bus_mid_i,      // MID of the master of this access
 
-  input  dvma_req_t [1:0] dvma_req_i,     // 0 = ESP DMA, 1 = LANCE DMA
-  output mem_rsp_t  [1:0] dvma_rsp_o,
+  input  dvma_req_t [NDVMA-1:0] dvma_req_i,  // 0 = ESP DMA, 1 = LANCE DMA, 2 = APC
+  output mem_rsp_t  [NDVMA-1:0] dvma_rsp_o,
 
   output mem_req_t        mem_req_o,      // to the memory controller's DMA port
   input  mem_rsp_t        mem_rsp_i,
@@ -116,6 +121,7 @@ module ss20_msi
 );
 
   localparam int NTLB = 16;
+  localparam int PW   = (NDVMA > 1) ? $clog2(NDVMA) : 1;   // port number width
 
   // ---------------------------------------------------------------------
   // Registers
@@ -164,7 +170,7 @@ module ss20_msi
   logic        bus_cmp;
   logic [18:0] cmp_va;
   logic [NTLB-1:0] match;
-  logic        cur_q;
+  logic [PW-1:0] cur_q;
   dvma_req_t   creq;
 
   assign creq    = dvma_req_i[cur_q];
@@ -216,7 +222,7 @@ module ss20_msi
   // ---------------------------------------------------------------------
   typedef enum logic [2:0] {S_IDLE, S_XLATE, S_WALK, S_ACC, S_FAULT} state_t;
   state_t      st_q;
-  logic        last_q;                    // the port served last
+  logic [PW-1:0] last_q;                  // the port served last
   logic [35:0] pa_q;                      // translated PA of the request
   logic [33:0] pte_pa_q;                  // IOPTE address [35:2]
   logic [1:0]  beat_q;
@@ -255,14 +261,30 @@ module ss20_msi
   logic tlb_change;
   assign tlb_change = w_ctrl | w_base | w_flall | w_flpg | w_tag | w_data;
 
+  // Round robin: the first asking port after last_q.
+  logic          any_req;
+  logic [PW-1:0] next_port;
+  always_comb begin
+    any_req   = 1'b0;
+    next_port = last_q;
+    for (int i = NDVMA; i >= 1; i--) begin
+      int unsigned p;
+      p = (int'(last_q) + i) % NDVMA;
+      if (dvma_req_i[p].valid) begin
+        any_req   = 1'b1;
+        next_port = PW'(p);
+      end
+    end
+  end
+
   logic fill;
   assign fill = (st_q == S_WALK) & mem_rsp_i.ack & ~mem_rsp_i.err & pte[1] & ~stale_q & ~tlb_change;
 
   always_ff @(posedge clk) begin
     if (rst) begin
       st_q    <= S_IDLE;
-      cur_q   <= 1'b0;
-      last_q  <= 1'b1;
+      cur_q   <= '0;
+      last_q  <= PW'(NDVMA - 1);            // port 0 goes first
       pa_q    <= '0;
       pte_pa_q <= '0;
       beat_q  <= '0;
@@ -271,10 +293,9 @@ module ss20_msi
       if (tlb_change) stale_q <= 1'b1;
       unique case (st_q)
         S_IDLE:
-          if (aer_q[20] & (dvma_req_i[0].valid | dvma_req_i[1].valid)) begin
-            // round robin: port 1 if it asks and port 0 does not, or 0 went last
-            cur_q  <= dvma_req_i[1].valid & (~dvma_req_i[0].valid | ~last_q);
-            last_q <= dvma_req_i[1].valid & (~dvma_req_i[0].valid | ~last_q);
+          if (aer_q[20] & any_req) begin
+            cur_q  <= next_port;
+            last_q <= next_port;
             st_q   <= S_XLATE;
           end
         S_XLATE:
@@ -331,10 +352,10 @@ module ss20_msi
   end
 
   always_comb
-    for (int p = 0; p < 2; p++) begin
+    for (int p = 0; p < NDVMA; p++) begin
       dvma_rsp_o[p].rdata = mem_rsp_i.rdata;
-      dvma_rsp_o[p].ack   = (cur_q == p[0]) & (((st_q == S_ACC) & mem_rsp_i.ack) | (st_q == S_FAULT));
-      dvma_rsp_o[p].err   = (cur_q == p[0]) & (((st_q == S_ACC) & mem_rsp_i.err) | (st_q == S_FAULT));
+      dvma_rsp_o[p].ack   = (cur_q == PW'(p)) & (((st_q == S_ACC) & mem_rsp_i.ack) | (st_q == S_FAULT));
+      dvma_rsp_o[p].err   = (cur_q == PW'(p)) & (((st_q == S_ACC) & mem_rsp_i.err) | (st_q == S_FAULT));
     end
 
   // ---------------------------------------------------------------------

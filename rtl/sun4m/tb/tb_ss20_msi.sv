@@ -19,8 +19,8 @@ module tb_ss20_msi;
   iob_req_t        req = IOB_REQ_IDLE;
   iob_rsp_t        rsp;
   logic [3:0]      bus_mid = 4'd8;
-  dvma_req_t [1:0] dreq;
-  mem_rsp_t  [1:0] drsp;
+  dvma_req_t [2:0] dreq;                 // NDVMA = 3 (the default): ESP, LANCE, APC
+  mem_rsp_t  [2:0] drsp;
   mem_req_t        mreq;
   mem_rsp_t        mrsp;
   logic            mts_err = 0, mts_to = 0, mts_s = 0;
@@ -565,6 +565,26 @@ module tb_ss20_msi;
       check(n0 == 8 && n1 == 8, "both ports served 8 times");
       check(same == 0, "round robin: the grants alternate while both ask");
     end
+    // three ports asking: each grant goes to the next port in turn
+    dvma_rd32(2, DV + 32'(22 << 12), v, e);
+    mlog.delete();
+    fork
+      for (int i = 0; i < 6; i++) begin logic [31:0] x; bit ee; dvma_rd32(0, DV + 32'(20 << 12) + 32'(8*i), x, ee); end
+      for (int i = 0; i < 6; i++) begin logic [31:0] x; bit ee; dvma_rd32(1, DV + 32'(21 << 12) + 32'(8*i), x, ee); end
+      for (int i = 0; i < 6; i++) begin logic [31:0] x; bit ee; dvma_rd32(2, DV + 32'(22 << 12) + 32'(8*i), x, ee); end
+    join
+    begin
+      int n2 = 0, bad = 0;
+      foreach (mlog[i]) begin
+        if (mlog[i].pa[35:12] == 24'(page_pa(22) >> 12)) n2++;
+        // while all three ask, no port is served twice within three grants
+        if (i >= 2 && i < 16 && (mlog[i].pa[35:12] == mlog[i-1].pa[35:12] ||
+                                 mlog[i].pa[35:12] == mlog[i-2].pa[35:12])) bad++;
+      end
+      check(mlog.size() == 18 && n2 == 6, "three ports: all 18 requests served, 6 for port 2");
+      check(bad == 0, "round robin over three ports: 0, 1, 2 in turn");
+    end
+    check(!e && v == 32'hD000_1600, "port 2 reads through the IOMMU");
     maxlat = 4;
 
     // parking: EN<F> = 0 holds both ports un-granted; a granted burst completes
