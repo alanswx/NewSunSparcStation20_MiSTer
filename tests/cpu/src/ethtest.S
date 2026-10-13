@@ -290,10 +290,15 @@ eth_init:
         set 0xff000000, %l1
         add %l0, E_BASE, %l2
         sta %l1, [%l2] SBUS_ASI
-        /* stop the LANCE */
+        /* stop the LANCE; CSR3 BSWP|ACON|BCON, as every sun4m driver
+           sets it (BSWP: frame bytes in memory in wire order; STOP has
+           cleared CSR3) */
         mov 0, %o0
         call le_w
         mov C0_STOP, %o1
+        mov 3, %o0
+        call le_w
+        mov 7, %o1
         /* the init block: MODE, PADR (swapped words), LADRF 0, the rings */
         mov %i0, %o1
         call mh
@@ -395,7 +400,7 @@ BEGIN(t_eth_init, "eth: the LANCE reads its init block (IDON), then runs (TXON, 
         clr %o1
         call eth_init
         clr %o0
-        set 0x0037, %o1                 /* RXON TXON STOP STRT INIT */
+        set 0x0036, %o1                 /* RXON TXON STOP STRT (INIT stays set until STOP) */
         and %o0, %o1, %o0
         EXPECT(%o0, C0_RXON | C0_TXON | C0_STRT, 1)
 END
@@ -524,7 +529,7 @@ BEGIN(t_eth_loopback, "eth: internal loopback (MODE LOOP|INTL): the frame comes 
         clr %o1
         call eth_init
         mov 0x0044, %o0                 /* MODE: INTL | LOOP */
-        set 0x0037, %o1
+        set 0x0036, %o1
         and %o0, %o1, %o0
         EXPECT(%o0, C0_RXON | C0_TXON | C0_STRT, 1)
         clr %o0
@@ -582,7 +587,7 @@ chain:
         call eth_init
         clr %o0
         mov 1, %l7
-        set 0x0037, %o1
+        set 0x0036, %o1
         and %o0, %o1, %o0
         cmp %o0, C0_RXON | C0_TXON | C0_STRT
         bne 9f
