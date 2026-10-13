@@ -290,6 +290,7 @@ void obp_dumb_memfree(char *va, unsigned size)
 /* Data fault handling routines */
 
 extern unsigned int ignore_dfault;
+extern uint16_t machine_id;             /* openbios.c: set before ob_init_mmu */
 
 /* ( -- reg ) */
 static void srmmu_get_sfsr(void)
@@ -324,15 +325,39 @@ ob_init_mmu(void)
 
     ofmem_register(s_phandle_memory, s_phandle_mmu);
 
-    /* Setup /memory:reg (totphys) property */
-    memreg = malloc(3 * sizeof(ucell));
-    ofmem_arch_encode_physaddr(memreg, 0); /* physical base */
-    memreg[2] = (ucell)ofmem->ramsize; /* size */
+    /* Setup /memory:reg (totphys) property.
+     *
+     * On the machines with an ECC memory controller (eccmemctl: SS10, SS20,
+     * SS600MP; machine id 64 and up) memory sits in SIMM slots of 64 MB
+     * (PA[28:26] is the slot) and the reg property has one entry per slot,
+     * as Sun's OBP makes it. Solaris depends on that: with an EMC or SMC
+     * (MER.IMPL 1 or 2) its have_memory() marks as DRAM only the slots that
+     * a reg entry starts in, and mem_bus_type() calls every page of the
+     * other slots something else; with one entry for all of memory, pages
+     * above 64 MB were not memory to it, and it panicked early in boot
+     * (uncache_4m_ptes: a NULL page_t). The slots are filled from 0 up. */
+    {
+        ucell nent = 1, i;
+        phys_addr_t slot = 0x4000000;      /* 64 MB */
+        phys_addr_t base;
 
-    push_str("/memory");
-    fword("find-device");
-    PUSH(pointer2cell(memreg));
-    PUSH(3 * sizeof(ucell));
+        if (machine_id >= 64)
+            nent = (ofmem->ramsize + slot - 1) / slot;
+        if (nent == 0)
+            nent = 1;
+        memreg = malloc(3 * nent * sizeof(ucell));
+        for (i = 0; i < nent; i++) {
+            base = (nent == 1) ? 0 : i * slot;
+            ofmem_arch_encode_physaddr(&memreg[3 * i], base);   /* physical base */
+            memreg[3 * i + 2] = (nent == 1) ? (ucell)ofmem->ramsize    /* size */
+                : (ucell)((ofmem->ramsize - base < slot) ? ofmem->ramsize - base : slot);
+        }
+
+        push_str("/memory");
+        fword("find-device");
+        PUSH(pointer2cell(memreg));
+        PUSH(3 * nent * sizeof(ucell));
+    }
     push_str("reg");
     PUSH_ph(s_phandle_memory);
     fword("encode-property");
