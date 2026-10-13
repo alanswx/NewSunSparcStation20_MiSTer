@@ -7,7 +7,9 @@
 // after a new PROM and at an OSD reset (plan §3 phase 4; the Sun OBP
 // expects clean memory, and OpenBIOS clears only on a software or watchdog
 // reset). The machine is held in reset (run_o low) until a PROM has been
-// loaded once and the clear that follows a load or a reset is done.
+// loaded once and the clear that follows a load or a reset is done. A PROM
+// download is taken even while rst is high (Main holds the core in reset
+// while it sends it).
 //
 // hps_io (WIDE) sends 16-bit words, ioctl_dout[7:0] the byte at ioctl_addr
 // and [15:8] the next; four make a doubleword, written big-endian (byte
@@ -35,6 +37,7 @@ module ss20_loader #(
 
   output logic        run_o,             // the machine may run
   output logic        active_o,          // the loader owns the DDR port
+  output logic [1:0]  state_o,           // (bring-up: 0 wait for a PROM, 1 load, 2 clear, 3 run)
 
   input  logic        ddr_wait_i,
   output logic [7:0]  ddr_burstcnt_o,
@@ -44,7 +47,7 @@ module ss20_loader #(
   output logic [7:0]  ddr_be_o
 );
 
-  localparam int CB = 64;                // the clear's burst length (words)
+  localparam int CB = 1;                 // the clear's burst length (words): single writes for now (board bring-up: the clear's bursts left the DDR port answering no read)
 
   typedef enum logic [1:0] {L_WAIT_ROM, L_LOAD, L_CLEAR, L_RUN} lstate_t;
   lstate_t ls;
@@ -70,8 +73,20 @@ module ss20_loader #(
   logic [15:0] hw;                       // the halfword, big-endian
   assign hw = {ioctl_dout_i[7:0], ioctl_dout_i[15:8]};
 
+  // Main may hold the core in reset while it sends the PROM, so a download
+  // goes on whatever rst says; rst only restarts the clear outside one.
+  // A write burst is never left half-done: the DDR bridge would count the
+  // next burst's beats as this one's and, at the end, wait for beats that
+  // never come, answering no read (the board's first bring-up: Main pulsed
+  // reset after the download, the clear restarted mid-burst, and the CPU's
+  // first fetch was never answered). rst and a new download are taken at a
+  // burst boundary only.
+  logic mid_burst;
+  // (also a write presented and not yet taken: the command must stay)
+  assign mid_burst = ls == L_CLEAR && (clr_beat != 7'd0 || ddr_wait_i);
+
   always_ff @(posedge clk) begin
-    if (rst) begin
+    if (rst && ls != L_LOAD && !dl_rom && !mid_burst) begin
       ls <= loaded ? (SKIP_CLEAR ? L_RUN : L_CLEAR) : L_WAIT_ROM;
       acc_any <= 1'b0; acc_be <= '0; wpend <= 1'b0;
       clr_word <= '0; clr_beat <= '0;
@@ -105,7 +120,7 @@ module ss20_loader #(
           end
         end
         default: begin                   // L_WAIT_ROM, L_CLEAR, L_RUN
-          if (dl_rom) begin
+          if (dl_rom && !mid_burst) begin
             ls <= L_LOAD;
             acc_any <= 1'b0; acc_be <= '0;
           end else if (ls == L_CLEAR && !ddr_wait_i) begin
@@ -123,19 +138,30 @@ module ss20_loader #(
   end
 
   assign run_o        = ls == L_RUN && !rst;
+  assign state_o      = ls;
   assign active_o     = ls != L_RUN;
+  // Main waits while a word is presented: a write once presented to DDR is
+  // never withdrawn (Avalon), so a port that never takes it holds Main too
   assign ioctl_wait_o = wpend;
+
+  // the Avalon word of a core byte address (ss20_memctl's layout: bits
+  // 28:20 inverted, main memory at the top of the FPGA window)
+  /* verilator lint_off UNUSEDSIGNAL */   // (a[2:0]: the byte within the word)
+  function automatic logic [28:0] ddr_word(input logic [28:0] a);
+    return DDR_BASE | {3'b000, ~a[28:20], a[19:3]};
+  endfunction
+  /* verilator lint_on UNUSEDSIGNAL */
 
   always_comb begin
     if (ls == L_CLEAR) begin
       ddr_burstcnt_o = 8'(CB);
-      ddr_addr_o     = DDR_BASE + 29'(clr_word);
+      ddr_addr_o     = ddr_word({clr_word, 3'b000});
       ddr_we_o       = 1'b1;
       ddr_din_o      = 64'd0;
       ddr_be_o       = 8'hFF;
     end else begin
       ddr_burstcnt_o = 8'd1;
-      ddr_addr_o     = DDR_BASE + 29'(PROM_BASE >> 3) + 29'(wword[15:0]);
+      ddr_addr_o     = ddr_word(PROM_BASE[28:0] | {10'd0, wword[15:0], 3'b000});
       ddr_we_o       = wpend && ls == L_LOAD;
       ddr_din_o      = wbuf;
       ddr_be_o       = wbe;
@@ -143,6 +169,6 @@ module ss20_loader #(
   end
 
   logic unused_ok;
-  assign unused_ok = &{1'b0, ioctl_addr_i[0], wword[23:16], clr_beat};
+  assign unused_ok = &{1'b0, ioctl_addr_i[0], wword[23:16]};
 
 endmodule

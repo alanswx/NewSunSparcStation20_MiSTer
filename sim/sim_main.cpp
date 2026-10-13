@@ -70,9 +70,10 @@ static std::string unescape(const std::string &s) {
 // ---------------------------------------------------------------------------
 // DDR3: 512 MB of 64-bit words, zeroed (the machine is built with
 // SKIP_CLEAR for the simulation). ss20_machine puts its memory in the
-// MiSTer's FPGA window, byte addresses 0x2000_0000-0x3FFF_FFFF (word
-// address BASE + core byte address / 8; rtl/machine/ss20_memctl.sv), each
-// doubleword big-endian: byte offset 0 in bits 63:56.
+// MiSTer's FPGA window, byte addresses 0x2000_0000-0x3FFF_FFFF, with core
+// address bits 28:20 inverted (main memory at the top, away from the video
+// scaler's buffer at the bottom: rtl/machine/ss20_memctl.sv); each
+// doubleword big-endian, byte offset 0 in bits 63:56.
 // Reads are pipelined (up to DDR_QUEUE bursts outstanding, first beat after
 // DDR_LAT cycles); write bursts take one beat per cycle.
 struct Ddr {
@@ -90,8 +91,8 @@ struct Ddr {
     uint64_t log_from = 0;        // --ddr-log-from: first cycle to log
     uint32_t log_lo = 0, log_hi = 0;   // --ddr-log-range: core byte addresses [lo, hi) to log (equal: all)
     // The core's own byte address for a DDR word address, and back.
-    static uint32_t core_addr(uint32_t a) { return (a - BASE) << 3; }
-    static uint32_t ddr_word(uint32_t core) { return BASE | ((core >> 3) & (WORDS - 1)); }
+    static uint32_t core_addr(uint32_t a) { return ((a - BASE) ^ (0x1FFu << 17)) << 3; }
+    static uint32_t ddr_word(uint32_t core) { return BASE | (((core >> 3) ^ (0x1FFu << 17)) & (WORDS - 1)); }
     // Store bytes where ss20_loader would put them: file byte k of each 8
     // in bits 63-8k:56-8k (big-endian, as the interconnect carries them).
     void backdoor(uint32_t core, const uint8_t *p, size_t n) {
@@ -746,7 +747,11 @@ int main(int argc, char **argv) {
 
         switch (dl_phase) {
         case 0:                       // reset, then start the download
-            if (cyc == 16) t->reset = 0;
+            // Main may hold the core in reset while it sends the boot
+            // PROM (the board's first phase-4 bring-up: a loader that
+            // ignored downloads in reset never started): the reset is held
+            // through the download here, and released after it
+            if (cyc == 16 && romdata.empty()) t->reset = 0;
             // Main mounts the remembered images before it downloads the ROM;
             // the NVRAM's (slot 3) loads meanwhile.
             if (cyc == 32 && sd.disks[3]) {
@@ -764,6 +769,7 @@ int main(int argc, char **argv) {
             if (dl_sub == 0 && !iowait) {
                 if (dl_pos >= romdata.size()) {
                     t->ioctl_download = 0;   // ioctl_addr keeps the last address
+                    t->reset = 0;
                     dl_phase = 2;
                     phase_at = cyc;
                     break;

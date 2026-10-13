@@ -6,10 +6,16 @@
 // broadcast on the snoop port in its ack cycle (the module's I-cache keeps
 // its own module's stores coherent that way: t_selfmod).
 //
-// The DDR3 layout (core byte addresses, Avalon word = DDR_BASE + byte/8;
-// DDR_BASE is ARM physical 0x2000_0000, the MiSTer's FPGA window):
+// The DDR3 layout (core byte addresses; ss20_pkg::ddr_word):
 //   0x0000_0000 .. RAM size   main memory, PA 0 up (at most 464 MB)
 //   0x1D00_0000 .. +512 KB    the boot PROM image (ss20_loader writes it)
+// The core's 512 MB sit in the MiSTer's FPGA window (ARM physical
+// 0x2000_0000-0x3FFF_FFFF) upside down by megabyte: address bits 28:20 are
+// inverted, so main memory starts at the top of the window and the bottom
+// of it — where the framework's video scaler keeps its frame buffer — holds
+// only core addresses above 0x1D80_0000, which nothing uses. (With main
+// memory at the bottom, the scaler overwrote the runtime's data on the
+// board while the simulation, which has no scaler, ran clean.)
 // A doubleword is stored big-endian in its DDR word, as the interconnect
 // carries it: byte offset 0 in bits 63:56, so data and byte enables pass
 // straight through.
@@ -55,8 +61,17 @@ module ss20_memctl
   output logic [63:0] ddr_din_o,
   output logic [7:0]  ddr_be_o,
   input  logic [63:0] ddr_dout_i,
-  input  logic        ddr_dout_ready_i
+  input  logic        ddr_dout_ready_i,
+
+  output logic [2:0]  state_o            // (bring-up)
 );
+
+  // the Avalon word of a core byte address (the layout above)
+  /* verilator lint_off UNUSEDSIGNAL */   // (a[2:0]: the byte within the word)
+  function automatic logic [28:0] ddr_word(input logic [28:0] base, input logic [28:0] a);
+    return base | {3'b000, ~a[28:20], a[19:3]};
+  endfunction
+  /* verilator lint_on UNUSEDSIGNAL */
 
   typedef enum logic [2:0] {S_IDLE, S_RD_CMD, S_RD_DATA, S_WR_CMD, S_IO, S_GAP} st_t;
   st_t st;
@@ -70,18 +85,51 @@ module ss20_memctl
   end
 
   logic [28:0] word_now;
-  assign word_now = is_prom ? DDR_BASE + 29'(PROM_BASE >> 3) + 29'(req_i.pa[18:3])
-                            : DDR_BASE + 29'(req_i.pa[28:3]);
+  assign word_now = is_prom ? ddr_word(DDR_BASE, PROM_BASE[28:0] | {10'd0, req_i.pa[18:0]})
+                            : ddr_word(DDR_BASE, req_i.pa[28:0]);
+
+  // ------------------------------------------------- reads in flight
+  // DDR returns a read's beats however the machine is reset meanwhile, so
+  // the beats owed are counted apart from rst: a reset in the middle of a
+  // read (nvram_sd's ready drops when Main mounts the NVRAM image after the
+  // machine started; a software reset) must not leave the next read
+  // taking the old one's data, or waiting for beats already gone (the
+  // board's first fetch hung so). A read is issued only when none is owed.
+  /* verilator lint_off PROCASSINIT */
+  logic [3:0] owed = 4'd0;             // (a power-up value: never reset)
+  /* verilator lint_on PROCASSINIT */
+  // A read the DDR port accepted but never answers (seen on the board for
+  // the first fetch after a core load: the framework's DDR bridge was still
+  // in its reset handling, which passes waitrequest through but drops the
+  // command) is forgotten after 2^16 cycles (~1.2 ms, far beyond any real
+  // latency) and issued again.
+  logic [15:0] rd_wait;
+  logic        forget;
+  assign forget = &rd_wait;
+  always_ff @(posedge clk) begin
+    if (forget) owed <= 4'd0;
+    else owed <= owed + ((ddr_rd_o && !ddr_wait_i) ? 4'(ddr_burstcnt_o) : 4'd0) - {3'd0, ddr_dout_ready_i};
+    if (owed == 4'd0 || ddr_dout_ready_i || forget) rd_wait <= '0;
+    else rd_wait <= rd_wait + 16'd1;
+  end
 
   // ------------------------------------------------------------- the FSM
   logic [28:0] a_q;
   logic [2:0]  beats_left;
   logic        burst_q;
 
+  // A DDR command, once presented, is held unchanged until the port takes
+  // it, whatever rst does (Avalon; a command withdrawn or changed while
+  // waitrequest is up wedged the board's DDR port): rst is taken outside
+  // the command states only, and the write's data and enables are
+  // registered (the CPU's request changes when it is reset).
+  logic [63:0] wd_q;
+  logic [7:0]  be_q;
+
   always_ff @(posedge clk) begin
     rsp_o <= '0;
     snoop_o <= '0;
-    if (rst) begin
+    if (rst && st != S_RD_CMD && st != S_WR_CMD) begin
       st <= S_IDLE;
       a_q <= '0; beats_left <= '0; burst_q <= 1'b0;
     end else begin
@@ -97,6 +145,8 @@ module ss20_memctl
               beats_left <= req_i.burst ? 3'd4 : 3'd1;
               st <= S_RD_CMD;
             end else if (is_ram && req_i.write) begin
+              wd_q <= req_i.wdata;
+              be_q <= req_i.be;
               if (!snoop_hold_i) st <= S_WR_CMD;
             end else if (is_low_empty || is_prom) begin
               // reads 0 (a burst gives four zero beats), writes are ignored
@@ -117,7 +167,7 @@ module ss20_memctl
             end
           end
         end
-        S_RD_CMD: if (!ddr_wait_i) st <= S_RD_DATA;
+        S_RD_CMD: if (!ddr_wait_i && owed == 4'd0) st <= rst ? S_IDLE : S_RD_DATA;   // (in reset: its beats are only counted)
         S_RD_DATA: begin
           if (is_low_empty) begin
             // the zero beats of a burst beyond the memory
@@ -129,13 +179,15 @@ module ss20_memctl
             rsp_o.rdata <= ddr_dout_i;
             beats_left <= beats_left - 3'd1;
             if (beats_left == 3'd1) st <= S_GAP;
+          end else if (forget) begin
+            st <= S_RD_CMD;               // the read was lost: again, for the beats still owed
           end
         end
         S_WR_CMD: begin
           if (!ddr_wait_i) begin
-            rsp_o.ack <= 1'b1;
-            snoop_o.valid <= 1'b1; snoop_o.line <= req_i.pa[35:5]; snoop_o.mid <= mid_i;
-            st <= S_GAP;
+            rsp_o.ack <= !rst;
+            snoop_o.valid <= !rst; snoop_o.line <= req_i.pa[35:5]; snoop_o.mid <= mid_i;
+            st <= rst ? S_IDLE : S_GAP;
           end
         end
         S_IO: begin
@@ -153,14 +205,16 @@ module ss20_memctl
     end
   end
 
+  assign state_o = st;
+
   // ---------------------------------------------------------- the ports
   always_comb begin
     ddr_burstcnt_o = burst_q ? 8'd4 : 8'd1;
     ddr_addr_o     = a_q;
-    ddr_rd_o       = st == S_RD_CMD;
+    ddr_rd_o       = st == S_RD_CMD && owed == 4'd0;   // the old read's beats first
     ddr_we_o       = st == S_WR_CMD;
-    ddr_din_o      = req_i.wdata;
-    ddr_be_o       = req_i.be;
+    ddr_din_o      = wd_q;
+    ddr_be_o       = be_q;
     io_req_o       = req_i;
     io_req_o.valid = st == S_IO;
   end

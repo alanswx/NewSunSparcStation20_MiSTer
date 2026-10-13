@@ -120,6 +120,7 @@ module ss20_machine #(
   // The PROM download and the memory clear; the machine runs once a PROM
   // is in and the clear is done.
   logic        run, ld_active;
+  logic [1:0]  ld_state;
   logic        ld_we;
   logic [7:0]  ld_bc, ld_be;
   logic [28:0] ld_addr;
@@ -128,7 +129,7 @@ module ss20_machine #(
   ss20_loader #(.SKIP_CLEAR(SKIP_CLEAR)) u_loader (
     .clk, .rst, .ram_mb_i(opt_ram_mb_i),
     .ioctl_download_i, .ioctl_index_i, .ioctl_wr_i, .ioctl_addr_i, .ioctl_dout_i, .ioctl_wait_o,
-    .run_o(run), .active_o(ld_active),
+    .run_o(run), .active_o(ld_active), .state_o(ld_state),
     .ddr_wait_i(ddr_busy_i), .ddr_burstcnt_o(ld_bc), .ddr_addr_o(ld_addr), .ddr_we_o(ld_we),
     .ddr_din_o(ld_din), .ddr_be_o(ld_be));
 
@@ -154,17 +155,21 @@ module ss20_machine #(
   snoop_t      snoop;
   logic        snoop_hold, wd_reset;
   logic [3:0]  irl;
+  logic        cpu_halt, cpu_commit, cpu_trap;
+  logic [7:0]  cpu_tt;
+  logic [31:0] cpu_pc;
 
   cpu_module #(.HAS_FPU(1'b1), .SS20(1'b1), .NCPU_M1(2'd0)) u_cpu (
     .clk, .rst(rst_m), .mid_i(4'd8), .irl_i(irl), .cache_en_i(1'b1), .ram_mb_i({2'b00, opt_ram_mb_i}),
     .mem_req_o(cpu_req), .mem_rsp_i(cpu_rsp), .snoop_i(snoop), .snoop_hold_o(snoop_hold),
-    .wd_reset_o(wd_reset), .si_reset_o(), .halt_o(),
-    .dbg_commit_o(), .dbg_trap_o(), .dbg_tt_o(), .dbg_pc_o(), .dbg_psr_o(), .dbg_w_o());
+    .wd_reset_o(wd_reset), .si_reset_o(), .halt_o(cpu_halt),
+    .dbg_commit_o(cpu_commit), .dbg_trap_o(cpu_trap), .dbg_tt_o(cpu_tt), .dbg_pc_o(cpu_pc), .dbg_psr_o(), .dbg_w_o());
 
   // ---------------------------------------------------- memory and I/O --
   mem_req_t    io_req;
   mem_rsp_t    io_rsp;
   logic        mc_rd, mc_we;
+  logic [2:0]  mc_state;
   logic [7:0]  mc_bc, mc_be;
   logic [28:0] mc_addr;
   logic [63:0] mc_din;
@@ -175,7 +180,7 @@ module ss20_machine #(
     .io_req_o(io_req), .io_rsp_i(io_rsp),
     .ddr_wait_i(ddr_busy_i), .ddr_burstcnt_o(mc_bc), .ddr_addr_o(mc_addr), .ddr_rd_o(mc_rd),
     .ddr_we_o(mc_we), .ddr_din_o(mc_din), .ddr_be_o(mc_be),
-    .ddr_dout_i, .ddr_dout_ready_i);
+    .ddr_dout_i, .ddr_dout_ready_i, .state_o(mc_state));
 
   // DDR3: the loader while it works (the machine is in reset then), else
   // the memory controller. The other masters (video scan-out, the
@@ -307,6 +312,54 @@ module ss20_machine #(
 
   /* verilator lint_on PINCONNECTEMPTY */
 
+  // ------------------------------------------------- bring-up status --
+  // Sixteen bits drawn as squares over the test pattern (green 1, red 0),
+  // for the board bring-up while there is no screen console: sticky bits
+  // say an event happened since power-up.
+  logic [15:0] dbg;
+  logic [31:0] dbg_pc;                    // the last committed PC
+  logic [15:0] dbg_t;                     // the last trap's tt, error mode, a watchdog seen, the IRL
+  logic [24:0] act;
+  logic [3:0]  rd_cnt, bt_cnt;
+  always_ff @(posedge clk) begin
+    // row 2 (bring-up): reads accepted (31:16) and read beats received (15:0)
+    // row 2 (bring-up): the CPU's request address, PA[35:28] and PA[23:0]
+    dbg_pc <= {cpu_req.pa[35:28], cpu_req.pa[23:0]};
+    if (ddr_rd_o && !ddr_busy_i && !ld_active) rd_cnt <= rd_cnt + 4'd1;
+    if (ddr_dout_ready_i) bt_cnt <= bt_cnt + 4'd1;
+    // row 3: memctl state (3), a read issued / accepted / data seen (sticky),
+    // DDR busy seen, a write issued, cpu trap seen, the last tt's low nibble,
+    // error mode, a watchdog seen, the I-side request seen
+    dbg_t[15:13] <= mc_state;
+    dbg_t[12] <= dbg_t[12] | (ddr_rd_o);
+    dbg_t[11] <= dbg_t[11] | (ddr_rd_o && !ddr_busy_i);
+    dbg_t[10] <= dbg_t[10] | ddr_dout_ready_i;
+    dbg_t[9]  <= dbg_t[9] | ddr_busy_i;
+    dbg_t[8]  <= dbg_t[8] | (ddr_we_o && !ld_active);
+    dbg_t[7:4] <= rd_cnt;                 // reads accepted, low 4 bits
+    dbg_t[3:0] <= bt_cnt;                 // read beats received, low 4 bits
+  end
+  always_ff @(posedge clk) begin
+    if (cpu_req.valid) act <= act + 25'd1;
+    dbg[0]  <= run;
+    dbg[1]  <= ld_active;
+    dbg[2]  <= nv_ready;
+    dbg[3]  <= rst;
+    dbg[4]  <= dbg[4] | ioctl_download_i;
+    dbg[5]  <= dbg[5] | (ioctl_download_i && ioctl_index_i == 8'd0);
+    dbg[6]  <= dbg[6] | (ioctl_wr_i && ioctl_index_i == 8'd0);
+    dbg[7]  <= dbg[7] | cpu_req.valid;
+    dbg[8]  <= act[24];
+    dbg[9]  <= dbg[9] | ta_tx_v;
+    dbg[10] <= dbg[10] | iob_q[1].req;
+    dbg[11] <= ddr_busy_i;
+    dbg[12] <= rst_m;
+    dbg[13] <= ioctl_download_i;
+    dbg[14] <= ld_state[0];
+    dbg[15] <= ld_state[1];
+  end
+  initial begin dbg = '0; act = '0; dbg_pc = '0; dbg_t = '0; rd_cnt = '0; bt_cnt = '0; end
+
   // ------------------------------------------------------- idle for now --
   always_comb begin
     for (int n = 0; n < 3; n++) begin
@@ -347,12 +400,31 @@ module ss20_machine #(
   wire [2:0] bar = x[9:7];
   wire [7:0] ramp = x[9:2];
 
+  logic [15:0] dbg_v0, dbg_v, dbgt_v0, dbgt_v;
+  logic [31:0] dbgpc_v0, dbgpc_v;
+  always_ff @(posedge clk_vid) begin
+    dbg_v0 <= dbg; dbg_v <= dbg_v0;
+    dbgpc_v0 <= dbg_pc; dbgpc_v <= dbgpc_v0;
+    dbgt_v0 <= dbg_t; dbgt_v <= dbgt_v0;
+  end
+  // row 1 (y 600-647): the status bits 0-15; row 2 (656-687): the PC, bit
+  // 31 first, 32 px a bit; row 3 (696-727): dbg_t bit 15 first
+  wire in_r1 = y >= 12'd600 && y < 12'd648 && x[5:0] < 6'd48;
+  wire in_r2 = y >= 12'd656 && y < 12'd688 && x[4:0] < 5'd24;
+  wire in_r3 = y >= 12'd696 && y < 12'd728 && x[5:0] < 6'd48;
+  wire in_dbg = (in_r1 || in_r2 || in_r3) && x < 12'd1024;
+  wire dbg_bit = in_r1 ? dbg_v[x[9:6]] : in_r2 ? dbgpc_v[5'd31 - x[9:5]] : dbgt_v[4'd15 - x[9:6]];
+
   always_ff @(posedge clk_vid) begin
     vid_hs_o <= hs;
     vid_vs_o <= vs;
     vid_de_o <= de;
     if (!de) begin
       {vid_r_o, vid_g_o, vid_b_o} <= '0;
+    end else if (in_dbg) begin
+      vid_r_o <= dbg_bit ? 8'h00 : 8'hFF;
+      vid_g_o <= dbg_bit ? 8'hFF : 8'h00;
+      vid_b_o <= 8'h00;
     end else if (edge_px) begin
       {vid_r_o, vid_g_o, vid_b_o} <= '1;
     end else if (y < 12'd576) begin
@@ -369,7 +441,7 @@ module ss20_machine #(
   /* verilator lint_off UNUSEDSIGNAL */
   wire unused_inputs = ^{opt_autoboot_i, opt_serial_i, opt_cg3_i, opt_kbd_layout_i, opt_l2tlb_i,
                          opt_eth_i, sd_ack_i[2:0], img_mounted_i[2:0], uart_cts_i, uart_dsr_i,
-                         ps2_key_i, ps2_mouse_i, frame, leds, rtc_i[63:56]};
+                         ps2_key_i, ps2_mouse_i, frame, leds, rtc_i[63:56], cpu_tt, cpu_pc, cpu_commit, cpu_trap, cpu_halt, cpu_req.pa[27:24]};
   /* verilator lint_on UNUSEDSIGNAL */
 
 endmodule
