@@ -257,8 +257,8 @@ module ss20_machine #(
     .s_write(dv_we), .s_writedata(dv_din), .s_byteenable(dv_be), .s_readdata(dv_dout),
     .s_readdatavalid(dv_rdv));
 
-  iob_req_t    iob_q [11];
-  iob_rsp_t    iob_r [11];
+  iob_req_t    iob_q [12];
+  iob_rsp_t    iob_r [12];
   ss20_iobridge u_io (.clk, .rst(rst_m), .req_i(io_req), .rsp_o(io_rsp), .io_o(iob_q), .io_i(iob_r));
 
   // ------------------------------------------------- the system devices --
@@ -382,11 +382,13 @@ module ss20_machine #(
     .clk, .rst(rst_m), .bus_i(iob_q[4]), .bus_o(iob_r[4]), .src_i(isrc), .timer_cpu_i(irq_tcpu), .irl_o(irl_v));
   assign irl = irl_v[0];
 
-  // 5: the system registers (LEDs, AUXIO, power, system control/status)
+  // 5: the system registers (LEDs, AUXIO, power, system control/status);
+  // reset by a software reset too, which sets SWR_STAT (OBP 2.25 tells its
+  // own soft reset from a power-on by it)
   logic [15:0] leds;
   logic        aux_led;
   slavio_misc #(.CLK_HZ(CLK_HZ)) u_misc (
-    .clk, .rst(rst || !run), .rst_swr_i(rst_swr), .rst_switch_i(1'b0), .wd_i(wd_reset),
+    .clk, .rst(rst || !run || rst_swr), .rst_swr_i(rst_swr), .rst_switch_i(1'b0), .wd_i(wd_reset),
     .bus_i(iob_q[5]), .bus_o(iob_r[5]),
     .leds_o(leds), .led_o(aux_led), .fd_tc_o(fd_tc), .fd_density_i(1'b0), .power_off_o(),
     .pwr_fail_i(1'b0), .pwr_irq_o(), .diag_sw_i(1'b0),
@@ -486,6 +488,9 @@ module ss20_machine #(
     .dvma_req_i(dvma_q), .dvma_rsp_o(dvma_r), .mem_req_o(dma_req), .mem_rsp_i(dma_rsp),
     .mts_err_i(1'b0), .mts_err_to_i(1'b0), .mts_err_pa_i(36'd0), .mts_err_siz_i(3'd0),
     .mts_err_s_i(1'b0), .mts_err_mid_i(4'd0), .irq_err_o(irq_msi), .arb_en_o());
+
+  // 11: the memory controller's registers (the SMC at 0xF_0000_0000)
+  emc u_emc (.clk, .rst(rst_m), .bus_i(iob_q[11]), .bus_o(iob_r[11]));
 
   /* verilator lint_on PINCONNECTEMPTY */
 

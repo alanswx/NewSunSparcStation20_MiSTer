@@ -505,6 +505,7 @@ static void usage() {
         "  --video             console on the screen (default: ttya)\n"
         "  --noautoboot        OSD AutoBoot OFF\n"
         "  --cg3               CG3 instead of TCX\n"
+        "  --ram MB            memory size: 464 (default), 256, 128 or 64 (the OSD option)\n"
         "  --l2tlb             OSD L2 TLB On (the MMU's second-level TLB,\n"
         "                      used when software also sets MCNTL bit 6)\n"
         "  --frame FILE.ppm    save the last complete video frame at the end\n"
@@ -543,6 +544,7 @@ int main(int argc, char **argv) {
     uint64_t ddr_log_from = 0;
     uint32_t ddr_log_lo = 0, ddr_log_hi = 0;
     bool sd_log = false;
+    int ram_sel = 0;              // --ram: the OSD memory option (0 = 464 MB)
     int ram_fill = -1;            // --ram-fill: every RAM byte starts as this (the board's DDR holds leftovers; the sim's is zeros)
     bool readonly = false, video = false, noautoboot = false, cg3 = false,
          l2tlb = false, quiet = false, progress = false, stress = false, gaps = false,
@@ -574,6 +576,11 @@ int main(int argc, char **argv) {
         else if (a == "--video") video = true;
         else if (a == "--noautoboot") noautoboot = true;
         else if (a == "--cg3") cg3 = true;
+        else if (a == "--ram") {
+            int mb = (int)strtoul(next().c_str(), nullptr, 0);
+            ram_sel = mb == 464 ? 0 : mb == 256 ? 1 : mb == 128 ? 2 : mb == 64 ? 3 : -1;
+            if (ram_sel < 0) usage();
+        }
         else if (a == "--l2tlb") l2tlb = true;
         else if (a == "--frame") frame_path = next();
         else if (a == "--ram-fill") ram_fill = (int)strtoul(next().c_str(), nullptr, 0) & 0xFF;
@@ -649,6 +656,7 @@ int main(int argc, char **argv) {
         if (cg3) st0 |= 1u << 10;           // CG3
         if (!l2tlb) st0 |= 1u << 17;        // L2 TLB Off (the board's default is On)
         if (!eth) st0 |= 1u << 24;          // Network Off (value 1)
+        st0 |= (uint32_t)ram_sel << 22;     // memory: 464, 256, 128, 64 MB
         t->status[0] = st0;
         t->status[1] = t->status[2] = t->status[3] = 0;
     }

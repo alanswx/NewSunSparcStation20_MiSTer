@@ -58,6 +58,7 @@ set_global_assignment -name SYSTEMVERILOG_FILE rtl/sun4m/wish7990_le_rx.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/sun4m/wish7990_le_tx.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/sun4m/lance.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/sun4m/fdc82077.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sun4m/emc.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/sun4m/cs4231_fcode.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/sun4m/cs4231.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/sun4m/kbd_beep.sv
