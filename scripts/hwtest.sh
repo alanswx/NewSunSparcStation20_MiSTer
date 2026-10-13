@@ -22,7 +22,8 @@
 #            NVRAM image (--nvram NAME, default ss20-obp.nvr) with byte 1,
 #            diag-switch?, set to 0xff, as games/SunSparcStation/post.nvr;
 #            wait for "Power-On SelfTest PASSED" on ttya (or FAILED, or the
-#            OBP's "ttya initialized" after a failure). The POST runs its
+#            OBP's "ttya initialized": OBP 2.25 on the SS20 prints no PASSED
+#            banner, so that with no ERROR line is a pass). The POST runs its
 #            list on each CPU; the log has the tests' names and any ERROR
 #            lines
 #   brk      a BREAK on ttya: tests/cpu/out/<target>/brktest.rom as boot.rom;
@@ -337,10 +338,15 @@ for t in "${TESTS[@]}"; do
         scripts/mount.sh --nvram post.nvr > /dev/null
         scripts/setopt.sh console=serial > /dev/null
         cp=$(run_capture "$log" 900 'Power-On SelfTest (PASSED|FAILED)|ttya initialized')
-        sleep 5; stop_capture "$cp"
+        sleep 30; stop_capture "$cp"       # (the probing, then ok)
         rsh "cp $G/openbios.rom $G/boot.rom"
         scripts/mount.sh --nvram "" > /dev/null
         r=$(clean "$log" | grep -a -m1 -o -E 'Power-On SelfTest (PASSED|FAILED).*' || true)
+        # OBP 2.25 on the SS20 prints no PASSED banner: a POST that ends in
+        # "ttya initialized" with no ERROR line passed
+        ne=$(clean "$log" | grep -a -c 'ERROR')
+        [ -z "$r" ] && [ "$ne" = 0 ] && clean "$log" | grep -a -q 'ttya initialized' \
+            && r="PASSED: no ERROR lines, then $(clean "$log" | grep -a -c '^Probing') Probing lines$(clean "$log" | grep -a -q 'ok' && echo ', ok')"
         case "$r" in
         *PASSED*) log "post: PASS ($r)" ;;
         *) log "post: FAIL (${r:-no result after 900 s}; $(clean "$log" | grep -a -c 'ERROR') ERROR lines; first: $(clean "$log" | grep -a -m1 -A2 'ERROR' | tr -s ' ' | tr '\n' ' '))"
