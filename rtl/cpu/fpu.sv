@@ -102,7 +102,7 @@ module fpu
   typedef enum logic [1:0] {FP_EXECUTE, FP_PENDING, FP_EXCEPTION} fstate_t;
   fstate_t state;
 
-  typedef enum logic [2:0] {S_IDLE, S_START, S_WAIT, S_ROUND, S_DONE} exstate_t;
+  typedef enum logic [2:0] {S_IDLE, S_UNPA, S_START, S_WAIT, S_ROUND, S_DONE} exstate_t;
   exstate_t ex;
 
   always_comb begin
@@ -119,11 +119,9 @@ module fpu
   // The FPop: decode
   // ---------------------------------------------------------------------
   logic [8:0] opf;
-  logic [4:0] rs1, rs2, rd;
+  logic [4:0] rd;
   logic       is_fpop2;
   assign opf = req_i.fpop_inst[13:5];
-  assign rs1 = req_i.fpop_inst[18:14];
-  assign rs2 = req_i.fpop_inst[4:0];
   assign rd  = req_i.fpop_inst[29:25];
   assign is_fpop2 = req_i.fpop_inst[19];        // op3 0x35
 
@@ -168,21 +166,36 @@ module fpu
     if (!is_fpop2 && (op == O_CMP || op == O_CMPE)) op = O_UNIMPL;
   end
 
-  // Operands: the pair, a single taken from its half into [63:32]
+  // Operands: the pair, a single taken from its half into [63:32]. Idle,
+  // the registers the FPop presented names; running, the latched FPop's
+  // (the registers do not change until its result is written), so the
+  // operand patterns are read again rather than kept. One unpacker: rs2's
+  // operand as the FPop is taken, rs1's in the next cycle (S_UNPA, only
+  // for the two-operand ops).
   logic [63:0] a_bits, b_bits, a_pair, b_pair;
+  logic        idle, o_dbl, o_a_odd, o_b_odd;
+  logic [4:0]  o_rs1, o_rs2;
+  assign idle    = ex == S_IDLE;
+  assign o_rs1   = idle ? req_i.fpop_inst[18:14] : c_inst[18:14];
+  assign o_rs2   = idle ? req_i.fpop_inst[4:0] : c_inst[4:0];
+  assign o_dbl   = idle ? src_dbl : c_src_dbl;
+  assign o_a_odd = o_rs1[0];
+  assign o_b_odd = o_rs2[0];
   assign rf_ra[0] = req_i.rd_addr[4:1];
-  assign rf_ra[1] = rs1[4:1];
-  assign rf_ra[2] = rs2[4:1];
+  assign rf_ra[1] = o_rs1[4:1];
+  assign rf_ra[2] = o_rs2[4:1];
   assign a_pair = rf_rd[1];
   assign b_pair = rf_rd[2];
   always_comb begin
-    a_bits = src_dbl ? a_pair : (rs1[0] ? {a_pair[31:0], 32'd0} : {a_pair[63:32], 32'd0});
-    b_bits = src_dbl ? b_pair : (rs2[0] ? {b_pair[31:0], 32'd0} : {b_pair[63:32], 32'd0});
+    a_bits = o_dbl ? a_pair : (o_a_odd ? {a_pair[31:0], 32'd0} : {a_pair[63:32], 32'd0});
+    b_bits = o_dbl ? b_pair : (o_b_odd ? {b_pair[31:0], 32'd0} : {b_pair[63:32], 32'd0});
   end
 
-  fp_t a, b;
-  fp_unpack u_ua (.dbl_i(src_dbl), .bits_i(a_bits), .v_o(a));
-  fp_unpack u_ub (.dbl_i(src_dbl), .bits_i(b_bits), .v_o(b));
+  fp_t u_v;
+  fp_unpack u_unp (.dbl_i(o_dbl), .bits_i(idle ? b_bits : a_bits), .v_o(u_v));
+
+  logic two_op;
+  assign two_op = op == O_ADD || op == O_SUB || op == O_MUL || op == O_DIV || op == O_CMP || op == O_CMPE;
 
   // ---------------------------------------------------------------------
   // The execution: a small state machine around the datapath
@@ -193,7 +206,9 @@ module fpu
   logic [4:0]  c_rd;
   logic [31:0] c_inst, c_pc;
   fp_t         c_a, c_b;
-  logic [63:0] c_a_bits, c_b_bits;
+  logic [63:0] c_a_bits, c_b_bits;     // = a_bits, b_bits while running
+  assign c_a_bits = a_bits;
+  assign c_b_bits = b_bits;
 
   // Datapath results
   fp_wide_t    wide;                   // what goes to the rounder
@@ -494,7 +509,7 @@ module fpu
       qne <= 1'b0;
       fq <= '0;
       c_op <= O_UNIMPL; c_src_dbl <= 1'b0; c_dst_dbl <= 1'b0; c_rd <= '0; c_inst <= '0; c_pc <= '0;
-      c_a <= '0; c_b <= '0; c_a_bits <= '0; c_b_bits <= '0;
+      c_a <= '0; c_b <= '0;
       wait_cnt <= '0; ds_ok <= 1'b0;
       dp_wr_addr <= '0; dp_wr_dbl <= 1'b0; dp_wr_data <= '0;
       fin_bits <= '0; fin_flags <= '0;
@@ -523,9 +538,13 @@ module fpu
           if (req_i.fpop_valid) begin
             c_op <= op; c_src_dbl <= src_dbl; c_dst_dbl <= dst_dbl; c_rd <= rd;
             c_inst <= req_i.fpop_inst; c_pc <= req_i.fpop_pc;
-            c_a <= a; c_b <= b; c_a_bits <= a_bits; c_b_bits <= b_bits;
-            ex <= S_START;
+            c_b <= u_v;
+            ex <= two_op ? S_UNPA : S_START;
           end
+        end
+        S_UNPA: begin
+          c_a <= u_v;
+          ex <= S_START;
         end
         S_START: begin
           // operands latched: start the long units, or wait for the pipeline
