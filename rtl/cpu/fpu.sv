@@ -50,8 +50,8 @@ module fpu
   // while the FPU is busy (dp_wr included), so a load and the datapath
   // never write in the same cycle (the datapath would win).
   // ---------------------------------------------------------------------
-  logic        dp_wr;                  // the datapath's write
-  logic [4:0]  dp_wr_addr;
+  logic        dp_wr;                  // the datapath's write: the latched FPop's rd and result
+  logic [4:0]  dp_wr_addr;             // (they hold until the next FPop, which waits for dp_wr)
   logic        dp_wr_dbl;
   logic [63:0] dp_wr_data;             // a single in [63:32]
 
@@ -99,7 +99,8 @@ module fpu
   logic [4:0] fsr_tem, fsr_aexc, fsr_cexc;
   logic [2:0] fsr_ftt;
   logic [1:0] fsr_fcc;
-  logic [63:0] fq;
+  logic [63:0] fq;                     // the latched FPop: frozen while qne (no FPop runs
+                                       // in fp_exception_pending or fp_exception)
   logic        qne;
 
   typedef enum logic [1:0] {FP_EXECUTE, FP_PENDING, FP_EXCEPTION} fstate_t;
@@ -238,12 +239,10 @@ module fpu
   fp_divsqrt u_ds (.clk, .rst, .start_i(ds_start), .sqrt_i(c_op == O_SQRT), .a_i(c_a), .b_i(c_b),
                    .busy_o(ds_busy), .done_o(ds_done), .r_o(ds_r));
 
-  // Multiply: 53x53, registered twice
-  logic [105:0] mul_p1, mul_p2;
-  always_ff @(posedge clk) begin
-    mul_p1 <= c_a.man * c_b.man;
-    mul_p2 <= mul_p1;
-  end
+  // Multiply: 53x53, registered (c_a and c_b hold for the whole operation:
+  // the product is settled one cycle after S_START, well before it is used)
+  logic [105:0] mul_p1;
+  always_ff @(posedge clk) mul_p1 <= c_a.man * c_b.man;
 
   // Add/sub: align to the larger exponent, 58-bit significands with the
   // leading one at 55 (three guard bits below), a sticky for what falls
@@ -394,8 +393,8 @@ module fpu
           // p = man_a * man_b in [2^104, 2^106): value = p * 2^(ea + eb - 104);
           // the top 58 bits, the rest sticky: man * 2^(ea + eb - 56) = man * 2^(exp - 55)
           wide.sign = c_a.sign ^ c_b.sign;
-          wide.man = mul_p2[105:48];
-          wide.sticky = |mul_p2[47:0];
+          wide.man = mul_p1[105:48];
+          wide.sticky = |mul_p1[47:0];
           wide.exp = c_a.exp + c_b.exp - 14'sd1;
         end
       end
@@ -499,6 +498,10 @@ module fpu
   // ---------------------------------------------------------------------
   logic [63:0] fin_bits;
   logic [4:0]  fin_flags;
+  assign dp_wr_addr = c_rd;
+  assign dp_wr_dbl  = c_dst_dbl;
+  assign dp_wr_data = fin_bits;
+  assign fq         = {c_pc, c_inst};
   logic [1:0]  wait_cnt;
   logic        ds_ok;                  // the divide/square-root unit finished
 
@@ -510,11 +513,9 @@ module fpu
       state <= FP_EXECUTE;
       fsr_rd <= '0; fsr_tem <= '0; fsr_aexc <= '0; fsr_cexc <= '0; fsr_ftt <= '0; fsr_fcc <= '0;
       qne <= 1'b0;
-      fq <= '0;
       c_op <= O_UNIMPL; c_src_dbl <= 1'b0; c_dst_dbl <= 1'b0; c_rd <= '0; c_inst <= '0; c_pc <= '0;
       c_a <= '0; c_b <= '0;
       wait_cnt <= '0; ds_ok <= 1'b0;
-      dp_wr_addr <= '0; dp_wr_dbl <= 1'b0; dp_wr_data <= '0;
       fin_bits <= '0; fin_flags <= '0;
     end else begin
       // ldfsr: everything but ver, ftt, qne and the reserved bits
@@ -564,7 +565,7 @@ module fpu
         end
         S_WAIT: begin
           // the pipeline after the operands: align, add, result select,
-          // normalise (mul_p2 is ready with the add); then S_ROUND packs.
+          // normalise (mul_p1 is ready before the add); then S_ROUND packs.
           // A divide or square root waits for its unit, then for the
           // result select and normalise registers.
           if ((c_op == O_DIV || c_op == O_SQRT) && !res_direct && !ds_ok) begin
@@ -584,14 +585,12 @@ module fpu
           ex <= S_IDLE;
           if (c_op == O_UNIMPL) begin
             fsr_ftt <= FTT_UNIMPLEMENTED;
-            fq <= {c_pc, c_inst};
             qne <= 1'b1;
             state <= FP_PENDING;
           end else if ((fin_flags & fsr_tem) != 5'd0) begin
             // an enabled exception: no result, aexc and fcc unchanged, the FQ holds the op
             fsr_ftt <= FTT_IEEE;
             fsr_cexc <= fin_flags;
-            fq <= {c_pc, c_inst};
             qne <= 1'b1;
             state <= FP_PENDING;
           end else begin
@@ -602,9 +601,6 @@ module fpu
               fsr_fcc <= res_fcc_q;
             end else begin
               dp_wr <= 1'b1;
-              dp_wr_addr <= c_rd;
-              dp_wr_dbl <= c_dst_dbl;
-              dp_wr_data <= fin_bits;
             end
           end
         end

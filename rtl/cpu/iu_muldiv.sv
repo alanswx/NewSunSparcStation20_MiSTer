@@ -42,13 +42,14 @@ module iu_muldiv (
   // Multiplier: 33x33 signed, so one multiplier serves both forms
   // ---------------------------------------------------------------------
   logic signed [32:0] ma, mb;
-  logic signed [65:0] p1, p2, p3;
-  logic [3:0] mstage;        // operands, p1, p2, p3: the product is in p3 four edges after start
+  logic signed [65:0] p1;
+  logic [3:0] mstage;        // the product is read four edges after start (ma and mb hold
+                             // until the next start, so p1 is settled long before)
 
   always_ff @(posedge clk) begin
     if (rst) begin
       mstage <= '0;
-      p1 <= '0; p2 <= '0; p3 <= '0;
+      p1 <= '0;
       ma <= '0; mb <= '0;
     end else begin
       mstage <= kill_i ? 4'b0 : {mstage[2:0], start_i & ~div_i};
@@ -57,8 +58,6 @@ module iu_muldiv (
         mb <= {signed_i & b_i[31], b_i};
       end
       p1 <= ma * mb;
-      p2 <= p1;
-      p3 <= p2;
     end
   end
 
@@ -159,13 +158,13 @@ module iu_muldiv (
       y_o = y_i;
       v_o = dovf;
     end else begin
-      r_o = p3[31:0];
-      y_o = p3[63:32];
+      r_o = p1[31:0];
+      y_o = p1[63:32];
       v_o = 1'b0;
     end
   end
 
   logic unused_ok;
-  assign unused_ok = &{1'b0, p3[65:64]};
+  assign unused_ok = &{1'b0, p1[65:64]};
 
 endmodule
