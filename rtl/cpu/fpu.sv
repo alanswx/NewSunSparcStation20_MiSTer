@@ -43,27 +43,51 @@ module fpu
 );
 
   // ---------------------------------------------------------------------
-  // Registers: 16 pairs
+  // Registers: 16 pairs, as two 16 x 32 halves (even, odd register) in
+  // MLAB with asynchronous reads, one copy per read port (the store's rd,
+  // the FPop's rs1 and rs2): in flops with 16:1 muxes they cost ~1k ALMs.
+  // One write port: the IU serialises FP instructions and holds an FP load
+  // while the FPU is busy (dp_wr included), so a load and the datapath
+  // never write in the same cycle (the datapath would win).
   // ---------------------------------------------------------------------
-  logic [63:0] regs [16];
-
   logic        dp_wr;                  // the datapath's write
   logic [4:0]  dp_wr_addr;
   logic        dp_wr_dbl;
   logic [63:0] dp_wr_data;             // a single in [63:32]
 
-  always_ff @(posedge clk) begin
-    if (req_i.wr_valid) begin
-      if (req_i.wr_dbl)          regs[req_i.wr_addr[4:1]] <= req_i.wr_data;
-      else if (req_i.wr_addr[0]) regs[req_i.wr_addr[4:1]][31:0] <= req_i.wr_data[31:0];
-      else                       regs[req_i.wr_addr[4:1]][63:32] <= req_i.wr_data[31:0];
-    end
+  logic        rf_we_hi, rf_we_lo;
+  logic [3:0]  rf_wa;
+  logic [31:0] rf_wd_hi, rf_wd_lo;
+  logic        rf_we, rf_dbl, rf_odd;
+  logic [63:0] rf_d;                   // a double, or the single in [31:0]
+  always_comb begin
     if (dp_wr) begin
-      if (dp_wr_dbl)          regs[dp_wr_addr[4:1]] <= dp_wr_data;
-      else if (dp_wr_addr[0]) regs[dp_wr_addr[4:1]][31:0] <= dp_wr_data[63:32];
-      else                    regs[dp_wr_addr[4:1]][63:32] <= dp_wr_data[63:32];
+      rf_we = 1'b1; rf_wa = dp_wr_addr[4:1]; rf_dbl = dp_wr_dbl; rf_odd = dp_wr_addr[0];
+      rf_d = dp_wr_dbl ? dp_wr_data : {32'd0, dp_wr_data[63:32]};
+    end else begin
+      rf_we = req_i.wr_valid; rf_wa = req_i.wr_addr[4:1]; rf_dbl = req_i.wr_dbl; rf_odd = req_i.wr_addr[0];
+      rf_d = req_i.wr_data;
     end
+    rf_we_hi = rf_we && (rf_dbl || !rf_odd);
+    rf_we_lo = rf_we && (rf_dbl || rf_odd);
+    rf_wd_hi = rf_dbl ? rf_d[63:32] : rf_d[31:0];
+    rf_wd_lo = rf_d[31:0];
   end
+
+  logic [3:0]  rf_ra [3];
+  logic [63:0] rf_rd [3];
+  genvar gp;
+  generate
+    for (gp = 0; gp < 3; gp++) begin : g_rf
+      (* ramstyle = "MLAB, no_rw_check" *) logic [31:0] hi [16];
+      (* ramstyle = "MLAB, no_rw_check" *) logic [31:0] lo [16];
+      always_ff @(posedge clk) begin
+        if (rf_we_hi) hi[rf_wa] <= rf_wd_hi;
+        if (rf_we_lo) lo[rf_wa] <= rf_wd_lo;
+      end
+      assign rf_rd[gp] = {hi[rf_ra[gp]], lo[rf_ra[gp]]};
+    end
+  endgenerate
 
   // ---------------------------------------------------------------------
   // FSR, the queue, the state
@@ -86,7 +110,7 @@ module fpu
     rsp_o.busy        = (ex != S_IDLE) | dp_wr;
     rsp_o.exc_pending = state == FP_PENDING;
     rsp_o.exc_state   = state == FP_EXCEPTION;
-    rsp_o.rd_data     = regs[req_i.rd_addr[4:1]];
+    rsp_o.rd_data     = rf_rd[0];
     rsp_o.fsr         = {fsr_rd, 2'b00, fsr_tem, 1'b0, 2'b00, 3'b000, fsr_ftt, qne, 1'b0, fsr_fcc, fsr_aexc, fsr_cexc};
     rsp_o.fq          = fq;
   end
@@ -146,8 +170,11 @@ module fpu
 
   // Operands: the pair, a single taken from its half into [63:32]
   logic [63:0] a_bits, b_bits, a_pair, b_pair;
-  assign a_pair = regs[rs1[4:1]];
-  assign b_pair = regs[rs2[4:1]];
+  assign rf_ra[0] = req_i.rd_addr[4:1];
+  assign rf_ra[1] = rs1[4:1];
+  assign rf_ra[2] = rs2[4:1];
+  assign a_pair = rf_rd[1];
+  assign b_pair = rf_rd[2];
   always_comb begin
     a_bits = src_dbl ? a_pair : (rs1[0] ? {a_pair[31:0], 32'd0} : {a_pair[63:32], 32'd0});
     b_bits = src_dbl ? b_pair : (rs2[0] ? {b_pair[31:0], 32'd0} : {b_pair[63:32], 32'd0});
