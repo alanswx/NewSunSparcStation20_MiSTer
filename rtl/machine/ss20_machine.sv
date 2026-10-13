@@ -174,6 +174,9 @@ module ss20_machine #(
   // ---------------------------------------------------- memory and I/O --
   mem_req_t    io_req;
   mem_rsp_t    io_rsp;
+  logic        mem_acc;               // memctl -> emc: the ECC model
+  logic [3:0]      ecc_fix_v;
+  logic [3:0][5:0] ecc_fix_bit;
   logic        mc_rd, mc_we;
   logic [7:0]  mc_bc, mc_be;
   logic [28:0] mc_addr;
@@ -203,7 +206,7 @@ module ss20_machine #(
     .io_req_o(io_req), .io_rsp_i(io_rsp),
     .ddr_wait_i(mm_wait), .ddr_burstcnt_o(mc_bc), .ddr_addr_o(mc_addr), .ddr_rd_o(mc_rd),
     .ddr_we_o(mc_we), .ddr_din_o(mc_din), .ddr_be_o(mc_be),
-    .ddr_dout_i(mm_dout), .ddr_dout_ready_i(mm_rdv), .state_o());
+    .ddr_dout_i(mm_dout), .ddr_dout_ready_i(mm_rdv), .ram_acc_o(mem_acc), .fix_v_i(ecc_fix_v), .fix_bit_i(ecc_fix_bit), .state_o());
 
   // DDR3, through two rtl/mister/ddram_arb levels: the TCX's scan-out
   // first (it must not underrun), then the memory controller (or the
@@ -272,13 +275,17 @@ module ss20_machine #(
     .s_write(dv_we), .s_writedata(dv_din), .s_byteenable(dv_be), .s_readdata(dv_dout),
     .s_readdatavalid(dv_rdv));
 
-  iob_req_t    iob_q [11];
-  iob_rsp_t    iob_r [11];
-  ss20_iobridge u_io (.clk, .rst(rst_m), .req_i(io_req), .rsp_o(io_rsp), .io_o(iob_q), .io_i(iob_r));
+  iob_req_t    iob_q [13];
+  iob_rsp_t    iob_r [13];
+  logic        mts_err, mts_to;
+  logic [35:0] mts_pa;
+  logic [2:0]  mts_siz;
+  ss20_iobridge u_io (.clk, .rst(rst_m), .req_i(io_req), .rsp_o(io_rsp), .io_o(iob_q), .io_i(iob_r),
+    .mts_err_o(mts_err), .mts_to_o(mts_to), .mts_pa_o(mts_pa), .mts_siz_o(mts_siz));
 
   // ------------------------------------------------- the system devices --
   // interrupt sources and strobes of the devices below
-  logic irq_tcx, irq_aud, irq_msi, irq_esp, irq_le, irq_fdc, fd_tc;
+  logic irq_tcx, irq_aud, irq_msi, irq_esp, irq_le, irq_fdc, irq_mem, fd_tc;
   // 0: keyboard (A) / mouse (B) ESCC, with the Sun keyboard and mouse
   // made from hps_io's PS/2 events
   logic irq_kbd, irq_ser;
@@ -392,15 +399,18 @@ module ss20_machine #(
     isrc[SI_SC] = irq_esp;
     isrc[SI_E] = irq_le;
     isrc[SI_FL] = irq_fdc;
+    isrc[SI_M] = irq_mem;
   end
   slavio_intctl #(.NCPU(NCPU)) u_intctl (
     .clk, .rst(rst_m), .bus_i(iob_q[4]), .bus_o(iob_r[4]), .src_i(isrc), .timer_cpu_i(irq_tcpu), .irl_o(irl_v));
 
-  // 5: the system registers (LEDs, AUXIO, power, system control/status)
+  // 5: the system registers (LEDs, AUXIO, power, system control/status);
+  // reset by a software reset too, which sets SWR_STAT (OBP 2.25 tells its
+  // own soft reset from a power-on by it)
   logic [15:0] leds;
   logic        aux_led;
   slavio_misc #(.CLK_HZ(CLK_HZ)) u_misc (
-    .clk, .rst(rst || !run), .rst_swr_i(rst_swr), .rst_switch_i(1'b0), .wd_i(wd_reset),
+    .clk, .rst(rst || !run || rst_swr), .rst_swr_i(rst_swr), .rst_switch_i(1'b0), .wd_i(wd_reset),
     .bus_i(iob_q[5]), .bus_o(iob_r[5]),
     .leds_o(leds), .led_o(aux_led), .fd_tc_o(fd_tc), .fd_density_i(1'b0), .power_off_o(),
     .pwr_fail_i(1'b0), .pwr_irq_o(), .diag_sw_i(1'b0),
@@ -409,14 +419,18 @@ module ss20_machine #(
 
   // 6: SBus slot F, the on-board SBus devices, by PA[23:20]: 0 the MACIO
   // ID register, 4 DMA2 (ESP and LANCE channels), 8 the ESP, C the LANCE;
-  // the rest reads 0
+  // PA[27:20] = 0x48 is the parallel port (SUNW,bpp: DMA2's P registers,
+  // at its +0x20); the rest reads 0
   iob_req_t f_q [4];
   iob_rsp_t f_r [4];
   logic [1:0] f_sel;
   logic       f_any;
+  logic       le_bad, le_bad_r;          // (below)
+  logic f_pp;
+  assign f_pp = iob_q[6].addr[27:20] == 8'h48;
   always_comb begin
     f_any = 1'b1;
-    case (iob_q[6].addr[23:20])
+    case (f_pp ? 4'h4 : iob_q[6].addr[23:20])
       4'h4:    f_sel = 2'd1;
       4'h8:    f_sel = 2'd2;
       4'hC:    f_sel = 2'd3;
@@ -424,10 +438,19 @@ module ss20_machine #(
     endcase
     for (int k = 0; k < 4; k++) begin
       f_q[k] = iob_q[6];
-      f_q[k].req = iob_q[6].req && f_sel == 2'(k);
+      f_q[k].req = iob_q[6].req && f_sel == 2'(k) && !(k == 3 && le_bad);
     end
-    iob_r[6] = f_r[f_sel];
+    if (f_pp) f_q[1].addr[5] = 1'b1;     // DMA2's P registers
+    iob_r[6] = le_bad_r ? '{ack: 1'b0, err: 1'b1, rdata: 32'd0} : f_r[f_sel];
   end
+
+  // a byte write to the LANCE's 16-bit ports is a size error: dropped,
+  // an error ack (posted: the MSI's AFSR), E_CSR's SLAVE_ERR (OBP 2.25's
+  // POST "LANCE Address/Data Port Tests")
+  assign le_bad = iob_q[6].req && iob_q[6].we && iob_q[6].addr[23:20] == 4'hC &&
+                  (iob_q[6].be == 4'b1000 || iob_q[6].be == 4'b0100 ||
+                   iob_q[6].be == 4'b0010 || iob_q[6].be == 4'b0001);
+  always_ff @(posedge clk) le_bad_r <= le_bad && !le_bad_r && !rst_m;
 
   // the MACIO ID register (the rest of page 0 reads it too)
   always_ff @(posedge clk) begin
@@ -446,7 +469,7 @@ module ss20_machine #(
     .esp_dack_o(esp_dack), .esp_ddata_o(esp_m2d), .esp_rst_o(esp_crst), .irq_esp_o(irq_esp),
     .esp_dvma_o(dvma_q[0]), .esp_dvma_i(dvma_r[0]),
     .le_req_i(le_mem), .le_rsp_o(le_mem_r), .le_dvma_o(dvma_q[1]), .le_dvma_i(dvma_r[1]),
-    .le_irq_i(le_irq), .irq_le_o(irq_le), .le_rst_o(le_rst));
+    .le_irq_i(le_irq), .le_size_err_i(le_bad_r), .irq_le_o(irq_le), .le_rst_o(le_rst));
 
   // the SCSI targets on hps_io's SD slots 0-2: disks at IDs 3 and 1, the CD at 6
   logic [31:0] esp_lba;
@@ -498,8 +521,18 @@ module ss20_machine #(
   ss20_msi u_msi (
     .clk, .rst(rst_m), .bus_i(iob_q[8]), .bus_o(iob_r[8]), .bus_mid_i(mb_mid),
     .dvma_req_i(dvma_q), .dvma_rsp_o(dvma_r), .mem_req_o(dma_req), .mem_rsp_i(dma_rsp),
-    .mts_err_i(1'b0), .mts_err_to_i(1'b0), .mts_err_pa_i(36'd0), .mts_err_siz_i(3'd0),
-    .mts_err_s_i(1'b0), .mts_err_mid_i(4'd0), .irq_err_o(irq_msi), .arb_en_o(arb_en));
+    .mts_err_i(mts_err), .mts_err_to_i(mts_to), .mts_err_pa_i(mts_pa), .mts_err_siz_i(mts_siz),
+    .mts_err_s_i(1'b1), .mts_err_mid_i(mb_mid), .irq_err_o(irq_msi), .arb_en_o(arb_en));
+
+  // 12: slot E, where a real SS20 has its DBRI: only the FCode image that
+  // names the node OBP 2.25's slot-e stub makes (DEC-4)
+  slote_fcode u_slote (.clk, .rst(rst_m), .bus_i(iob_q[12]), .bus_o(iob_r[12]));
+
+  // 11: the memory controller's registers (the SMC at 0xF_0000_0000),
+  // watching main-memory accesses for the ECC errors firmware injects
+  emc u_emc (.clk, .rst(rst_m), .bus_i(iob_q[11]), .bus_o(iob_r[11]),
+    .mem_v_i(mem_acc), .mem_req_i(mb_req), .mem_mid_i(mb_mid),
+    .fix_v_o(ecc_fix_v), .fix_bit_o(ecc_fix_bit), .irq_o(irq_mem));
 
   /* verilator lint_on PINCONNECTEMPTY */
 

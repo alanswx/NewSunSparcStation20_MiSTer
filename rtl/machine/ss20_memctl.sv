@@ -63,6 +63,9 @@ module ss20_memctl
   input  logic [63:0] ddr_dout_i,
   input  logic        ddr_dout_ready_i,
 
+  output logic        ram_acc_o,         // a main-memory access is accepted (req_i is it): the EMC's ECC model
+  input  logic [3:0]      fix_v_i,       // ... and its corrections of that read: flip data bit
+  input  logic [3:0][5:0] fix_bit_i,     //     fix_bit_i[j] of beat j when fix_v_i[j]
   output logic [2:0]  state_o            // (bring-up)
 );
 
@@ -123,6 +126,27 @@ module ss20_memctl
   logic [28:0] a_q;
   logic [2:0]  beats_left;
   logic        burst_q;
+  logic        ram_q;                     // the request is main memory (the EMC's corrections apply)
+
+  // Simulation only (+prom_wait=N): N cycles before each boot-PROM read,
+  // the access time of the real machine's byte-wide EPROM (about 0.7 us an
+  // instruction): OBP 2.25's POST times its counter/timer test by
+  // instruction loops (post-tests.md "PROCn Counter/Timer Test")
+  logic [7:0]  prom_wait, pw_cnt;
+`ifndef SYNTHESIS
+  initial begin
+    logic [7:0] n;
+    if (!$value$plusargs("prom_wait=%d", n)) n = 8'd0;
+    prom_wait = n;
+  end
+`else
+  assign prom_wait = 8'd0;
+`endif
+  // the beat a read is at (a burst's in address order), for the EMC's
+  // corrections
+  logic [1:0] beat;
+  assign beat = burst_q ? 2'(3'd4 - beats_left) : 2'd0;
+
 
   // A DDR command, once presented, is held unchanged until the port takes
   // it, whatever rst does (Avalon; a command withdrawn or changed while
@@ -137,18 +161,20 @@ module ss20_memctl
     snoop_o <= '0;
     if (rst && st != S_RD_CMD && st != S_WR_CMD) begin
       st <= S_IDLE;
-      a_q <= '0; beats_left <= '0; burst_q <= 1'b0;
+      a_q <= '0; beats_left <= '0; burst_q <= 1'b0; ram_q <= 1'b0; pw_cnt <= '0;
     end else begin
       case (st)
         S_IDLE: begin
           if (req_i.valid) begin
             a_q <= word_now;
+            ram_q <= is_ram;
             burst_q <= req_i.burst;
             if (is_ram && !req_i.write) begin
               beats_left <= req_i.burst ? 3'd4 : 3'd1;
               st <= S_RD_CMD;
             end else if (is_prom && !req_i.write) begin
               beats_left <= req_i.burst ? 3'd4 : 3'd1;
+              pw_cnt <= prom_wait;
               st <= S_RD_CMD;
             end else if (is_ram && req_i.write) begin
               wd_q <= req_i.wdata;
@@ -173,7 +199,8 @@ module ss20_memctl
             end
           end
         end
-        S_RD_CMD: if (!ddr_wait_i && owed == 4'd0) st <= rst ? S_IDLE : S_RD_DATA;   // (in reset: its beats are only counted)
+        S_RD_CMD: if (pw_cnt != 8'd0) pw_cnt <= pw_cnt - 8'd1;
+                  else if (!ddr_wait_i && owed == 4'd0) st <= rst ? S_IDLE : S_RD_DATA;   // (in reset: its beats are only counted)
         S_RD_DATA: begin
           if (is_low_empty) begin
             // the zero beats of a burst beyond the memory
@@ -182,7 +209,7 @@ module ss20_memctl
             if (beats_left == 3'd1) st <= S_GAP;
           end else if (ddr_dout_ready_i) begin
             rsp_o.ack <= 1'b1;
-            rsp_o.rdata <= ddr_dout_i;
+            rsp_o.rdata <= ddr_dout_i ^ (ram_q && fix_v_i[beat] ? 64'd1 << fix_bit_i[beat] : 64'd0);
             beats_left <= beats_left - 3'd1;
             if (beats_left == 3'd1) st <= S_GAP;
           end else if (forget) begin
@@ -212,12 +239,13 @@ module ss20_memctl
   end
 
   assign state_o = st;
+  assign ram_acc_o = st == S_IDLE && req_i.valid && is_ram && !(req_i.write && snoop_hold_i);
 
   // ---------------------------------------------------------- the ports
   always_comb begin
     ddr_burstcnt_o = burst_q ? 8'd4 : 8'd1;
     ddr_addr_o     = a_q;
-    ddr_rd_o       = st == S_RD_CMD && owed == 4'd0;   // the old read's beats first
+    ddr_rd_o       = st == S_RD_CMD && owed == 4'd0 && pw_cnt == 8'd0;   // the old read's beats first
     ddr_we_o       = st == S_WR_CMD;
     ddr_din_o      = wd_q;
     ddr_be_o       = be_q;

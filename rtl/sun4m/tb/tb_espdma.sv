@@ -66,6 +66,7 @@ module tb_espdma;
   dvma_req_t le_dvma;
   mem_rsp_t  le_mrsp;
   logic      le_irq = 1'b0, irq_le, le_rst;
+  logic      le_serr = 1'b0;
 
   logic [2:0]  img_mounted = 3'b000;
   logic [63:0] img_size = '0;
@@ -96,7 +97,7 @@ module tb_espdma;
     .esp_dack_o(dack), .esp_ddata_o(ddi), .esp_rst_o(esp_rst), .irq_esp_o(irq_esp),
     .esp_dvma_o(esp_dvma), .esp_dvma_i(esp_mrsp),
     .le_req_i(le_req), .le_rsp_o(le_rsp), .le_dvma_o(le_dvma), .le_dvma_i(le_mrsp),
-    .le_irq_i(le_irq), .irq_le_o(irq_le), .le_rst_o(le_rst));
+    .le_irq_i(le_irq), .le_size_err_i(le_serr), .irq_le_o(irq_le), .le_rst_o(le_rst));
 
   // ---------------------------------------------------------------------
   // The DVMA memory behind espdma: 64 KB at DVMA 0xFF00_0000; anything
@@ -287,6 +288,7 @@ module tb_espdma;
   // The CPU: iobus accesses to the two slaves
   // ---------------------------------------------------------------------
   int iob_to = 0;
+  bit iob_err;                            // the last access had an error ack
   task automatic iob(input bit to_dma, input bit we, input logic [27:0] a, input logic [3:0] be,
                      input logic [31:0] wd, output logic [31:0] rd);
     iob_req_t r;
@@ -297,7 +299,8 @@ module tb_espdma;
     rd = 32'hDEADBEEF;
     forever begin
       @(posedge clk); #1;
-      if (to_dma ? db_rsp.ack : eb_rsp.ack) begin
+      iob_err = to_dma ? db_rsp.err : eb_rsp.err;
+      if (to_dma ? db_rsp.ack || db_rsp.err : eb_rsp.ack || eb_rsp.err) begin
         rd = to_dma ? db_rsp.rdata : eb_rsp.rdata;
         break;
       end
@@ -813,6 +816,41 @@ module tb_espdma;
     check(le_rst, "E_RESET drives le_rst_o");
     dma_w(16, 0);
     dma_w(28, 32'hFF00_0000);
+
+    // SLAVE_ERR: a byte write to a word-only register is dropped with an
+    // error ack (OBP 2.25's POST, DMA2/MACIO register tests)
+    begin
+      logic [31:0] d;
+      dma_w(0, 32'h80); dma_w(0, 0);
+      iob(1'b1, 1'b1, 28'd0, 4'b1000, 32'h8000_0000, d);
+      check(iob_err, "D_CSR byte write: error ack");
+      dma_r(0, v);
+      check32(v & ~32'hC, 32'hA000_0040, "D_CSR: dropped, SLAVE_ERR");
+      dma_w(0, 32'h40);
+      dma_r(0, v);
+      check32(v & ~32'hC, 32'hA000_0000, "SLAVE_ERR: write 1 clears");
+      iob(1'b1, 1'b1, 28'd4, 4'b0001, 32'h0000_0055, d);
+      check(iob_err, "D_ADDR byte write: error ack");
+      dma_r(0, v);
+      check32(v & ~32'hC, 32'hA000_0040, "D_ADDR byte write: SLAVE_ERR, A_LOADED clear");
+      dma_w(0, 32'h80);
+      dma_r(0, v);
+      check32(v & ~32'hC, 32'hA000_0080, "RESET clears SLAVE_ERR");
+      dma_w(0, 0);
+      iob(1'b1, 1'b1, 28'd16, 4'b1000, 32'h0, d);
+      check(iob_err, "E_CSR byte write: error ack");
+      dma_r(16, v);
+      check32(v & ~32'hC, 32'hA000_0040, "E_CSR: SLAVE_ERR");
+      dma_w(16, 32'h40);
+      dma_r(16, v);
+      check32(v & ~32'hC, 32'hA000_0000, "E_CSR SLAVE_ERR cleared");
+      le_serr = 1'b1; cycles(1); le_serr = 1'b0; cycles(1);
+      dma_r(16, v);
+      check32(v & ~32'hC, 32'hA000_0040, "a LANCE size error sets E_CSR SLAVE_ERR");
+      dma_w(16, 32'h40);
+      iob(1'b1, 1'b1, 28'd28, 4'b1000, 32'hFF00_0000, d);
+      check(!iob_err, "E_BASE_ADDR takes a byte");
+    end
 
     check32(32'(m_proto), 0, "DVMA protocol: single beats, fields held to the ack");
     check32(32'(iob_to), 0, "iobus: every access answered");

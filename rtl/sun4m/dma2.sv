@@ -14,12 +14,15 @@
 //   docs/VERILOG-PLAN.md §6 DMA-5; docs/legacy/impl-gaps/chipset.md §5
 //   (DMA-1 to DMA-6).
 //
-// Registers (32-bit; byte writes merge by byte enables):
+// Registers (32-bit; byte writes merge by byte enables, except to D_CSR,
+// D_ADDR, D_BCNT and E_CSR, which take only whole words: a narrower write
+// is dropped with an error ack and sets the channel's SLAVE_ERR -- the
+// LANCE's own wrong-size writes, le_size_err_i, set E_CSR's):
 //   +00 D_CSR   [31:28] DEV_ID 0xA, 27 NA_LOADED (0), 26 A_LOADED,
 //               25 DMA_ON, 24 EN_NEXT, 23 TCI_DIS, 22 FASTER, 21 TWO_CYCLE,
 //               20 DIAG, 19:18 BURST_SIZE, 17 DSBL_SCSI_DRN, 16 DSBL_CSR_DRN,
 //               14 TC (W1C with EN_NEXT), 13 EN_CNT, 9 EN_DMA, 8 WRITE (to
-//               memory), 7 RESET (held: esp_rst_o), 6 SLAVE_ERR (0),
+//               memory), 7 RESET (held: esp_rst_o), 6 SLAVE_ERR (W1C),
 //               5 INVALIDATE (W), 4 INT_EN, 3:2 DRAINING, 1 ERR_PEND,
 //               0 INT_PEND (the ESP's interrupt, or TC unless TCI_DIS)
 //   +04 D_ADDR  the address counter: the next byte the ESP moves
@@ -27,13 +30,17 @@
 //   +0C D_TST   reads 0
 //   +10 E_CSR   [31:28] 0xA, 22 TP_AUI, 21 LOOP_TEST, 20, 19:18 BURST,
 //               17, 16, 15 ILACC, 12, 11 (stored), 10 DRAIN (reads 0),
-//               7 RESET (held: le_rst_o), 5 INVALIDATE (W), 4 INT_EN,
+//               7 RESET (held: le_rst_o), 6 SLAVE_ERR (W1C), 5 INVALIDATE (W), 4 INT_EN,
 //               1 ERR_PEND, 0 INT_PEND (the LANCE's INTR, ungated: DMA-3)
 //   +14 E_TST_CSR [23:0] the LANCE's last address
 //   +18 E_VLD   reads 0 (no E-cache)
 //   +1C E_BASE_ADDR [31:24], 0xFF after reset (DMA-2)
 //   +20 P_CSR, +24 P_ADDR, +28 P_BCNT, +2C P_TST, +30 HCR|OCR,
-//       +34 DR|TCR|OR|IR, +38 ICR: the parallel port, a stub: the control
+//       +34 DR|TCR|OR|IR, +38 ICR (the integrator also maps them at the
+//       parallel port's own slot-F offset 0x480_0000, +0 for +20 here):
+//       the parallel port, a stub: OCR 0x200A and TCR.DIR after reset
+//       (P_CSR RESET), OCR.EN_DIAG loops OR back to IR and lets ACK/BUSY
+//       be written in TCR (the POST's PPORT tests); the control
 //       bits are stored and read back, DEV_ID 0xA, no transfers, no
 //       interrupt, the printer lines idle (TCR's BUSY/ACK, IR read 0).
 //
@@ -60,7 +67,7 @@
 //    channel until INVALIDATE or RESET; a buffer it could not write is
 //    dropped then.
 //  - Not modelled: EN_NEXT's next-address/count registers (a D_ADDR write
-//    always loads D_ADDR), SLAVE_ERR, the transfer rate bits.
+//    always loads D_ADDR), the transfer rate bits.
 //
 // The LANCE channel: the LANCE's requests (le_req_i, its 24-bit address
 // in va[23:0]) pass through to le_dvma_o with va[31:24] = E_BASE_ADDR;
@@ -99,6 +106,7 @@ module dma2
   output dvma_req_t le_dvma_o,
   input  mem_rsp_t  le_dvma_i,
   input  logic      le_irq_i,
+  input  logic      le_size_err_i,       // pulse: a wrong-size write to the LANCE (E_CSR SLAVE_ERR)
   output logic      irq_le_o,
   output logic      le_rst_o
 );
@@ -118,6 +126,11 @@ module dma2
   logic       drained;
   wire        access  = req_new && (!dwr || drained);
   wire        wr_wait = req_new && dwr && !drained;
+  // a write of less than a word to a word-only register (the CSRs, D_ADDR,
+  // D_BCNT): dropped, SLAVE_ERR set in the channel's CSR, and an error ack
+  // (the MSI's write buffer reports it: AFSR, level 15). OBP 2.25's POST
+  // checks this with byte stores ("DMA2/MACIO ... Reg. Test")
+  wire        size_bad = bus_i.we && bus_i.be != 4'hF && (ra <= 4'd2 || ra == 4'd4);
 
   function automatic logic [31:0] merge(input logic [31:0] old, input logic [31:0] nw,
                                         input logic [31:0] m);
@@ -135,6 +148,7 @@ module dma2
   logic [31:0] daddr;
   logic [23:0] dbcnt;
   logic        d_err, d_tc, a_loaded;
+  logic        d_serr, e_serr;            // SLAVE_ERR (bit 6) of D_CSR, E_CSR
 
   wire d_int_en  = d_rw[4];
   wire d_reset   = d_rw[7];
@@ -174,7 +188,7 @@ module dma2
   assign esp_dvma_o = wq;
 
   wire [31:0] d_csr_rd = {4'hA, 1'b0, a_loaded, a_loaded && d_en_dma && !d_err,
-                          d_rw[24:16], 1'b0, d_tc, d_rw[13:7], 2'b00,
+                          d_rw[24:16], 1'b0, d_tc, d_rw[13:7], d_serr, 1'b0,
                           d_rw[4], {2{draining}}, d_err, int_pend};
 
   // ---------------------------------------------------------------------
@@ -193,7 +207,7 @@ module dma2
   assign irq_le_o = e_rw[4] && (le_irq_i || e_err);
   assign le_rst_o = e_rw[7];
 
-  wire [31:0] e_csr_rd = {4'hA, e_rw[27:2], e_err, le_irq_i};
+  wire [31:0] e_csr_rd = {4'hA, e_rw[27:7], e_serr, e_rw[5:2], e_err, le_irq_i};
 
   // ---------------------------------------------------------------------
   // The parallel port stub
@@ -202,6 +216,9 @@ module dma2
   logic [23:0] pbcnt;
   logic [15:0] p_hcr, p_ocr, p_icr;
   logic [7:0]  p_dr, p_tcr, p_or;
+  // IR: the printer's status lines, idle; with OCR.EN_DIAG (bit 10) the
+  // diagnostic loopback returns OR's INIT/AFXN/SLCT_IN (2:0) there
+  wire  [7:0]  p_ir = p_ocr[10] ? {5'd0, p_or[2:0]} : 8'h00;
 
   // ---------------------------------------------------------------------
   // Reads
@@ -219,7 +236,7 @@ module dma2
       4'h9:    rdata = paddr;
       4'hA:    rdata = {8'h00, pbcnt};
       4'hC:    rdata = {p_hcr, p_ocr};
-      4'hD:    rdata = {p_dr, p_tcr, p_or, 8'h00};
+      4'hD:    rdata = {p_dr, p_tcr, p_or, p_ir};
       4'hE:    rdata = {p_icr, 16'h0};
       default: rdata = 32'h0;
     endcase
@@ -250,20 +267,22 @@ module dma2
       wq       <= DVMA_REQ_IDLE;
       e_rw     <= 32'h0;
       e_err    <= 1'b0;
+      d_serr   <= 1'b0;
+      e_serr   <= 1'b0;
       ebase    <= 8'hFF;
       e_addr   <= 24'h0;
       p_rw     <= 32'h0;
       paddr    <= 32'h0;
       pbcnt    <= 24'h0;
       p_hcr    <= 16'h0;
-      p_ocr    <= 16'h0;
+      p_ocr    <= 16'h200A;
       p_icr    <= 16'h0;
       p_dr     <= 8'h00;
-      p_tcr    <= 8'h00;
+      p_tcr    <= 8'h08;
       p_or     <= 8'h00;
     end else begin
-      bus_o.ack   <= access;
-      bus_o.err   <= 1'b0;
+      bus_o.ack   <= access && !size_bad;
+      bus_o.err   <= access && size_bad;
       bus_o.rdata <= rdata;
 
       // ---------------------------------------------------------------
@@ -323,7 +342,24 @@ module dma2
 
       // ---------------------------------------------------------------
       // Register writes
-      if (access && bus_i.we) begin
+      // the parallel port's RESET (P_CSR bit 7, held) resets its stub
+      if (p_rw[7]) begin
+        p_hcr <= 16'h0; p_ocr <= 16'h200A; p_icr <= 16'h0;
+        p_tcr <= 8'h08; p_or <= 8'h00;
+      end
+
+      // SLAVE_ERR: set by a wrong-size write, cleared by writing 1 to it
+      // or by RESET
+      if (access && size_bad) begin
+        if (ra == 4'd4) e_serr <= 1'b1; else d_serr <= 1'b1;
+      end
+      if (le_size_err_i) e_serr <= 1'b1;
+      if (access && bus_i.we && !size_bad && ra == 4'd0 && wd[6]) d_serr <= 1'b0;
+      if (access && bus_i.we && !size_bad && ra == 4'd4 && wd[6]) e_serr <= 1'b0;
+      if (d_reset) d_serr <= 1'b0;
+      if (e_rw[7]) e_serr <= 1'b0;
+
+      if (access && bus_i.we && !size_bad) begin
         case (ra)
           4'h0: begin
             d_rw <= merge(d_rw, wd, bm) & D_RW;
@@ -358,11 +394,13 @@ module dma2
           end
           4'hD: begin
             if (bus_i.be[3]) p_dr  <= wd[31:24];
-            if (bus_i.be[2]) p_tcr <= wd[23:16] & 8'h09;   // DS, DIR
+            // DS, DIR; ACK and BUSY too in the diagnostic loopback
+            if (bus_i.be[2]) p_tcr <= wd[23:16] & (p_ocr[10] ? 8'h0F : 8'h09);
             if (bus_i.be[1]) p_or  <= wd[15:8];
           end
           4'hE: begin
-            if (bus_i.be[3]) p_icr[15:8] <= wd[31:24];
+            // the enables; the status bits (15:10) are W1C and never set
+            if (bus_i.be[3]) p_icr[15:8] <= wd[31:24] & 8'h03;
             if (bus_i.be[2]) p_icr[7:0]  <= wd[23:16];
           end
           default: ;

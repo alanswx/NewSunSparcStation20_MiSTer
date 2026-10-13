@@ -79,6 +79,9 @@ module tb_slavio_timer;
     // ---- reset state (§12, NCR: all count and limit registers 0) ----
     bus_read(SYS + LIMIT, v);  check32(v, 32'h0, "sys limit after reset");
     bus_read(SYS + CFG, v);    check32(v, 32'h0, "config after reset");
+    bus_write(SYS + CFG, 32'hFFFF_FFFF);
+    bus_read(SYS + CFG, v);    check32(v, 32'hF, "config: four bits whatever NCPU (POST)");
+    bus_write(SYS + CFG, 32'h0);
     bus_read(CPU0 + RUN, v);   check32(v, 32'h0, "cpu0 run after reset");
     check(irq_sys == 0 && irq_cpu == '0, "no interrupts after reset");
 

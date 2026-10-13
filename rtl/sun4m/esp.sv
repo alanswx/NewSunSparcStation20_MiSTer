@@ -59,7 +59,8 @@
 //    message); otherwise it waits for the target's next REQ and gives
 //    Bus Service (the esp driver's SDTR reply, a byte at a time). ICCS
 //    drops bsy after a COMMAND COMPLETE, so scsi_targets is free even when
-//    no MESSAGE ACCEPTED follows (modes 0 and 2);
+//    no MESSAGE ACCEPTED follows (modes 0 and 2); the phase still reads
+//    MESSAGE IN until then, as the chip's (OBP 2.25 relies on it);
 //  - scsi_targets has no BSY of its own: the ESP knows the target leaves
 //    the bus after COMMAND COMPLETE/DISCONNECT in (above) and after an
 //    ABORT or BUS DEVICE RESET it sent (Disconnected, bsy dropped);
@@ -235,6 +236,15 @@ module esp
   logic unused_ok;
   assign unused_ok = &{1'b0, bus_i.addr[IOB_AW-1:6], bus_i.addr[1:0], bus_i.pair, tgt_pc};
 
+  // The phase lines: the target's while it holds the bus. After the
+  // message that ends the nexus (ICCS's COMMAND COMPLETE) the chip still
+  // holds ACK, so the phase reads MESSAGE IN until MESSAGE ACCEPTED, even
+  // though scsi_targets has already left (ESP-8): OBP 2.25's esp driver
+  // reads the phase after ICCS and answers MESSAGE IN with MESSAGE
+  // ACCEPTED (with 0 it started a data transfer and waited forever).
+  logic [2:0] st_phase;
+  assign st_phase = bsy ? tgt_phase : (conn && nexus_end) ? PH_MIN : 3'b000;
+
   logic [7:0] rbyte;
   always_comb begin
     case (ra)
@@ -242,7 +252,7 @@ module esp
       4'h1:    rbyte = tc[15:8];
       4'h2:    rbyte = f_head;
       4'h3:    rbyte = cmd_r;
-      4'h4:    rbyte = {int_vis, stat_ge, 1'b0, stat_tc, 1'b0, bsy ? tgt_phase : 3'b000};
+      4'h4:    rbyte = {int_vis, stat_ge, 1'b0, stat_tc, 1'b0, st_phase};
       4'h5:    rbyte = hold ? 8'h00 : istat;
       4'h6:    rbyte = {5'd0, seq};
       4'h7:    rbyte = {seq, f_cnt};

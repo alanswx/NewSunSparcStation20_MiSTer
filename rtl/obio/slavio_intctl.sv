@@ -34,8 +34,9 @@
 // sets the level-15 bit of every processor (a broadcast); each processor
 // clears its own copy. The mask stops the broadcast, not the pending bit.
 //
-// Left out: the VME interrupts (bits 6:0) and the reserved bits read as 0
-// and cannot be masked (an SS20 has no VMEbus).
+// Left out: the VME interrupts (bits 6:0: an SS20 has no VMEbus) and the
+// reserved bits read as 0 in the pending register; the VME mask bits are
+// kept (the POST writes and reads them), the reserved ones read 0.
 
 module slavio_intctl
   import iobus_pkg::*;
@@ -86,18 +87,22 @@ module slavio_intctl
   // ---------------------------------------------------------------------
   logic [31:0]   pending;       // the sources, as presented
   logic [31:0]   mask;          // Interrupt Target Mask, MA at 31
+  // the mask bits that exist: MA, the level-15 sources, bits 22:0 (the VME
+  // ones too, though nothing drives them: OBP 2.25's POST "System Interrupt
+  // Regs Tests" sets and reads back 0xF87FFFFF); bits 26:23 read 0
+  localparam logic [31:0] MASK_BITS = 32'hF87F_FFFF;
   logic [TW-1:0] target;
 
   assign pending = src_i & SI_IMPLEMENTED;
 
   always_ff @(posedge clk) begin
     if (rst) begin
-      mask   <= SI_IMPLEMENTED | (32'd1 << SI_MA);
+      mask   <= MASK_BITS;
       target <= '0;
     end else if (access && bus_i.we && is_sys) begin
       case (word)
-        3'd2: mask <= mask & ~(bus_i.wdata & (SI_IMPLEMENTED | (32'd1 << SI_MA)));
-        3'd3: mask <= mask |  (bus_i.wdata & (SI_IMPLEMENTED | (32'd1 << SI_MA)));
+        3'd2: mask <= mask & ~(bus_i.wdata & MASK_BITS);
+        3'd3: mask <= mask |  (bus_i.wdata & MASK_BITS);
         3'd4: target <= bus_i.wdata[TW-1:0];
         default: ;
       endcase
