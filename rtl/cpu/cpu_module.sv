@@ -132,6 +132,15 @@ module cpu_module
   assign de = mcntl[MC_DE] && cache_en_i;
   assign nf = mcntl[MC_NF];
 
+  // MCNTL.SE (snoop enable) gates the snooping of the other processors'
+  // writes (t_smp_nosnoop, C-4); DVMA's writes (MID 0) and this module's
+  // own are always snooped, so DMA stays coherent whatever the PROM sets
+  mem_pkg::snoop_t snoop_m;
+  always_comb begin
+    snoop_m = snoop_i;
+    if (!mcntl[MC_SE] && snoop_i.mid != mid_i && snoop_i.mid != 4'd0) snoop_m.valid = 1'b0;
+  end
+
   // ---------------------------------------------------------------------
   // The caches
   // ---------------------------------------------------------------------
@@ -155,7 +164,7 @@ module cpu_module
     .clk, .rst, .enable_i(ie), .mid_i,
     .req_i(ic_req), .we_i(1'b0), .atomic_i(1'b0), .cacheable_i(ic_cacheable), .pa_i(ic_pa), .idx_i(ic_idx), .be_i(8'hFF), .wdata_i(64'd0),
     .taken_o(ic_taken), .done_o(ic_done), .rdata_o(ic_rdata), .err_o(ic_err),
-    .inval_i(ic_inval), .inval_line_i(inval_line), .snoop_i, .snoop_hold_o(ic_hold),
+    .inval_i(ic_inval), .inval_line_i(inval_line), .snoop_i(snoop_m), .snoop_hold_o(ic_hold),
     .flash_v_i(ic_flash_v), .flash_l_i(ic_flash_l), .flash_busy_o(ic_flash_busy),
     .diag_req_i(ic_dg_req), .diag_we_i(dmr.write), .diag_tag_i(!dmr.asi[0]), .diag_va_i(dmr.va), .diag_wdata_i(diag_wdata),
     .diag_done_o(ic_dg_done), .diag_rdata_o(ic_dg_rdata),
@@ -183,7 +192,7 @@ module cpu_module
     .clk, .rst, .enable_i(de), .mid_i,
     .req_i(dc_req), .we_i(dc_we), .atomic_i(dc_atomic), .cacheable_i(dc_cacheable), .pa_i(dc_pa), .idx_i(dc_idx), .be_i(dc_be), .wdata_i(dc_wdata),
     .taken_o(dc_taken), .done_o(dc_done), .rdata_o(dc_rdata), .err_o(dc_err),
-    .inval_i(dc_inval_any), .inval_line_i(dc_inval_line), .snoop_i, .snoop_hold_o(dc_hold),
+    .inval_i(dc_inval_any), .inval_line_i(dc_inval_line), .snoop_i(snoop_m), .snoop_hold_o(dc_hold),
     .flash_v_i(dc_flash_v), .flash_l_i(dc_flash_l), .flash_busy_o(dc_flash_busy),
     .diag_req_i(dc_dg_req), .diag_we_i(dmr.write), .diag_tag_i(!dmr.asi[0]), .diag_va_i(dmr.va), .diag_wdata_i(diag_wdata),
     .diag_done_o(dc_dg_done), .diag_rdata_o(dc_dg_rdata),
