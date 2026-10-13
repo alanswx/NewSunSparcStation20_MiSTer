@@ -21,7 +21,16 @@
 #  define KBD_CTRL      0x71000004
 #endif
 #define KBD_DATA        (KBD_CTRL + 2)
-#define POLLS_1S        1500000         /* about a second of polling */
+#if defined(TARGET_SS20)
+/* The waits are timed on the system counter (pa 0xf_f131_0004, 500 ns
+ * ticks in bits 30:9, free-running from reset with limit 0), not by
+ * counting polls: this ROM runs in boot mode, whose PROM fetches run at
+ * the real EPROM's pace, so a poll count is no measure of time. */
+#  define SYS_CTR       0xf1310004
+#  define POLLS_1S      2000000         /* ticks in a second */
+#else
+#  define POLLS_1S      1500000         /* about a second of polling */
+#endif
 
 /* write keyboard channel register %o0 with %o1 */
 kwr:    set KBD_CTRL, %o2
@@ -29,7 +38,31 @@ kwr:    set KBD_CTRL, %o2
         retl
         stba %o1, [%o2] IO_ASI
 
-/* %o0 = the next byte from the keyboard, or -1 after %o0 polls */
+/* %o0 = the next byte from the keyboard, or -1 after %o0 polls (SS20:
+ * %o0 counter ticks) */
+#if defined(TARGET_SS20)
+kget:   set KBD_CTRL, %o2
+        set SYS_CTR, %o3
+        lda [%o3] IO_ASI, %o4           /* the count at the last poll */
+1:      lduba [%o2] IO_ASI, %o1         /* RR0 */
+        andcc %o1, 1, %g0
+        bne 2f
+        nop
+        lda [%o3] IO_ASI, %o5
+        sub %o5, %o4, %o1               /* ticks since the last poll */
+        mov %o5, %o4
+        srl %o1, 9, %o1
+        set 0x3fffff, %o5               /* (the 22-bit count wraps) */
+        and %o1, %o5, %o1
+        subcc %o0, %o1, %o0
+        bg 1b
+        nop
+        retl
+        mov -1, %o0
+2:      set KBD_DATA, %o2
+        retl
+        lduba [%o2] IO_ASI, %o0
+#else
 kget:   set KBD_CTRL, %o2
 1:      lduba [%o2] IO_ASI, %o1         /* RR0 */
         andcc %o1, 1, %g0
@@ -42,8 +75,9 @@ kget:   set KBD_CTRL, %o2
 2:      set KBD_DATA, %o2
         retl
         lduba [%o2] IO_ASI, %o0
+#endif
 
-/* print the bytes received until %i0 polls pass with none, at most %i1
+/* print the bytes received until %i0 polls (SS20: ticks) pass with none, at most %i1
  * bytes */
 kdump:  save %sp, -96, %sp
         clr %l0                         /* bytes printed */
@@ -153,8 +187,8 @@ BEGIN(t_kbd_dump, "kbd: the keys typed, as Sun codes, then the reset reply")
         set KBD_DATA, %o2
         mov 1, %o1
         stba %o1, [%o2] IO_ASI
-        set POLLS_1S, %o0
-        call kdump
+        set 10 * POLLS_1S, %o0          /* the reply, then the keys' release */
+        call kdump                      /* (hwtest holds them 6 s) */
         mov 16, %o1
 END
 
