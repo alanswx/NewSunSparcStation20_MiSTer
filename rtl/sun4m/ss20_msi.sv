@@ -256,16 +256,16 @@ module ss20_msi
   logic [23:0]     hit_ppn;
   assign hit_vec = match & v_q;
   assign hit     = |hit_vec;
-  // (two valid entries with the same tag, which only diagnostic writes
-  // can make, give the lower one's PPN)
+  // The PPN's RAM address: its own comparators on the DVMA address (the
+  // shared ones see the bus first, a long path through the interconnect,
+  // and the RAM read follows). Two valid entries with the same tag, which
+  // only diagnostic writes can make, give the lower one's PPN.
   always_comb begin
     hit_w   = 1'b0;
     hit_idx = '0;
+    for (int i = 0; i < NTLB; i++) hit_w = hit_w | (hit_vec[i] & w_q[i]);
     for (int i = NTLB - 1; i >= 0; i--)
-      if (hit_vec[i]) begin
-        hit_w   = hit_w | w_q[i];
-        hit_idx = 4'(i);
-      end
+      if (v_q[i] && tag_q[i] == creq.va[30:12]) hit_idx = 4'(i);
   end
   assign pd_hit  = pd_hit_m[hit_idx];
   assign pd_diag = pd_diag_m[idx];
