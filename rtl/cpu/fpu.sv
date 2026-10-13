@@ -238,7 +238,9 @@ module fpu
   logic [4:0]  res_flags_q;
   logic        res_direct_q, res_is_cmp_q;
   logic [1:0]  res_fcc_q;
+  logic     rnd_busy;
   fp_round u_round (.clk, .v_i(wide_q), .dbl_i(c_dst_dbl), .rd_i(fsr_rd), .uf_trap_i(fsr_tem[FX_UF]),
+                    .hold_i(ex == S_ROUND), .busy_o(rnd_busy),
                     .bits_o(rnd_bits), .flags_o(rnd_flags));
 
   // Divide / square root
@@ -595,9 +597,12 @@ module fpu
           end
         end
         S_ROUND: begin
-          ex <= S_DONE;
-          fin_bits <= res_direct_q ? res_bits_q : rnd_bits;
-          fin_flags <= res_direct_q ? res_flags_q : (rnd_flags | res_flags_q);
+          // (a tiny result: the rounder denormalises it first)
+          if (res_direct_q || !rnd_busy) begin
+            ex <= S_DONE;
+            fin_bits <= res_direct_q ? res_bits_q : rnd_bits;
+            fin_flags <= res_direct_q ? res_flags_q : (rnd_flags | res_flags_q);
+          end
         end
         S_DONE: begin
           ex <= S_IDLE;
