@@ -32,7 +32,9 @@
 // goes down just before that key and comes up with Right Alt; nothing is
 // sent for Right Alt alone, nor for Right Alt while an L-key is held
 // (Stop-A with Stop and A down is the abort sequence, with no AltGraph
-// between). Pause arrives from hps_io as the extended 77 (or 7E, Ctrl+Break);
+// between). Pause arrives from hps_io as the extended 77 (or 7E, Ctrl+Break),
+// a make only (PS/2 has no break for it, and Main sends none: the board's
+// kbd test saw Pause stay held): its break is made here, after the make;
 // Print Screen as the extended 7C (the extended 12 "fake shift" is
 // dropped); the Menu key is Compose, the Windows keys the Meta diamonds.
 //
@@ -237,6 +239,7 @@ module sun_kbd #(
   // The key events
   // ---------------------------------------------------------------------
   logic        tog_q;
+  logic        pause_brk;                // a Pause make was taken: its break follows
   logic        ev_pend, ev_ext, ev_make;
   logic [7:0]  ev_code;
 
@@ -299,6 +302,7 @@ module sun_kbd #(
     click_o <= 1'b0;
     if (rst) begin
       tog_q      <= ps2_key_i[10];
+      pause_brk  <= 1'b0;
       ev_pend    <= 1'b0;
       ev_ext     <= 1'b0;
       ev_make    <= 1'b0;
@@ -320,11 +324,20 @@ module sun_kbd #(
       // capture a PS/2 event (one pending; a second before the first is
       // decoded is dropped -- hps_io events are milliseconds apart)
       tog_q <= ps2_key_i[10];
-      if (ps2_key_i[10] != tog_q && !ev_pend && !ev_busy) begin
+      if (pause_brk && !ev_pend && !ev_busy) begin
+        pause_brk <= 1'b0;
+        ev_pend <= 1'b1;
+        ev_ext  <= 1'b1;
+        ev_make <= 1'b0;
+        ev_code <= 8'h77;
+      end else if (ps2_key_i[10] != tog_q && !ev_pend && !ev_busy &&
+                   !(ps2_key_i[8] && (ps2_key_i[7:0] == 8'h77 || ps2_key_i[7:0] == 8'h7E) && !ps2_key_i[9])) begin
         ev_pend <= 1'b1;
         ev_ext  <= ps2_key_i[8];
         ev_make <= ps2_key_i[9];
         ev_code <= ps2_key_i[7:0];
+        if (ps2_key_i[8] && (ps2_key_i[7:0] == 8'h77 || ps2_key_i[7:0] == 8'h7E) && ps2_key_i[9])
+          pause_brk <= 1'b1;
       end
 
       // decode when the queue has room and no reply is being built

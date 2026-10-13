@@ -191,8 +191,10 @@ module tb_sun_kbd;
     expect_bytes("F2 plain again", "06 86 7F");
 
     // Pause, Print Screen (the fake shift is ignored)
-    key(1'b1, 8'h77);
-    expect_bytes("Pause", "15 95 7F");
+    ps2(1'b1, 1'b1, 8'h77);                 // a make only, as Main sends it
+    expect_bytes("Pause: make, then its break made here", "15 95 7F");
+    key(1'b1, 8'h77);                       // a release, if one came, is ignored
+    expect_bytes("Pause with a release", "15 95 7F");
     ps2(1'b1, 1'b1, 8'h12);
     ps2(1'b1, 1'b1, 8'h7C);
     ps2(1'b1, 1'b0, 8'h7C);
