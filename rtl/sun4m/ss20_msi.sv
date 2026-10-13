@@ -177,21 +177,23 @@ module ss20_msi
   assign w_aer   = wr & rd_hit_ok & (word == 12'h402);
   assign w_sbcfg = wr & rd_hit_ok & (word[11:2] == 10'h101);
 
-  // The tag comparators are shared by the translation, the address flush
-  // and the diagnostic comparator; the bus has them first.
-  logic        bus_cmp;
+  // Two sets of tag comparators: the bus's (the address flush and the
+  // diagnostic comparator) and the translation's, so that the translation
+  // does not wait on (or sit at the end of) the bus's long path through
+  // the interconnect.
   logic [18:0] cmp_va;
-  logic [NTLB-1:0] match;
+  logic [NTLB-1:0] match, dv_match;
   logic [PW-1:0] cur_q;
   dvma_req_t   creq;
 
   assign creq    = dvma_req_i[cur_q];
-  assign bus_cmp = access & rd_hit_ok & ((word == 12'h006) | (word == 12'h054));
-  assign cmp_va  = (access & (word == 12'h006)) ? bus_i.wdata[30:12] :
-                   (access & (word == 12'h054)) ? diag_va_q : creq.va[30:12];
+  assign cmp_va  = (word == 12'h006) ? bus_i.wdata[30:12] : diag_va_q;
 
   always_comb
-    for (int i = 0; i < NTLB; i++) match[i] = (tag_q[i] == cmp_va);
+    for (int i = 0; i < NTLB; i++) begin
+      match[i]    = tag_q[i] == cmp_va;
+      dv_match[i] = tag_q[i] == creq.va[30:12];
+    end
 
   // ---------------------------------------------------------------------
   // Read data
@@ -254,18 +256,17 @@ module ss20_msi
   logic [NTLB-1:0] hit_vec;
   logic            hit, hit_w;
   logic [23:0]     hit_ppn;
-  assign hit_vec = match & v_q;
+  assign hit_vec = dv_match & v_q;
   assign hit     = |hit_vec;
-  // The PPN's RAM address: its own comparators on the DVMA address (the
-  // shared ones see the bus first, a long path through the interconnect,
-  // and the RAM read follows). Two valid entries with the same tag, which
-  // only diagnostic writes can make, give the lower one's PPN.
+  // The PPN's RAM address: the hit's index. Two valid entries with the
+  // same tag, which only diagnostic writes can make, give the lower one's
+  // PPN.
   always_comb begin
     hit_w   = 1'b0;
     hit_idx = '0;
     for (int i = 0; i < NTLB; i++) hit_w = hit_w | (hit_vec[i] & w_q[i]);
     for (int i = NTLB - 1; i >= 0; i--)
-      if (v_q[i] && tag_q[i] == creq.va[30:12]) hit_idx = 4'(i);
+      if (hit_vec[i]) hit_idx = 4'(i);
   end
   assign pd_hit  = pd_hit_m[hit_idx];
   assign pd_diag = pd_diag_m[idx];
@@ -321,15 +322,13 @@ module ss20_msi
             st_q <= S_ACC;
           end else if (!in_range) begin
             st_q <= S_FAULT;
-          end else if (!bus_cmp) begin
-            if (hit) begin
-              pa_q <= {hit_ppn, creq.va[11:0]};
-              st_q <= (creq.write & ~hit_w) ? S_FAULT : S_ACC;
-            end else begin
-              pte_pa_q <= pte_pa;
-              stale_q  <= tlb_change;
-              st_q     <= S_WALK;
-            end
+          end else if (hit) begin
+            pa_q <= {hit_ppn, creq.va[11:0]};
+            st_q <= (creq.write & ~hit_w) ? S_FAULT : S_ACC;
+          end else begin
+            pte_pa_q <= pte_pa;
+            stale_q  <= tlb_change;
+            st_q     <= S_WALK;
           end
         S_WALK:
           if (mem_rsp_i.ack) begin

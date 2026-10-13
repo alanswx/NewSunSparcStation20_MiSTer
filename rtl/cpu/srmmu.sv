@@ -166,21 +166,20 @@ module srmmu
 
   // The CAM slices: slice s compares key bits [35-4s -: 4] of {VA[31:12],
   // CTX}: 0-4 the VA, 5-8 the context
+  // A rewrite changes one entry's bit in a row: the byte holding it is
+  // written (byte enables), so only that byte is merged, not the 64 bits.
   logic [3:0]  cam_raddr [9];
   logic [63:0] cam_rd [9];
-  logic [63:0] cam_wd [9];
+  logic [7:0]  cam_wb [9];               // the byte e_idx[5:3] of the row, rewritten
+  logic [7:0]  cam_be;
   logic        cam_we;
   logic [3:0]  cam_waddr;
   genvar gs;
   generate
     for (gs = 0; gs < 9; gs++) begin : g_cam
-      (* ramstyle = "no_rw_check" *) logic [63:0] mem [16];
-      logic [63:0] rd;
-      always_ff @(posedge clk) begin
-        if (cam_we) mem[cam_waddr] <= cam_wd[gs];
-        rd <= mem[cam_raddr[gs]];
-      end
-      assign cam_rd[gs] = rd;
+      ram_sdp_be #(.AW(4)) u_cam (
+        .clk, .waddr(cam_waddr), .we(cam_we), .be(cam_be), .wdata({8{cam_wb[gs]}}),
+        .raddr(cam_raddr[gs]), .rdata(cam_rd[gs]));
     end
   endgenerate
 
@@ -274,10 +273,11 @@ module srmmu
   assign cam_row   = 4'(ecnt - 7'd1);
   assign cam_we    = es == E_CAM && ecnt != 7'd0;
   assign cam_waddr = cam_row;
+  assign cam_be    = 8'd1 << e_idx[5:3];
   always_comb
     for (int s = 0; s < 9; s++) begin
-      cam_wd[s] = cam_rd[s];
-      cam_wd[s][e_idx] = ((cam_row ^ e_key[35 - 4 * s -: 4]) & slice_care(s, e_lvl, e_glob)) == 4'h0;
+      cam_wb[s] = cam_rd[s][8 * e_idx[5:3] +: 8];
+      cam_wb[s][e_idx[2:0]] = ((cam_row ^ e_key[35 - 4 * s -: 4]) & slice_care(s, e_lvl, e_glob)) == 4'h0;
     end
 
   // ---------------------------------------------------------------------
