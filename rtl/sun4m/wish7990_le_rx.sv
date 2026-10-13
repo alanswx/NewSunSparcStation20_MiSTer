@@ -3,7 +3,11 @@
 // Vendored from Wish7990 (MIT, MelkhiorVintageComputing,
 // https://github.com/MelkhiorVintageComputing/Wish7990, commit 8610ef5,
 // src/le_rx.sv, as pinned by Sun-3_FPGA). Local changes: the module and
-// the modules it instantiates take a wish7990_ prefix. See
+// the modules it instantiates take a wish7990_ prefix; after a BUFF
+// error the rest of the frame is thrown away (S_END1 to S_DRAINQ) instead
+// of being taken for a new frame; an accepted frame always polls its
+// descriptor again (S_FILTER to S_POLL) rather than trusting the one
+// fetched while idle. See
 // rtl/sun4m/lance.sv for how the SS20 uses it.
 //
 // The receive ring engine.
@@ -383,7 +387,11 @@ module wish7990_le_rx #(
                 // set across a chain so a mid-frame fetch returns here too.
                 replay      <= 3'd0;
                 want_replay <= 1'b1;
-                state       <= have_buf ? S_WRITE : S_POLL;   // p. 31
+                // Local change: always S_POLL, so a buffer the host took
+                // back after the idle fetch is seen as gone (MISS), as
+                // tests/cpu ethtest t_eth_miss expects. The frame waits in
+                // eth_hps or the loopback FIFO meanwhile.
+                state       <= S_POLL;   // p. 31
               end else begin
                 state <= S_DRAINQ;
               end
@@ -569,6 +577,9 @@ module wish7990_le_rx #(
               // Go looking for the next buffer straight away, so back-to-back
               // frames do not wait for the poll interval.
               state       <= S_POLL;
+              // Local change: a BUFF error left the frame's tail (and its end
+              // word) in the FIFO; S_IDLE would start a frame on it.
+              if (err_buff) state <= S_DRAINQ;
             end
           end
 

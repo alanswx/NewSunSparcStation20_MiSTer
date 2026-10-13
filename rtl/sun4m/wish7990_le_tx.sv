@@ -3,7 +3,9 @@
 // Vendored from Wish7990 (MIT, MelkhiorVintageComputing,
 // https://github.com/MelkhiorVintageComputing/Wish7990, commit 8610ef5,
 // src/le_tx.sv, as pinned by Sun-3_FPGA). Local changes: the module and
-// the modules it instantiates take a wish7990_ prefix. See
+// the modules it instantiates take a wish7990_ prefix; internal loopback
+// carries LOOPBACK_MAX bytes (a parameter, upstream's 32 by default) and
+// waits while the loopback FIFO is full instead of losing the byte. See
 // rtl/sun4m/lance.sv for how the SS20 uses it.
 //
 // The transmit ring engine.
@@ -47,7 +49,11 @@ module wish7990_le_tx #(
     // rather than a simulation-only shortcut, because a driver that relies on
     // the poll rather than on TDMD has to see the latency it would on
     // hardware.  The default is 1.6 ms at 50 MHz.
-    parameter int POLL_TICKS = 80000
+    parameter int POLL_TICKS = 80000,
+    // Local change: the internal loopback limit, upstream's 32 (p. 24) by
+    // default. The SS20's tests loop a 70-byte frame (tests/cpu ethtest
+    // t_eth_loopback), so lance.sv raises it.
+    parameter int LOOPBACK_MAX = 32
 ) (
     input  logic        clk,
     input  logic        rst,
@@ -162,7 +168,6 @@ module wish7990_le_tx #(
   // relaxed - see doc/interface.md - so a driver self-test that loops a
   // 60-byte frame fails here exactly as it would on hardware, instead of
   // passing in simulation and failing on a board.
-  localparam int LOOPBACK_MAX = 32;
   wire internal = loop_i && intl_i;
   wire lb_room  = staged < 12'(LOOPBACK_MAX);
 
@@ -449,7 +454,10 @@ module wish7990_le_tx #(
             end
           end
 
-          S_PUSH: begin
+          S_PUSH: if (!(internal && lb_room && lb_full_i)) begin
+            // Local change: a byte bound for a full loopback FIFO waits
+            // (lb_full_i is the FIFO's almost-full, the writes being
+            // registered) rather than being lost.
             // One byte a cycle into the staging RAM.  The bus is free while
             // this happens, which is the whole point: the receive engine gets
             // it instead of waiting a transaction per byte.
@@ -566,7 +574,7 @@ module wish7990_le_tx #(
             state <= S_LB_FCS;
           end
 
-          S_LB_FCS: begin
+          S_LB_FCS: if (!lb_full_i) begin
             // Least significant byte first, as it goes on the wire.
             lb_wr_o   <= 1'b1;
             lb_data_o <= {4'h0, lb_fcs[8*fcs_cnt[1:0] +: 8]};
@@ -575,7 +583,7 @@ module wish7990_le_tx #(
             else                 fcs_cnt <= fcs_cnt + 3'd1;
           end
 
-          S_LB_END: begin
+          S_LB_END: if (!lb_full_i) begin
             // One end word closes the frame.  An overrun on the way is what a
             // frame too long for the loopback path looks like from the receive
             // side, which is how the 8-32 byte limit makes itself felt.
