@@ -106,7 +106,7 @@ module fpu
   typedef enum logic [1:0] {FP_EXECUTE, FP_PENDING, FP_EXCEPTION} fstate_t;
   fstate_t state;
 
-  typedef enum logic [2:0] {S_IDLE, S_UNPA, S_START, S_WAIT, S_ROUND, S_DONE} exstate_t;
+  typedef enum logic [2:0] {S_IDLE, S_UNPA, S_NORM, S_START, S_WAIT, S_ROUND, S_DONE} exstate_t;
   exstate_t ex;
 
   always_comb begin
@@ -201,6 +201,13 @@ module fpu
   logic two_op;
   assign two_op = op == O_ADD || op == O_SUB || op == O_MUL || op == O_DIV || op == O_CMP || op == O_CMPE;
 
+  // A subnormal operand is normalised in S_NORM, a bit a cycle
+  /* verilator lint_off UNUSEDSIGNAL */
+  function automatic logic denorm(input fp_t v);
+    return !v.man[52] && !v.zero && !v.inf && !v.nan;
+  endfunction
+  /* verilator lint_on UNUSEDSIGNAL */
+
   // ---------------------------------------------------------------------
   // The execution: a small state machine around the datapath
   // ---------------------------------------------------------------------
@@ -210,6 +217,7 @@ module fpu
   logic [4:0]  c_rd;
   logic [31:0] c_inst, c_pc;
   fp_t         c_a, c_b;
+  logic        c_two;                  // a two-operand op: c_a is an operand
   logic [63:0] c_a_bits, c_b_bits;     // = a_bits, b_bits while running
   assign c_a_bits = a_bits;
   assign c_b_bits = b_bits;
@@ -514,7 +522,7 @@ module fpu
       fsr_rd <= '0; fsr_tem <= '0; fsr_aexc <= '0; fsr_cexc <= '0; fsr_ftt <= '0; fsr_fcc <= '0;
       qne <= 1'b0;
       c_op <= O_UNIMPL; c_src_dbl <= 1'b0; c_dst_dbl <= 1'b0; c_rd <= '0; c_inst <= '0; c_pc <= '0;
-      c_a <= '0; c_b <= '0;
+      c_a <= '0; c_b <= '0; c_two <= 1'b0;
       wait_cnt <= '0; ds_ok <= 1'b0;
       fin_bits <= '0; fin_flags <= '0;
     end else begin
@@ -543,12 +551,22 @@ module fpu
             c_op <= op; c_src_dbl <= src_dbl; c_dst_dbl <= dst_dbl; c_rd <= rd;
             c_inst <= req_i.fpop_inst; c_pc <= req_i.fpop_pc;
             c_b <= u_v;
-            ex <= two_op ? S_UNPA : S_START;
+            c_two <= two_op;
+            ex <= two_op ? S_UNPA : denorm(u_v) ? S_NORM : S_START;
           end
         end
         S_UNPA: begin
           c_a <= u_v;
-          ex <= S_START;
+          ex <= (denorm(u_v) || denorm(c_b)) ? S_NORM : S_START;
+        end
+        S_NORM: begin
+          if (c_two && denorm(c_a)) begin
+            c_a.man <= {c_a.man[51:0], 1'b0}; c_a.exp <= c_a.exp - 14'sd1;
+          end else if (denorm(c_b)) begin
+            c_b.man <= {c_b.man[51:0], 1'b0}; c_b.exp <= c_b.exp - 14'sd1;
+          end else begin
+            ex <= S_START;
+          end
         end
         S_START: begin
           // operands latched: start the long units, or wait for the pipeline
