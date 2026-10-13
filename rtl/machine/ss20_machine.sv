@@ -257,11 +257,13 @@ module ss20_machine #(
     .s_write(dv_we), .s_writedata(dv_din), .s_byteenable(dv_be), .s_readdata(dv_dout),
     .s_readdatavalid(dv_rdv));
 
-  iob_req_t    iob_q [9];
-  iob_rsp_t    iob_r [9];
+  iob_req_t    iob_q [10];
+  iob_rsp_t    iob_r [10];
   ss20_iobridge u_io (.clk, .rst(rst_m), .req_i(io_req), .rsp_o(io_rsp), .io_o(iob_q), .io_i(iob_r));
 
   // ------------------------------------------------- the system devices --
+  // interrupt sources and strobes of the devices below
+  logic irq_tcx, irq_msi, irq_esp, irq_le, irq_fdc, fd_tc;
   // 0: keyboard (A) / mouse (B) ESCC, with the Sun keyboard and mouse
   // made from hps_io's PS/2 events
   logic irq_kbd, irq_ser;
@@ -369,6 +371,7 @@ module ss20_machine #(
     isrc[SI_I] = irq_msi;
     isrc[SI_SC] = irq_esp;
     isrc[SI_E] = irq_le;
+    isrc[SI_FL] = irq_fdc;
   end
   logic [0:0][3:0] irl_v;
   slavio_intctl #(.NCPU(1)) u_intctl (
@@ -381,7 +384,7 @@ module ss20_machine #(
   slavio_misc #(.CLK_HZ(CLK_HZ)) u_misc (
     .clk, .rst(rst || !run), .rst_swr_i(rst_swr), .rst_switch_i(1'b0), .wd_i(wd_reset),
     .bus_i(iob_q[5]), .bus_o(iob_r[5]),
-    .leds_o(leds), .led_o(aux_led), .fd_tc_o(), .fd_density_i(1'b0), .power_off_o(),
+    .leds_o(leds), .led_o(aux_led), .fd_tc_o(fd_tc), .fd_density_i(1'b0), .power_off_o(),
     .pwr_fail_i(1'b0), .pwr_irq_o(), .diag_sw_i(1'b0),
     .cfg_cg3_i(opt_cg3_i), .cfg_noautoboot_i(!opt_autoboot_i), .cfg_serial_i(opt_serial_i),
     .cfg_ram_mb_i(opt_ram_mb_i), .sw_reset_o(sw_reset));
@@ -417,7 +420,7 @@ module ss20_machine #(
 
   sbus_pkg::dvma_req_t le_mem;
   mem_rsp_t            le_mem_r;
-  logic esp_irq, esp_dreq, esp_dtomem, esp_dack, esp_crst, irq_esp, irq_le, le_irq, le_rst;
+  logic esp_irq, esp_dreq, esp_dtomem, esp_dack, esp_crst, le_irq, le_rst;
   logic [7:0] esp_d2m, esp_m2d;
   dma2 u_dma2 (
     .clk, .rst(rst_m), .bus_i(f_q[1]), .bus_o(f_r[1]),
@@ -451,7 +454,6 @@ module ss20_machine #(
     .avl_readdata(et_dout), .avl_readdatavalid(et_rdv));
 
   // 7: slot 2, the TCX
-  logic irq_tcx;
   tcx u_tcx (
     .clk, .rst(rst_m), .bus_i(iob_q[7]), .bus_o(iob_r[7]), .irq_o(irq_tcx),
     .vram_address(vr_addr), .vram_burstcount(vr_bc), .vram_read(vr_rd), .vram_write(vr_we),
@@ -461,9 +463,11 @@ module ss20_machine #(
     .scan_readdata(sc_dout), .scan_readdatavalid(sc_rdv),
     .clk_vid, .vid_ce_o, .vid_r_o, .vid_g_o, .vid_b_o, .vid_hs_o, .vid_vs_o, .vid_de_o);
 
+  // 9: the floppy controller, with no drive
+  fdc82077 u_fdc (.clk, .rst(rst_m), .bus_i(iob_q[9]), .bus_o(iob_r[9]), .tc_i(fd_tc), .irq_o(irq_fdc));
+
   // 8: the MSI: the IOMMU translating the SBus masters' DVMA, the M-to-S
   // registers, the MID register
-  logic            irq_msi;
   sbus_pkg::dvma_req_t [1:0] dvma_q;      // 0 DMA2's ESP channel, 1 its LANCE channel
   mem_rsp_t        [1:0] dvma_r;
   ss20_msi u_msi (

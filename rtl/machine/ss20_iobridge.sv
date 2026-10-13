@@ -26,8 +26,9 @@
 //   0xE_F000_0000-0xE_FFFF_FFFF   slave 6  the SBus slot F devices
 //   0xE_2000_0000-0xE_2FFF_FFFF   slave 7  slot 2 (the TCX)
 //   0xF_E000_0000-0xF_E00F_FFFF   slave 8  the MSI (IOMMU, M-to-S, MID)
+//   0xF_F170_0000                 slave 9  the floppy controller (82077)
 // The rest of the control space and slot E read 0 and ignore writes
-// (DEC-3): the EMC, the floppy, the module control space. The
+// (DEC-3): the EMC, the module control space. The
 // empty SBus slots 0, 1, 3 and the spaces PA[35:32] = 1-D time out with
 // err after TIMEOUT cycles (B1, A3). Slaves 6 and 7 are ports for the
 // phases that bring their devices (7 and 6); unconnected, tie their
@@ -37,7 +38,7 @@ module ss20_iobridge
   import mem_pkg::*;
   #(
   parameter int TIMEOUT = 64,
-  parameter int NS      = 9               // slaves
+  parameter int NS      = 10              // slaves
 )(
   input  logic                 clk,
   input  logic                 rst,
@@ -62,6 +63,7 @@ module ss20_iobridge
         12'hF12: sel = 4'd2;
         12'hF13: sel = 4'd3;
         12'hF14: sel = 4'd4;
+        12'hF17: sel = 4'd9;
         12'hF16, 12'hF18, 12'hF1A, 12'hF1F: sel = 4'd5;
         12'hE00: sel = 4'd8;
         default: sel = R0;
