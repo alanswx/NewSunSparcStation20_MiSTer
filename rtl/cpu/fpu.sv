@@ -74,20 +74,23 @@ module fpu
     rf_wd_lo = rf_d[31:0];
   end
 
+  // (module-level arrays: Quartus ignores ramstyle on arrays declared in a
+  // generate block)
   logic [3:0]  rf_ra [3];
   logic [63:0] rf_rd [3];
-  genvar gp;
-  generate
-    for (gp = 0; gp < 3; gp++) begin : g_rf
-      (* ramstyle = "MLAB, no_rw_check" *) logic [31:0] hi [16];
-      (* ramstyle = "MLAB, no_rw_check" *) logic [31:0] lo [16];
-      always_ff @(posedge clk) begin
-        if (rf_we_hi) hi[rf_wa] <= rf_wd_hi;
-        if (rf_we_lo) lo[rf_wa] <= rf_wd_lo;
-      end
-      assign rf_rd[gp] = {hi[rf_ra[gp]], lo[rf_ra[gp]]};
-    end
-  endgenerate
+  (* ramstyle = "MLAB, no_rw_check" *) logic [31:0] rf_hi0 [16];
+  (* ramstyle = "MLAB, no_rw_check" *) logic [31:0] rf_lo0 [16];
+  (* ramstyle = "MLAB, no_rw_check" *) logic [31:0] rf_hi1 [16];
+  (* ramstyle = "MLAB, no_rw_check" *) logic [31:0] rf_lo1 [16];
+  (* ramstyle = "MLAB, no_rw_check" *) logic [31:0] rf_hi2 [16];
+  (* ramstyle = "MLAB, no_rw_check" *) logic [31:0] rf_lo2 [16];
+  always_ff @(posedge clk) begin
+    if (rf_we_hi) begin rf_hi0[rf_wa] <= rf_wd_hi; rf_hi1[rf_wa] <= rf_wd_hi; rf_hi2[rf_wa] <= rf_wd_hi; end
+    if (rf_we_lo) begin rf_lo0[rf_wa] <= rf_wd_lo; rf_lo1[rf_wa] <= rf_wd_lo; rf_lo2[rf_wa] <= rf_wd_lo; end
+  end
+  assign rf_rd[0] = {rf_hi0[rf_ra[0]], rf_lo0[rf_ra[0]]};
+  assign rf_rd[1] = {rf_hi1[rf_ra[1]], rf_lo1[rf_ra[1]]};
+  assign rf_rd[2] = {rf_hi2[rf_ra[2]], rf_lo2[rf_ra[2]]};
 
   // ---------------------------------------------------------------------
   // FSR, the queue, the state

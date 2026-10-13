@@ -269,15 +269,16 @@ module l1cache
       sqb_wa[b] = sq_wr[0] == b[0] ? sq_wr[3:1] : sq_wr1;
       sqb_wd[b] = (sq_wr[0] == b[0] && sq_push) ? sq_in1 : sq_in2;
     end
+  // (module-level arrays: Quartus ignores ramstyle in a generate block)
+  (* ramstyle = "MLAB, no_rw_check" *) logic [31:0] sqb0 [8];
+  (* ramstyle = "MLAB, no_rw_check" *) logic [31:0] sqb1 [8];
   logic [31:0] sqb_rd [2];
-  genvar gb;
-  generate
-    for (gb = 0; gb < 2; gb++) begin : g_sqb
-      (* ramstyle = "MLAB, no_rw_check" *) logic [31:0] mem [8];
-      always_ff @(posedge clk) if (sqb_we[gb]) mem[sqb_wa[gb]] <= sqb_wd[gb];
-      assign sqb_rd[gb] = mem[sq_rd[3:1]];
-    end
-  endgenerate
+  always_ff @(posedge clk) begin
+    if (sqb_we[0]) sqb0[sqb_wa[0]] <= sqb_wd[0];
+    if (sqb_we[1]) sqb1[sqb_wa[1]] <= sqb_wd[1];
+  end
+  assign sqb_rd[0] = sqb0[sq_rd[3:1]];
+  assign sqb_rd[1] = sqb1[sq_rd[3:1]];
   assign sq_head = sqb_rd[sq_rd[0]];
   typedef enum logic [1:0] {Q_IDLE, Q_CMP, Q_WRITE, Q_RETRY} qstate_t;
   qstate_t     qs;
