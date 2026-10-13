@@ -214,6 +214,14 @@ module ss20_machine #(
   logic [7:0]  vr_bc, vr_be;
   logic [28:0] vr_addr;
   logic [63:0] vr_din, vr_dout;
+  logic        dv_rd, dv_we, dv_wait, dv_rdv;   // the TCX's VRAM and the Ethernet mailbox
+  logic [7:0]  dv_bc, dv_be;
+  logic [28:0] dv_addr;
+  logic [63:0] dv_din, dv_dout;
+  logic        et_rd, et_we, et_wait, et_rdv;
+  logic [7:0]  et_bc, et_be;
+  logic [28:0] et_addr;
+  logic [63:0] et_din, et_dout;
   logic        lo_rd, lo_we, lo_wait, lo_rdv;
   logic [7:0]  lo_bc, lo_be;
   logic [28:0] lo_addr;
@@ -233,11 +241,21 @@ module ss20_machine #(
     .clk, .reset(rst),
     .m0_waitrequest(mm_wait), .m0_burstcount(mm_bc), .m0_address(mm_addr), .m0_read(mm_rd), .m0_write(mm_we),
     .m0_writedata(mm_din), .m0_byteenable(mm_be), .m0_readdata(mm_dout), .m0_readdatavalid(mm_rdv),
-    .m1_waitrequest(vr_wait), .m1_burstcount(vr_bc), .m1_address(vr_addr), .m1_read(vr_rd), .m1_write(vr_we),
-    .m1_writedata(vr_din), .m1_byteenable(vr_be), .m1_readdata(vr_dout), .m1_readdatavalid(vr_rdv),
+    .m1_waitrequest(dv_wait), .m1_burstcount(dv_bc), .m1_address(dv_addr), .m1_read(dv_rd), .m1_write(dv_we),
+    .m1_writedata(dv_din), .m1_byteenable(dv_be), .m1_readdata(dv_dout), .m1_readdatavalid(dv_rdv),
     .s_waitrequest(lo_wait), .s_burstcount(lo_bc), .s_address(lo_addr), .s_read(lo_rd),
     .s_write(lo_we), .s_writedata(lo_din), .s_byteenable(lo_be), .s_readdata(lo_dout),
     .s_readdatavalid(lo_rdv));
+
+  ddram_arb u_arb_dev (
+    .clk, .reset(rst),
+    .m0_waitrequest(vr_wait), .m0_burstcount(vr_bc), .m0_address(vr_addr), .m0_read(vr_rd), .m0_write(vr_we),
+    .m0_writedata(vr_din), .m0_byteenable(vr_be), .m0_readdata(vr_dout), .m0_readdatavalid(vr_rdv),
+    .m1_waitrequest(et_wait), .m1_burstcount(et_bc), .m1_address(et_addr), .m1_read(et_rd), .m1_write(et_we),
+    .m1_writedata(et_din), .m1_byteenable(et_be), .m1_readdata(et_dout), .m1_readdatavalid(et_rdv),
+    .s_waitrequest(dv_wait), .s_burstcount(dv_bc), .s_address(dv_addr), .s_read(dv_rd),
+    .s_write(dv_we), .s_writedata(dv_din), .s_byteenable(dv_be), .s_readdata(dv_dout),
+    .s_readdatavalid(dv_rdv));
 
   iob_req_t    iob_q [9];
   iob_rsp_t    iob_r [9];
@@ -349,6 +367,8 @@ module ss20_machine #(
     isrc[SI_T] = irq_tsys;
     isrc[SI_SBUS_LSB + 4] = irq_tcx;      // SBus level 5 (the TCX FCode's intr 0x39)
     isrc[SI_I] = irq_msi;
+    isrc[SI_SC] = irq_esp;
+    isrc[SI_E] = irq_le;
   end
   logic [0:0][3:0] irl_v;
   slavio_intctl #(.NCPU(1)) u_intctl (
@@ -366,11 +386,69 @@ module ss20_machine #(
     .cfg_cg3_i(opt_cg3_i), .cfg_noautoboot_i(!opt_autoboot_i), .cfg_serial_i(opt_serial_i),
     .cfg_ram_mb_i(opt_ram_mb_i), .sw_reset_o(sw_reset));
 
-  // 6: SBus slot F (DMA2, ESP, LANCE: phases 7-8): not yet; reads 0
-  always_ff @(posedge clk) begin
-    iob_r[6] <= '0;
-    iob_r[6].ack <= iob_q[6].req && !iob_r[6].ack;
+  // 6: SBus slot F, the on-board SBus devices, by PA[23:20]: 0 the MACIO
+  // ID register, 4 DMA2 (ESP and LANCE channels), 8 the ESP, C the LANCE;
+  // the rest reads 0
+  iob_req_t f_q [4];
+  iob_rsp_t f_r [4];
+  logic [1:0] f_sel;
+  logic       f_any;
+  always_comb begin
+    f_any = 1'b1;
+    case (iob_q[6].addr[23:20])
+      4'h4:    f_sel = 2'd1;
+      4'h8:    f_sel = 2'd2;
+      4'hC:    f_sel = 2'd3;
+      default: begin f_sel = 2'd0; f_any = iob_q[6].addr[23:20] == 4'h0; end
+    endcase
+    for (int k = 0; k < 4; k++) begin
+      f_q[k] = iob_q[6];
+      f_q[k].req = iob_q[6].req && f_sel == 2'(k);
+    end
+    iob_r[6] = f_r[f_sel];
   end
+
+  // the MACIO ID register (the rest of page 0 reads it too)
+  always_ff @(posedge clk) begin
+    f_r[0] <= '0;
+    f_r[0].ack <= f_q[0].req && !f_r[0].ack;
+    f_r[0].rdata <= f_any ? 32'hFE81_0103 : 32'h0;
+  end
+
+  sbus_pkg::dvma_req_t le_mem;
+  mem_rsp_t            le_mem_r;
+  logic esp_irq, esp_dreq, esp_dtomem, esp_dack, esp_crst, irq_esp, irq_le, le_irq, le_rst;
+  logic [7:0] esp_d2m, esp_m2d;
+  dma2 u_dma2 (
+    .clk, .rst(rst_m), .bus_i(f_q[1]), .bus_o(f_r[1]),
+    .esp_irq_i(esp_irq), .esp_dreq_i(esp_dreq), .esp_dtomem_i(esp_dtomem), .esp_ddata_i(esp_d2m),
+    .esp_dack_o(esp_dack), .esp_ddata_o(esp_m2d), .esp_rst_o(esp_crst), .irq_esp_o(irq_esp),
+    .esp_dvma_o(dvma_q[0]), .esp_dvma_i(dvma_r[0]),
+    .le_req_i(le_mem), .le_rsp_o(le_mem_r), .le_dvma_o(dvma_q[1]), .le_dvma_i(dvma_r[1]),
+    .le_irq_i(le_irq), .irq_le_o(irq_le), .le_rst_o(le_rst));
+
+  // the SCSI targets on hps_io's SD slots 0-2: disks at IDs 3 and 1, the CD at 6
+  logic [31:0] esp_lba;
+  logic [5:0]  esp_cnt;
+  logic [2:0]  esp_rd, esp_wr;
+  logic [15:0] esp_din, cd_l, cd_r;
+  logic        esp_busy;
+  esp #(.CLK_HZ(CLK_HZ), .SIMU(SKIP_CLEAR)) u_esp (
+    .clk, .rst(rst_m), .chip_rst_i(esp_crst), .bus_i(f_q[2]), .bus_o(f_r[2]), .irq_o(esp_irq),
+    .dreq_o(esp_dreq), .dtomem_o(esp_dtomem), .ddata_o(esp_d2m), .dack_i(esp_dack), .ddata_i(esp_m2d),
+    .id0_i(3'd3), .id1_i(3'd1), .id2_i(3'd6), .ena_i(3'b111), .cd2048_i(1'b0),
+    .img_mounted_i(img_mounted_i[2:0]), .img_size_i, .img_readonly_i,
+    .sd_lba_o(esp_lba), .sd_blk_cnt_o(esp_cnt), .sd_rd_o(esp_rd), .sd_wr_o(esp_wr), .sd_ack_i(sd_ack_i[2:0]),
+    .sd_buff_addr_i, .sd_buff_dout_i, .sd_buff_din_o(esp_din), .sd_buff_wr_i({3{sd_buff_wr_i}} & sd_ack_i[2:0]),
+    .busy_o(esp_busy), .cd_l_o(cd_l), .cd_r_o(cd_r));
+
+  // the LANCE, its frames through eth_hps's mailbox in DDR3
+  lance #(.CLK_HZ(CLK_HZ), .SIMU(SKIP_CLEAR)) u_lance (
+    .clk, .rst(rst_m), .bus_i(f_q[3]), .bus_o(f_r[3]), .le_reset(le_rst), .irq_o(le_irq),
+    .mem_o(le_mem), .mem_i(le_mem_r), .ena(opt_eth_i),
+    .avl_waitrequest(et_wait), .avl_address(et_addr), .avl_read(et_rd), .avl_write(et_we),
+    .avl_writedata(et_din), .avl_byteenable(et_be), .avl_burstcount(et_bc),
+    .avl_readdata(et_dout), .avl_readdatavalid(et_rdv));
 
   // 7: slot 2, the TCX
   logic irq_tcx;
@@ -386,9 +464,8 @@ module ss20_machine #(
   // 8: the MSI: the IOMMU translating the SBus masters' DVMA, the M-to-S
   // registers, the MID register
   logic            irq_msi;
-  sbus_pkg::dvma_req_t [1:0] dvma_q;
+  sbus_pkg::dvma_req_t [1:0] dvma_q;      // 0 DMA2's ESP channel, 1 its LANCE channel
   mem_rsp_t        [1:0] dvma_r;
-  assign dvma_q = '0;                     // (DMA2's ESP and LANCE channels: phases 7-8)
   ss20_msi u_msi (
     .clk, .rst(rst_m), .bus_i(iob_q[8]), .bus_o(iob_r[8]), .bus_mid_i(4'd8),
     .dvma_req_i(dvma_q), .dvma_rsp_o(dvma_r), .mem_req_o(dma_req), .mem_rsp_i(dma_rsp),
@@ -400,26 +477,26 @@ module ss20_machine #(
   // ------------------------------------------------------- idle for now --
   always_comb begin
     for (int n = 0; n < 3; n++) begin
-      sd_lba_o[n]      = '0;
-      sd_blk_cnt_o[n]  = '0;
-      sd_buff_din_o[n] = '0;
+      sd_lba_o[n]      = esp_lba;
+      sd_blk_cnt_o[n]  = esp_cnt;
+      sd_buff_din_o[n] = esp_din;
     end
     sd_lba_o[3]      = nv_lba;
     sd_blk_cnt_o[3]  = nv_cnt;
     sd_buff_din_o[3] = nv_din;
   end
-  assign sd_rd_o          = {nv_rd, 3'b000};
-  assign sd_wr_o          = {nv_wr, 3'b000};
+  assign sd_rd_o          = {nv_rd, esp_rd};
+  assign sd_wr_o          = {nv_wr, esp_wr};
   assign kbd_led_status_o = {kb_leds[3], kb_leds[0], kb_leds[2]};   // Caps, Num, Scroll
   assign kbd_led_use_o    = 3'b111;
-  assign audio_l_o        = '0;
-  assign audio_r_o        = '0;
-  assign led_disk_o       = 1'b0;
+  assign audio_l_o        = cd_l;       // (CD audio; the CS4231 and the beeper: phase 10)
+  assign audio_r_o        = cd_r;
+  assign led_disk_o       = esp_busy;
   assign led_user_o       = !aux_led;   // the Aux register's LED bit (0 = lit), as the board's LED
 
   /* verilator lint_off UNUSEDSIGNAL */
-  wire unused_inputs = ^{opt_l2tlb_i, opt_eth_i, sd_ack_i[2:0], img_mounted_i[2:0], uart_cts_i, uart_dsr_i,
-                         leds, rtc_i[63:56], cpu_tt, cpu_pc, cpu_commit, cpu_trap, cpu_halt, dvma_r, ld_state, kb_leds[1]};
+  wire unused_inputs = ^{opt_l2tlb_i, uart_cts_i, uart_dsr_i,
+                         leds, rtc_i[63:56], cpu_tt, cpu_pc, cpu_commit, cpu_trap, cpu_halt, ld_state, kb_leds[1]};
   /* verilator lint_on UNUSEDSIGNAL */
 
 endmodule
