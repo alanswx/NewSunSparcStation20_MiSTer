@@ -405,15 +405,18 @@ module ss20_machine #(
 
   // 6: SBus slot F, the on-board SBus devices, by PA[23:20]: 0 the MACIO
   // ID register, 4 DMA2 (ESP and LANCE channels), 8 the ESP, C the LANCE;
-  // the rest reads 0
+  // PA[27:20] = 0x48 is the parallel port (SUNW,bpp: DMA2's P registers,
+  // at its +0x20); the rest reads 0
   iob_req_t f_q [4];
   iob_rsp_t f_r [4];
   logic [1:0] f_sel;
   logic       f_any;
   logic       le_bad, le_bad_r;          // (below)
+  logic f_pp;
+  assign f_pp = iob_q[6].addr[27:20] == 8'h48;
   always_comb begin
     f_any = 1'b1;
-    case (iob_q[6].addr[23:20])
+    case (f_pp ? 4'h4 : iob_q[6].addr[23:20])
       4'h4:    f_sel = 2'd1;
       4'h8:    f_sel = 2'd2;
       4'hC:    f_sel = 2'd3;
@@ -423,6 +426,7 @@ module ss20_machine #(
       f_q[k] = iob_q[6];
       f_q[k].req = iob_q[6].req && f_sel == 2'(k) && !(k == 3 && le_bad);
     end
+    if (f_pp) f_q[1].addr[5] = 1'b1;     // DMA2's P registers
     iob_r[6] = le_bad_r ? '{ack: 1'b0, err: 1'b1, rdata: 32'd0} : f_r[f_sel];
   end
 

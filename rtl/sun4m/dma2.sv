@@ -36,7 +36,11 @@
 //   +18 E_VLD   reads 0 (no E-cache)
 //   +1C E_BASE_ADDR [31:24], 0xFF after reset (DMA-2)
 //   +20 P_CSR, +24 P_ADDR, +28 P_BCNT, +2C P_TST, +30 HCR|OCR,
-//       +34 DR|TCR|OR|IR, +38 ICR: the parallel port, a stub: the control
+//       +34 DR|TCR|OR|IR, +38 ICR (the integrator also maps them at the
+//       parallel port's own slot-F offset 0x480_0000, +0 for +20 here):
+//       the parallel port, a stub: OCR 0x200A and TCR.DIR after reset
+//       (P_CSR RESET), OCR.EN_DIAG loops OR back to IR and lets ACK/BUSY
+//       be written in TCR (the POST's PPORT tests); the control
 //       bits are stored and read back, DEV_ID 0xA, no transfers, no
 //       interrupt, the printer lines idle (TCR's BUSY/ACK, IR read 0).
 //
@@ -212,6 +216,9 @@ module dma2
   logic [23:0] pbcnt;
   logic [15:0] p_hcr, p_ocr, p_icr;
   logic [7:0]  p_dr, p_tcr, p_or;
+  // IR: the printer's status lines, idle; with OCR.EN_DIAG (bit 10) the
+  // diagnostic loopback returns OR's INIT/AFXN/SLCT_IN (2:0) there
+  wire  [7:0]  p_ir = p_ocr[10] ? {5'd0, p_or[2:0]} : 8'h00;
 
   // ---------------------------------------------------------------------
   // Reads
@@ -229,7 +236,7 @@ module dma2
       4'h9:    rdata = paddr;
       4'hA:    rdata = {8'h00, pbcnt};
       4'hC:    rdata = {p_hcr, p_ocr};
-      4'hD:    rdata = {p_dr, p_tcr, p_or, 8'h00};
+      4'hD:    rdata = {p_dr, p_tcr, p_or, p_ir};
       4'hE:    rdata = {p_icr, 16'h0};
       default: rdata = 32'h0;
     endcase
@@ -268,10 +275,10 @@ module dma2
       paddr    <= 32'h0;
       pbcnt    <= 24'h0;
       p_hcr    <= 16'h0;
-      p_ocr    <= 16'h0;
+      p_ocr    <= 16'h200A;
       p_icr    <= 16'h0;
       p_dr     <= 8'h00;
-      p_tcr    <= 8'h00;
+      p_tcr    <= 8'h08;
       p_or     <= 8'h00;
     end else begin
       bus_o.ack   <= access && !size_bad;
@@ -335,6 +342,12 @@ module dma2
 
       // ---------------------------------------------------------------
       // Register writes
+      // the parallel port's RESET (P_CSR bit 7, held) resets its stub
+      if (p_rw[7]) begin
+        p_hcr <= 16'h0; p_ocr <= 16'h200A; p_icr <= 16'h0;
+        p_tcr <= 8'h08; p_or <= 8'h00;
+      end
+
       // SLAVE_ERR: set by a wrong-size write, cleared by writing 1 to it
       // or by RESET
       if (access && size_bad) begin
@@ -381,11 +394,13 @@ module dma2
           end
           4'hD: begin
             if (bus_i.be[3]) p_dr  <= wd[31:24];
-            if (bus_i.be[2]) p_tcr <= wd[23:16] & 8'h09;   // DS, DIR
+            // DS, DIR; ACK and BUSY too in the diagnostic loopback
+            if (bus_i.be[2]) p_tcr <= wd[23:16] & (p_ocr[10] ? 8'h0F : 8'h09);
             if (bus_i.be[1]) p_or  <= wd[15:8];
           end
           4'hE: begin
-            if (bus_i.be[3]) p_icr[15:8] <= wd[31:24];
+            // the enables; the status bits (15:10) are W1C and never set
+            if (bus_i.be[3]) p_icr[15:8] <= wd[31:24] & 8'h03;
             if (bus_i.be[2]) p_icr[7:0]  <= wd[23:16];
           end
           default: ;
