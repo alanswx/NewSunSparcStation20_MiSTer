@@ -124,7 +124,7 @@ module cpu_module
     .walk_done_o(wk_done), .walk_fault_o(wk_fault), .walk_masked_o(wk_masked),
     .berr_valid_i(be_valid), .berr_at_i(be_at), .berr_va_i(be_va), .berr_no_fault_i(be_no_fault), .berr_masked_o(be_masked),
     .mem_req_o(mem_w), .mem_rsp_i(mem_w_r),
-    .sysconf_i({ram_mb_i, 12'd0, 3'd0, SS20, 2'b00, NCPU_M1}),
+    .sysconf_i({ram_mb_i, 12'd0, 3'd0, SS20, 2'b00, NCPU_M1}), .cpu_idx_i(mid_i[1:0]),
     .mcntl_o(mcntl), .wd_i(wd_now), .si_reset_o(si_reset_o), .dbg_o(dbg_mmu));
 
   logic ie, de, nf;

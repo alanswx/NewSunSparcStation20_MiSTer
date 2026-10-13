@@ -101,6 +101,7 @@ module srmmu
 
   // State
   input  logic [31:0] sysconf_i,       // ASI 4 VA 0xD00: the suite's "which machine" register
+  input  logic [1:0]  cpu_idx_i,       // this module's CPU number (MID - 8): MCNTL bits 3:2 read it
   output logic [31:0] mcntl_o,
   input  logic        wd_i,            // a watchdog reset is taken: EM, BM
   output logic        si_reset_o,      // software-internal reset requested (0x700 bit 1)
@@ -507,7 +508,10 @@ module srmmu
     reg_rdata = 32'd0;
     if (reg_asi_i == 8'h04) begin
       case (reg_va_i[12:8])
-        5'h00: reg_rdata = mcntl;
+        // bits 3:2 (reserved on a SuperSPARC) are the CPU number, as the
+        // TEMLIB core had it: the CPU suite's runtime and TACUS OpenBIOS
+        // send every CPU but 0 to park by it
+        5'h00: reg_rdata = {mcntl[31:4], cpu_idx_i, mcntl[1:0]};
         5'h01: reg_rdata = ctpr;
         5'h02: reg_rdata = {16'd0, ctx};
         5'h03, 5'h13: reg_rdata = {14'd0, sfsr};

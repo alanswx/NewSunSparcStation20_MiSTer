@@ -11,7 +11,7 @@
 // One clock: the machine's clock and the pixel clock are the same here, so
 // a frame takes 1344 x 806 cycles.
 
-module sim_top
+module sim_top #(parameter int NCPU = 1)
 (
 	input         clk,
 	input         reset,
@@ -114,7 +114,7 @@ wire       vid_ce, uart_rts, uart_dtr;
 wire [2:0] kbd_led_status, kbd_led_use;
 wire [15:0] audio_l, audio_r;
 
-ss20_machine #(.SKIP_CLEAR(1'b1)) machine
+ss20_machine #(.SKIP_CLEAR(1'b1), .NCPU(NCPU)) machine
 (
 	.clk(clk),
 	.rst(reset),

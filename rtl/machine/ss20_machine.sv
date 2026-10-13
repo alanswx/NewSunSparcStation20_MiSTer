@@ -30,7 +30,8 @@
 
 module ss20_machine #(
   parameter int CLK_HZ     = 55_000_000,
-  parameter bit SKIP_CLEAR = 1'b0        // simulation: its DDR model starts zeroed
+  parameter bit SKIP_CLEAR = 1'b0,       // simulation: its DDR model starts zeroed
+  parameter int NCPU       = 1           // CPU modules, MID 8 up (1 to 4; two do not fit yet)
 )(
   input  logic         clk,
   input  logic         rst,            // synchronous to clk
@@ -149,21 +150,26 @@ module ss20_machine #(
 
   /* verilator lint_off PINCONNECTEMPTY */  // (the blocks' unused outputs, left open)
 
-  // ------------------------------------------------------------ the CPU --
-  mem_req_t    cpu_req;
-  mem_rsp_t    cpu_rsp;
+  // ------------------------------------------------------------ the CPUs --
+  // NCPU modules, MID 8 + n; every write on the interconnect is snooped by
+  // all of them (each holds the broadcast while its queue is nearly full)
+  mem_req_t    bus_req [NCPU+1];          // the CPUs, then DVMA
+  mem_rsp_t    bus_rsp [NCPU+1];
   snoop_t      snoop;
+  logic [NCPU-1:0] snoop_holds, wd_resets;
+  logic [NCPU-1:0][3:0] irl_v;
   logic        snoop_hold, wd_reset;
-  logic [3:0]  irl;
-  logic        cpu_halt, cpu_commit, cpu_trap;
-  logic [7:0]  cpu_tt;
-  logic [31:0] cpu_pc;
 
-  cpu_module #(.HAS_FPU(1'b1), .SS20(1'b1), .NCPU_M1(2'd0)) u_cpu (
-    .clk, .rst(rst_m), .mid_i(4'd8), .irl_i(irl), .cache_en_i(1'b1), .ram_mb_i({2'b00, opt_ram_mb_i}),
-    .mem_req_o(cpu_req), .mem_rsp_i(cpu_rsp), .snoop_i(snoop), .snoop_hold_o(snoop_hold),
-    .wd_reset_o(wd_reset), .si_reset_o(), .halt_o(cpu_halt),
-    .dbg_commit_o(cpu_commit), .dbg_trap_o(cpu_trap), .dbg_tt_o(cpu_tt), .dbg_pc_o(cpu_pc), .dbg_psr_o(), .dbg_w_o());
+  genvar gc;
+  generate for (gc = 0; gc < NCPU; gc = gc + 1) begin : g_cpu
+    cpu_module #(.HAS_FPU(1'b1), .SS20(1'b1), .NCPU_M1(2'(NCPU - 1))) u_cpu (
+      .clk, .rst(rst_m), .mid_i(4'(8 + gc)), .irl_i(irl_v[gc]), .cache_en_i(1'b1), .ram_mb_i({2'b00, opt_ram_mb_i}),
+      .mem_req_o(bus_req[gc]), .mem_rsp_i(bus_rsp[gc]), .snoop_i(snoop), .snoop_hold_o(snoop_holds[gc]),
+      .wd_reset_o(wd_resets[gc]), .si_reset_o(), .halt_o(),
+      .dbg_commit_o(), .dbg_trap_o(), .dbg_tt_o(), .dbg_pc_o(), .dbg_psr_o(), .dbg_w_o());
+  end endgenerate
+  assign snoop_hold = |snoop_holds;
+  assign wd_reset   = |wd_resets;
 
   // ---------------------------------------------------- memory and I/O --
   mem_req_t    io_req;
@@ -173,13 +179,22 @@ module ss20_machine #(
   logic [28:0] mc_addr;
   logic [63:0] mc_din;
 
-  // the interconnect: the CPU and the MSI's DVMA (ss20_msi, below) share
-  // the memory controller
+  // the interconnect: the CPUs and the MSI's DVMA (ss20_msi, below) share
+  // the memory controller; the MSI's arbiter-enable register parks CPUs
+  // 9 and up (its bits 3:1)
   mem_req_t    dma_req, mb_req;
   mem_rsp_t    dma_rsp, mb_rsp;
   logic [3:0]  mb_mid;
-  ss20_mbus u_mbus (
-    .clk, .rst(rst_m), .cpu_req_i(cpu_req), .cpu_rsp_o(cpu_rsp), .dma_req_i(dma_req), .dma_rsp_o(dma_rsp),
+  logic [31:0] arb_en;
+  logic [NCPU-1:0] park;
+  always_comb begin
+    park = '0;
+    for (int n = 1; n < NCPU; n++) park[n] = !arb_en[n];
+  end
+  assign bus_req[NCPU] = dma_req;
+  assign dma_rsp = bus_rsp[NCPU];
+  ss20_mbus #(.NCPU(NCPU)) u_mbus (
+    .clk, .rst(rst_m), .req_i(bus_req), .rsp_o(bus_rsp), .park_i(park),
     .req_o(mb_req), .rsp_i(mb_rsp), .mid_o(mb_mid));
 
   ss20_memctl u_mem (
@@ -361,8 +376,9 @@ module ss20_machine #(
     .seed_date(rtc_i[31:24]), .seed_month(rtc_i[39:32]), .seed_year(rtc_i[47:40]));
 
   // 3: the counter/timers, 4: the interrupt controller
-  logic irq_tsys, irq_tcpu;
-  slavio_timer #(.NCPU(1), .CLK_HZ(CLK_HZ)) u_timer (
+  logic irq_tsys;
+  logic [NCPU-1:0] irq_tcpu;
+  slavio_timer #(.NCPU(NCPU), .CLK_HZ(CLK_HZ)) u_timer (
     .clk, .rst(rst_m), .bus_i(iob_q[3]), .bus_o(iob_r[3]), .irq_sys(irq_tsys), .irq_cpu(irq_tcpu));
 
   logic [31:0] isrc;
@@ -377,10 +393,8 @@ module ss20_machine #(
     isrc[SI_E] = irq_le;
     isrc[SI_FL] = irq_fdc;
   end
-  logic [0:0][3:0] irl_v;
-  slavio_intctl #(.NCPU(1)) u_intctl (
+  slavio_intctl #(.NCPU(NCPU)) u_intctl (
     .clk, .rst(rst_m), .bus_i(iob_q[4]), .bus_o(iob_r[4]), .src_i(isrc), .timer_cpu_i(irq_tcpu), .irl_o(irl_v));
-  assign irl = irl_v[0];
 
   // 5: the system registers (LEDs, AUXIO, power, system control/status)
   logic [15:0] leds;
@@ -482,10 +496,10 @@ module ss20_machine #(
   sbus_pkg::dvma_req_t [2:0] dvma_q;      // 0 DMA2's ESP channel, 1 its LANCE channel, 2 the APC
   mem_rsp_t        [2:0] dvma_r;
   ss20_msi u_msi (
-    .clk, .rst(rst_m), .bus_i(iob_q[8]), .bus_o(iob_r[8]), .bus_mid_i(4'd8),
+    .clk, .rst(rst_m), .bus_i(iob_q[8]), .bus_o(iob_r[8]), .bus_mid_i(mb_mid),
     .dvma_req_i(dvma_q), .dvma_rsp_o(dvma_r), .mem_req_o(dma_req), .mem_rsp_i(dma_rsp),
     .mts_err_i(1'b0), .mts_err_to_i(1'b0), .mts_err_pa_i(36'd0), .mts_err_siz_i(3'd0),
-    .mts_err_s_i(1'b0), .mts_err_mid_i(4'd0), .irq_err_o(irq_msi), .arb_en_o());
+    .mts_err_s_i(1'b0), .mts_err_mid_i(4'd0), .irq_err_o(irq_msi), .arb_en_o(arb_en));
 
   /* verilator lint_on PINCONNECTEMPTY */
 
@@ -520,7 +534,7 @@ module ss20_machine #(
 
   /* verilator lint_off UNUSEDSIGNAL */
   wire unused_inputs = ^{opt_l2tlb_i, uart_cts_i, uart_dsr_i,
-                         leds, rtc_i[63:56], cpu_tt, cpu_pc, cpu_commit, cpu_trap, cpu_halt, ld_state, kb_leds[1]};
+                         leds, rtc_i[63:56], ld_state, kb_leds[1], arb_en};
   /* verilator lint_on UNUSEDSIGNAL */
 
 endmodule

@@ -8,6 +8,7 @@
 # the same SystemVerilog Quartus builds: files.qip lists it, and this script
 # takes the list from there, so the two cannot drift apart.
 # SIM_OBJ=dir builds elsewhere, e.g. while a run still uses the usual model.
+# SIM_NCPU=n builds the machine with n CPU modules (default 1).
 
 set -euo pipefail
 
@@ -44,6 +45,8 @@ VFLAGS=(
     -Mdir "$OBJ"
 )
 [ "$TRACE" = 1 ] && VFLAGS+=(--trace)
+# SIM_NCPU=n: n CPU modules (ss20_machine NCPU; default 1)
+[ -n "${SIM_NCPU:-}" ] && VFLAGS+=(-GNCPU="$SIM_NCPU")
 
 cd "$ROOT"
 time verilator "${VFLAGS[@]}" "${SRCS[@]}" sim/sim_top.sv sim/sim_main.cpp

@@ -1,109 +1,126 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 //
 // ss20_mbus: the interconnect's arbiter (docs/arch/bus.md "The
-// interconnect"): the CPU module and the MSI's DVMA port (already
+// interconnect"): the CPU modules and the MSI's DVMA port (already
 // translated to physical addresses) onto the one slave port of
-// ss20_memctl.
+// ss20_memctl. Master n < NCPU is CPU module MID 8 + n; master NCPU is DVMA.
 //
 // - A request is granted whole: a single beat until its ack, a line until
 //   its fourth ack (or an err), a locked read until the owner's next write
 //   completes (ldstub/swap and the table walker's R-bit update stay atomic
-//   against DMA).
+//   against the other masters).
 // - The grant is combinational when the port is free, so an uncontended
 //   request costs no cycle; after each finished request one cycle passes
 //   with nothing presented (the finished master drops its request then,
 //   and ss20_memctl ignores that cycle anyway).
-// - Round robin between the two when both wait.
+// - Round robin among the masters that ask, starting after the last one
+//   served. A CPU whose bit in park_i is set (the MSI's arbiter-enable
+//   register clear for it, t_msi) is not granted.
 // - ss20_memctl writes single beats only; the CPU's write-through caches
 //   never write a line, but DMA does: a line write is passed on as four
 //   single doubleword writes at its four addresses, the master's data for
 //   each beat taken as it presents it after the previous ack.
-// - mid_o is the granted master's module ID (the snoop's source): 8 for
-//   the CPU, 0 for DVMA.
+// - mid_o is the granted master's module ID (the snoop's source, the MSI's
+//   MID register): 8 + n for a CPU, 0 for DVMA.
 
 module ss20_mbus
   import mem_pkg::*;
 #(
-  parameter logic [3:0] CPU_MID = 4'd8,
-  parameter logic [3:0] DMA_MID = 4'd0
+  parameter int NCPU = 1                 // 1 to 4
 )(
   input  logic      clk,
   input  logic      rst,
 
-  input  mem_req_t  cpu_req_i,
-  output mem_rsp_t  cpu_rsp_o,
-  input  mem_req_t  dma_req_i,
-  output mem_rsp_t  dma_rsp_o,
+  input  mem_req_t  req_i [NCPU+1],      // CPU 0 .. NCPU-1, then DVMA
+  output mem_rsp_t  rsp_o [NCPU+1],
+  input  logic [NCPU-1:0] park_i,
 
   output mem_req_t  req_o,
   input  mem_rsp_t  rsp_i,
   output logic [3:0] mid_o
 );
 
-  typedef enum logic [1:0] {O_NONE, O_CPU, O_DMA, O_GAP} own_t;
-  own_t       own;
-  logic       last_dma;                   // the last grant went to DMA (round robin)
-  logic       locked;                     // the owner's locked read is done; hold until its write
-  logic [1:0] beat;                       // beats acked within a line
+  localparam int NM = NCPU + 1;
+  localparam int MW = $clog2(NM + 1);
+  localparam logic [MW-1:0] NONE = MW'(NM);
 
-  // the master presented this cycle
-  own_t cur;
-  always_comb begin
-    cur = own;
-    if (own == O_NONE) begin
-      if (cpu_req_i.valid && dma_req_i.valid) cur = last_dma ? O_CPU : O_DMA;
-      else if (cpu_req_i.valid)               cur = O_CPU;
-      else if (dma_req_i.valid)               cur = O_DMA;
-    end
-  end
+  logic [MW-1:0] own;                     // the master holding the port, or NONE
+  logic          gap;                     // the cycle after a finished request
+  logic [MW-1:0] last;                    // the last master granted
+  logic          locked;                  // the owner's locked read is done; hold until its write
+  logic [1:0]    beat;                    // beats acked within a line
 
-  mem_req_t m;
+  logic [NM-1:0] want;
+  always_comb
+    for (int m = 0; m < NM; m++)
+      want[m] = req_i[m].valid && !(m < NCPU && park_i[m < NCPU ? m : 0]);
+
+  // the first master asking after `last`, or NONE
+  function automatic logic [MW-1:0] pick(input logic [NM-1:0] w, input logic [MW-1:0] l);
+    logic [MW-1:0] r;
+    r = NONE;
+    for (int k = NM; k >= 1; k--)
+      if (w[(int'(l) + k) % NM]) r = MW'((int'(l) + k) % NM);
+    return r;
+  endfunction
+
+  // the master presented this cycle: the owner, or a new grant when free
+  logic [MW-1:0] cur;
+  assign cur = own != NONE ? own : gap ? NONE : pick(want, last);
+
+  function automatic mem_req_t sel_req(input logic [MW-1:0] i);
+    mem_req_t r;
+    r = '0;
+    for (int m = 0; m < NM; m++) if (i == MW'(m)) r = req_i[m];
+    return r;
+  endfunction
+
+  mem_req_t m_req;
+  /* verilator lint_off UNUSEDSIGNAL */     // (of the owner's request only burst, lock and write)
+  mem_req_t o_req;
+  /* verilator lint_on UNUSEDSIGNAL */
+  assign m_req = sel_req(cur);
+  assign o_req = sel_req(own);            // (an ack only ever comes to the registered owner)
   always_comb begin
-    m = '0;
-    if (cur == O_CPU) m = cpu_req_i;
-    if (cur == O_DMA) m = dma_req_i;
-    req_o = m;
-    if (m.burst && m.write) begin         // a line write: four single beats
+    req_o = m_req;
+    if (m_req.burst && m_req.write) begin     // a line write: four single beats
       req_o.burst = 1'b0;
-      req_o.pa    = {m.pa[35:5], beat, 3'b000};
+      req_o.pa    = {m_req.pa[35:5], beat, 3'b000};
     end
   end
-  assign mid_o = cur == O_DMA ? DMA_MID : CPU_MID;
+  assign mid_o = (cur < MW'(NCPU)) ? 4'(8 + int'(cur)) : 4'd0;
 
-  always_comb begin
-    cpu_rsp_o = '0;
-    dma_rsp_o = '0;
-    if (cur == O_CPU) cpu_rsp_o = rsp_i;
-    if (cur == O_DMA) dma_rsp_o = rsp_i;
-  end
+  always_comb
+    for (int m = 0; m < NM; m++) rsp_o[m] = (own == MW'(m)) ? rsp_i : '0;
 
-  // the request's last ack
-  logic done;
+  // the owner's request's last ack
+  logic active, done;
+  assign active = own != NONE;
   always_comb begin
     done = 1'b0;
-    if (rsp_i.ack && (cur == O_CPU || cur == O_DMA)) begin
-      if (rsp_i.err)               done = 1'b1;
-      else if (m.burst)            done = beat == 2'd3;
-      else if (m.lock && !m.write) done = 1'b0;   // a locked read: the write follows
-      else                         done = !locked || m.write;
+    if (rsp_i.ack && active) begin
+      if (rsp_i.err)                       done = 1'b1;
+      else if (o_req.burst)                done = beat == 2'd3;
+      else if (o_req.lock && !o_req.write) done = 1'b0;   // a locked read: the write follows
+      else                                 done = !locked || o_req.write;
     end
   end
 
   always_ff @(posedge clk) begin
     if (rst) begin
-      own <= O_NONE; last_dma <= 1'b0; locked <= 1'b0; beat <= '0;
+      own <= NONE; gap <= 1'b0; last <= MW'(NM - 1); locked <= 1'b0; beat <= '0;
     end else begin
-      if (own == O_GAP) own <= O_NONE;
-      else if (own == O_NONE && cur != O_NONE) begin
-        own <= cur;
-        last_dma <= cur == O_DMA;
+      gap <= 1'b0;
+      if (own == NONE && cur != NONE) begin
+        own  <= cur;
+        last <= cur;
       end
-      if (rsp_i.ack && (cur == O_CPU || cur == O_DMA)) begin
-        beat <= m.burst && !rsp_i.err ? beat + 2'd1 : 2'd0;
-        if (m.lock && !m.write && !rsp_i.err) locked <= 1'b1;
+      if (rsp_i.ack && active) begin
+        beat <= o_req.burst && !rsp_i.err ? beat + 2'd1 : 2'd0;
+        if (o_req.lock && !o_req.write && !rsp_i.err) locked <= 1'b1;
       end
       if (done) begin
-        own <= O_GAP; locked <= 1'b0; beat <= '0;
+        own <= NONE; gap <= 1'b1; locked <= 1'b0; beat <= '0;
       end
     end
   end

@@ -293,7 +293,7 @@ module tb_srmmu_h #(parameter bit REF = 1'b0) (input logic clk, input logic rst)
         .walk_done_o(wk_done), .walk_fault_o(wk_fault), .walk_masked_o(wk_masked),
         .berr_valid_i(1'b0), .berr_at_i(3'd0), .berr_va_i(32'd0), .berr_no_fault_i(1'b0), .berr_masked_o(berr_masked),
         .mem_req_o(mreq), .mem_rsp_i(mrsp),
-        .sysconf_i(32'h1234_5678), .mcntl_o(mcntl), .wd_i(1'b0), .si_reset_o(si_reset), .dbg_o(dbg));
+        .sysconf_i(32'h1234_5678), .cpu_idx_i(2'd0), .mcntl_o(mcntl), .wd_i(1'b0), .si_reset_o(si_reset), .dbg_o(dbg));
     end
   endgenerate
 
