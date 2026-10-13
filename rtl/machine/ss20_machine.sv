@@ -130,7 +130,7 @@ module ss20_machine #(
     .clk, .rst, .ram_mb_i(opt_ram_mb_i),
     .ioctl_download_i, .ioctl_index_i, .ioctl_wr_i, .ioctl_addr_i, .ioctl_dout_i, .ioctl_wait_o,
     .run_o(run), .active_o(ld_active), .state_o(ld_state),
-    .ddr_wait_i(ddr_busy_i), .ddr_burstcnt_o(ld_bc), .ddr_addr_o(ld_addr), .ddr_we_o(ld_we),
+    .ddr_wait_i(mm_wait), .ddr_burstcnt_o(ld_bc), .ddr_addr_o(ld_addr), .ddr_we_o(ld_we),
     .ddr_din_o(ld_din), .ddr_be_o(ld_be));
 
   // The machine's reset: the loader's, and a software reset (the system
@@ -169,46 +169,106 @@ module ss20_machine #(
   mem_req_t    io_req;
   mem_rsp_t    io_rsp;
   logic        mc_rd, mc_we;
-  logic [2:0]  mc_state;
   logic [7:0]  mc_bc, mc_be;
   logic [28:0] mc_addr;
   logic [63:0] mc_din;
 
-  ss20_memctl u_mem (
-    .clk, .rst(rst_m), .ram_mb_i(opt_ram_mb_i), .mid_i(4'd8),
-    .req_i(cpu_req), .rsp_o(cpu_rsp), .snoop_o(snoop), .snoop_hold_i(snoop_hold),
-    .io_req_o(io_req), .io_rsp_i(io_rsp),
-    .ddr_wait_i(ddr_busy_i), .ddr_burstcnt_o(mc_bc), .ddr_addr_o(mc_addr), .ddr_rd_o(mc_rd),
-    .ddr_we_o(mc_we), .ddr_din_o(mc_din), .ddr_be_o(mc_be),
-    .ddr_dout_i, .ddr_dout_ready_i, .state_o(mc_state));
+  // the interconnect: the CPU and the MSI's DVMA (ss20_msi, below) share
+  // the memory controller
+  mem_req_t    dma_req, mb_req;
+  mem_rsp_t    dma_rsp, mb_rsp;
+  logic [3:0]  mb_mid;
+  ss20_mbus u_mbus (
+    .clk, .rst(rst_m), .cpu_req_i(cpu_req), .cpu_rsp_o(cpu_rsp), .dma_req_i(dma_req), .dma_rsp_o(dma_rsp),
+    .req_o(mb_req), .rsp_i(mb_rsp), .mid_o(mb_mid));
 
-  // DDR3: the loader while it works (the machine is in reset then), else
-  // the memory controller. The other masters (video scan-out, the
-  // Ethernet mailbox) come with their phases, through ddram_arb.
+  ss20_memctl u_mem (
+    .clk, .rst(rst_m), .ram_mb_i(opt_ram_mb_i), .mid_i(mb_mid),
+    .req_i(mb_req), .rsp_o(mb_rsp), .snoop_o(snoop), .snoop_hold_i(snoop_hold),
+    .io_req_o(io_req), .io_rsp_i(io_rsp),
+    .ddr_wait_i(mm_wait), .ddr_burstcnt_o(mc_bc), .ddr_addr_o(mc_addr), .ddr_rd_o(mc_rd),
+    .ddr_we_o(mc_we), .ddr_din_o(mc_din), .ddr_be_o(mc_be),
+    .ddr_dout_i(mm_dout), .ddr_dout_ready_i(mm_rdv), .state_o());
+
+  // DDR3, through two rtl/mister/ddram_arb levels: the TCX's scan-out
+  // first (it must not underrun), then the memory controller (or the
+  // loader while it works: the machine is in reset then), then the TCX's
+  // VRAM accesses.
+  logic        mm_rd, mm_we, mm_wait, mm_rdv;
+  logic [7:0]  mm_bc, mm_be;
+  logic [28:0] mm_addr;
+  logic [63:0] mm_din, mm_dout;
   always_comb begin
     if (ld_active) begin
-      ddr_burstcnt_o = ld_bc; ddr_addr_o = ld_addr; ddr_rd_o = 1'b0; ddr_we_o = ld_we;
-      ddr_din_o = ld_din; ddr_be_o = ld_be;
+      mm_bc = ld_bc; mm_addr = ld_addr; mm_rd = 1'b0; mm_we = ld_we; mm_din = ld_din; mm_be = ld_be;
     end else begin
-      ddr_burstcnt_o = mc_bc; ddr_addr_o = mc_addr; ddr_rd_o = mc_rd; ddr_we_o = mc_we;
-      ddr_din_o = mc_din; ddr_be_o = mc_be;
+      mm_bc = mc_bc; mm_addr = mc_addr; mm_rd = mc_rd; mm_we = mc_we; mm_din = mc_din; mm_be = mc_be;
     end
   end
 
-  iob_req_t    iob_q [8];
-  iob_rsp_t    iob_r [8];
+  logic        sc_rd, sc_wait, sc_rdv;
+  logic [7:0]  sc_bc;
+  logic [28:0] sc_addr;
+  logic [63:0] sc_dout;
+  logic        vr_rd, vr_we, vr_wait, vr_rdv;
+  logic [7:0]  vr_bc, vr_be;
+  logic [28:0] vr_addr;
+  logic [63:0] vr_din, vr_dout;
+  logic        lo_rd, lo_we, lo_wait, lo_rdv;
+  logic [7:0]  lo_bc, lo_be;
+  logic [28:0] lo_addr;
+  logic [63:0] lo_din, lo_dout;
+
+  ddram_arb u_arb_top (
+    .clk, .reset(rst),
+    .m0_waitrequest(sc_wait), .m0_burstcount(sc_bc), .m0_address(sc_addr), .m0_read(sc_rd), .m0_write(1'b0),
+    .m0_writedata(64'd0), .m0_byteenable(8'hFF), .m0_readdata(sc_dout), .m0_readdatavalid(sc_rdv),
+    .m1_waitrequest(lo_wait), .m1_burstcount(lo_bc), .m1_address(lo_addr), .m1_read(lo_rd), .m1_write(lo_we),
+    .m1_writedata(lo_din), .m1_byteenable(lo_be), .m1_readdata(lo_dout), .m1_readdatavalid(lo_rdv),
+    .s_waitrequest(ddr_busy_i), .s_burstcount(ddr_burstcnt_o), .s_address(ddr_addr_o), .s_read(ddr_rd_o),
+    .s_write(ddr_we_o), .s_writedata(ddr_din_o), .s_byteenable(ddr_be_o), .s_readdata(ddr_dout_i),
+    .s_readdatavalid(ddr_dout_ready_i));
+
+  ddram_arb u_arb_lo (
+    .clk, .reset(rst),
+    .m0_waitrequest(mm_wait), .m0_burstcount(mm_bc), .m0_address(mm_addr), .m0_read(mm_rd), .m0_write(mm_we),
+    .m0_writedata(mm_din), .m0_byteenable(mm_be), .m0_readdata(mm_dout), .m0_readdatavalid(mm_rdv),
+    .m1_waitrequest(vr_wait), .m1_burstcount(vr_bc), .m1_address(vr_addr), .m1_read(vr_rd), .m1_write(vr_we),
+    .m1_writedata(vr_din), .m1_byteenable(vr_be), .m1_readdata(vr_dout), .m1_readdatavalid(vr_rdv),
+    .s_waitrequest(lo_wait), .s_burstcount(lo_bc), .s_address(lo_addr), .s_read(lo_rd),
+    .s_write(lo_we), .s_writedata(lo_din), .s_byteenable(lo_be), .s_readdata(lo_dout),
+    .s_readdatavalid(lo_rdv));
+
+  iob_req_t    iob_q [9];
+  iob_rsp_t    iob_r [9];
   ss20_iobridge u_io (.clk, .rst(rst_m), .req_i(io_req), .rsp_o(io_rsp), .io_o(iob_q), .io_i(iob_r));
 
   // ------------------------------------------------- the system devices --
-  // 0: keyboard/mouse ESCC (phase 6 connects its byte streams)
+  // 0: keyboard (A) / mouse (B) ESCC, with the Sun keyboard and mouse
+  // made from hps_io's PS/2 events
   logic irq_kbd, irq_ser;
+  logic [7:0] kb_tx, kb_rx, ms_rx;
+  logic       kb_tx_v, kb_rx_v, kb_rx_rdy, ms_rx_v, ms_rx_rdy;
+  logic [3:0] kb_leds;
   escc #(.CLK_HZ(CLK_HZ)) u_escc_kbd (
     .clk, .rst(rst_m), .bus_i(iob_q[0]), .bus_o(iob_r[0]),
     .txd_a_o(), .rxd_a_i(1'b1), .dcd_a_i(1'b1), .cts_a_i(1'b1), .rts_a_o(), .dtr_a_o(),
     .txd_b_o(), .rxd_b_i(1'b1), .dcd_b_i(1'b1), .cts_b_i(1'b1), .rts_b_o(), .dtr_b_o(),
-    .tx_byte_a_o(), .tx_byte_valid_a_o(), .rx_byte_a_i(8'd0), .rx_byte_valid_a_i(1'b0), .rx_byte_ready_a_o(),
-    .tx_byte_b_o(), .tx_byte_valid_b_o(), .rx_byte_b_i(8'd0), .rx_byte_valid_b_i(1'b0), .rx_byte_ready_b_o(),
+    .tx_byte_a_o(kb_tx), .tx_byte_valid_a_o(kb_tx_v),
+    .rx_byte_a_i(kb_rx), .rx_byte_valid_a_i(kb_rx_v && kb_rx_rdy), .rx_byte_ready_a_o(kb_rx_rdy),
+    .tx_byte_b_o(), .tx_byte_valid_b_o(),
+    .rx_byte_b_i(ms_rx), .rx_byte_valid_b_i(ms_rx_v && ms_rx_rdy), .rx_byte_ready_b_o(ms_rx_rdy),
     .irq_o(irq_kbd));
+
+  sun_kbd #(.CLK_HZ(CLK_HZ)) u_kbd (
+    .clk, .rst(rst_m), .ps2_key_i, .layout_i(opt_kbd_layout_i),
+    .tx_byte_i(kb_tx), .tx_byte_valid_i(kb_tx_v),
+    .rx_byte_o(kb_rx), .rx_byte_valid_o(kb_rx_v), .rx_byte_ready_i(kb_rx_rdy),
+    .bell_o(), .click_o(), .leds_o(kb_leds), .any_key_o(), .held_o());
+
+  sun_mouse #(.CLK_HZ(CLK_HZ)) u_mouse (
+    .clk, .rst(rst_m), .ps2_mouse_i,
+    .rx_byte_o(ms_rx), .rx_byte_valid_o(ms_rx_v), .rx_byte_ready_i(ms_rx_rdy));
 
   // 1: ttya (A, on the MiSTer's serial line) and ttyb (B, unconnected)
   logic [7:0] ta_tx, ta_rx;
@@ -287,6 +347,8 @@ module ss20_machine #(
     isrc[SI_K] = irq_kbd;
     isrc[SI_S] = irq_ser;
     isrc[SI_T] = irq_tsys;
+    isrc[SI_SBUS_LSB + 4] = irq_tcx;      // SBus level 5 (the TCX FCode's intr 0x39)
+    isrc[SI_I] = irq_msi;
   end
   logic [0:0][3:0] irl_v;
   slavio_intctl #(.NCPU(1)) u_intctl (
@@ -304,63 +366,36 @@ module ss20_machine #(
     .cfg_cg3_i(opt_cg3_i), .cfg_noautoboot_i(!opt_autoboot_i), .cfg_serial_i(opt_serial_i),
     .cfg_ram_mb_i(opt_ram_mb_i), .sw_reset_o(sw_reset));
 
-  // 6: SBus slot F (DMA2, ESP, LANCE: phases 7-8), 7: slot 2 (TCX: phase
-  // 6): not yet; their registers read 0
+  // 6: SBus slot F (DMA2, ESP, LANCE: phases 7-8): not yet; reads 0
   always_ff @(posedge clk) begin
-    iob_r[6] <= '0; iob_r[7] <= '0;
+    iob_r[6] <= '0;
     iob_r[6].ack <= iob_q[6].req && !iob_r[6].ack;
-    iob_r[7].ack <= iob_q[7].req && !iob_r[7].ack;
   end
+
+  // 7: slot 2, the TCX
+  logic irq_tcx;
+  tcx u_tcx (
+    .clk, .rst(rst_m), .bus_i(iob_q[7]), .bus_o(iob_r[7]), .irq_o(irq_tcx),
+    .vram_address(vr_addr), .vram_burstcount(vr_bc), .vram_read(vr_rd), .vram_write(vr_we),
+    .vram_writedata(vr_din), .vram_byteenable(vr_be), .vram_waitrequest(vr_wait),
+    .vram_readdata(vr_dout), .vram_readdatavalid(vr_rdv),
+    .scan_address(sc_addr), .scan_burstcount(sc_bc), .scan_read(sc_rd), .scan_waitrequest(sc_wait),
+    .scan_readdata(sc_dout), .scan_readdatavalid(sc_rdv),
+    .clk_vid, .vid_ce_o, .vid_r_o, .vid_g_o, .vid_b_o, .vid_hs_o, .vid_vs_o, .vid_de_o);
+
+  // 8: the MSI: the IOMMU translating the SBus masters' DVMA, the M-to-S
+  // registers, the MID register
+  logic            irq_msi;
+  sbus_pkg::dvma_req_t [1:0] dvma_q;
+  mem_rsp_t        [1:0] dvma_r;
+  assign dvma_q = '0;                     // (DMA2's ESP and LANCE channels: phases 7-8)
+  ss20_msi u_msi (
+    .clk, .rst(rst_m), .bus_i(iob_q[8]), .bus_o(iob_r[8]), .bus_mid_i(4'd8),
+    .dvma_req_i(dvma_q), .dvma_rsp_o(dvma_r), .mem_req_o(dma_req), .mem_rsp_i(dma_rsp),
+    .mts_err_i(1'b0), .mts_err_to_i(1'b0), .mts_err_pa_i(36'd0), .mts_err_siz_i(3'd0),
+    .mts_err_s_i(1'b0), .mts_err_mid_i(4'd0), .irq_err_o(irq_msi), .arb_en_o());
 
   /* verilator lint_on PINCONNECTEMPTY */
-
-  // ------------------------------------------------- bring-up status --
-  // Sixteen bits drawn as squares over the test pattern (green 1, red 0),
-  // for the board bring-up while there is no screen console: sticky bits
-  // say an event happened since power-up.
-  logic [15:0] dbg;
-  logic [31:0] dbg_pc;                    // the last committed PC
-  logic [15:0] dbg_t;                     // the last trap's tt, error mode, a watchdog seen, the IRL
-  logic [24:0] act;
-  logic [3:0]  rd_cnt, bt_cnt;
-  always_ff @(posedge clk) begin
-    // row 2 (bring-up): reads accepted (31:16) and read beats received (15:0)
-    // row 2 (bring-up): the CPU's request address, PA[35:28] and PA[23:0]
-    dbg_pc <= {cpu_req.pa[35:28], cpu_req.pa[23:0]};
-    if (ddr_rd_o && !ddr_busy_i && !ld_active) rd_cnt <= rd_cnt + 4'd1;
-    if (ddr_dout_ready_i) bt_cnt <= bt_cnt + 4'd1;
-    // row 3: memctl state (3), a read issued / accepted / data seen (sticky),
-    // DDR busy seen, a write issued, cpu trap seen, the last tt's low nibble,
-    // error mode, a watchdog seen, the I-side request seen
-    dbg_t[15:13] <= mc_state;
-    dbg_t[12] <= dbg_t[12] | (ddr_rd_o);
-    dbg_t[11] <= dbg_t[11] | (ddr_rd_o && !ddr_busy_i);
-    dbg_t[10] <= dbg_t[10] | ddr_dout_ready_i;
-    dbg_t[9]  <= dbg_t[9] | ddr_busy_i;
-    dbg_t[8]  <= dbg_t[8] | (ddr_we_o && !ld_active);
-    dbg_t[7:4] <= rd_cnt;                 // reads accepted, low 4 bits
-    dbg_t[3:0] <= bt_cnt;                 // read beats received, low 4 bits
-  end
-  always_ff @(posedge clk) begin
-    if (cpu_req.valid) act <= act + 25'd1;
-    dbg[0]  <= run;
-    dbg[1]  <= ld_active;
-    dbg[2]  <= nv_ready;
-    dbg[3]  <= rst;
-    dbg[4]  <= dbg[4] | ioctl_download_i;
-    dbg[5]  <= dbg[5] | (ioctl_download_i && ioctl_index_i == 8'd0);
-    dbg[6]  <= dbg[6] | (ioctl_wr_i && ioctl_index_i == 8'd0);
-    dbg[7]  <= dbg[7] | cpu_req.valid;
-    dbg[8]  <= act[24];
-    dbg[9]  <= dbg[9] | ta_tx_v;
-    dbg[10] <= dbg[10] | iob_q[1].req;
-    dbg[11] <= ddr_busy_i;
-    dbg[12] <= rst_m;
-    dbg[13] <= ioctl_download_i;
-    dbg[14] <= ld_state[0];
-    dbg[15] <= ld_state[1];
-  end
-  initial begin dbg = '0; act = '0; dbg_pc = '0; dbg_t = '0; rd_cnt = '0; bt_cnt = '0; end
 
   // ------------------------------------------------------- idle for now --
   always_comb begin
@@ -375,75 +410,16 @@ module ss20_machine #(
   end
   assign sd_rd_o          = {nv_rd, 3'b000};
   assign sd_wr_o          = {nv_wr, 3'b000};
-  assign kbd_led_status_o = '0;
-  assign kbd_led_use_o    = '0;
+  assign kbd_led_status_o = {kb_leds[3], kb_leds[0], kb_leds[2]};   // Caps, Num, Scroll
+  assign kbd_led_use_o    = 3'b111;
   assign audio_l_o        = '0;
   assign audio_r_o        = '0;
   assign led_disk_o       = 1'b0;
   assign led_user_o       = !aux_led;   // the Aux register's LED bit (0 = lit), as the board's LED
 
-  // -------------------------------------------------------- test pattern --
-
-  // rst into the pixel clock's domain
-  logic [1:0] rst_vid_s;
-  always_ff @(posedge clk_vid) rst_vid_s <= {rst_vid_s[0], rst};
-  wire rst_vid = rst_vid_s[1];
-
-  logic [11:0] x, y;
-  logic de, hs, vs, frame;
-  video_timing raster (
-    .clk(clk_vid), .rst(rst_vid), .ce_i(1'b1),
-    .x_o(x), .y_o(y), .de_o(de), .hs_o(hs), .vs_o(vs), .frame_o(frame));
-
-  // Eight colour bars over the top three quarters, a grey ramp below, and a
-  // white frame on the outermost pixels, so a cropped or shifted picture
-  // shows at a glance.
-  wire edge_px = (x == 12'd0) || (x == 12'd1023) || (y == 12'd0) || (y == 12'd767);
-  wire [2:0] bar = x[9:7];
-  wire [7:0] ramp = x[9:2];
-
-  logic [15:0] dbg_v0, dbg_v, dbgt_v0, dbgt_v;
-  logic [31:0] dbgpc_v0, dbgpc_v;
-  always_ff @(posedge clk_vid) begin
-    dbg_v0 <= dbg; dbg_v <= dbg_v0;
-    dbgpc_v0 <= dbg_pc; dbgpc_v <= dbgpc_v0;
-    dbgt_v0 <= dbg_t; dbgt_v <= dbgt_v0;
-  end
-  // row 1 (y 600-647): the status bits 0-15; row 2 (656-687): the PC, bit
-  // 31 first, 32 px a bit; row 3 (696-727): dbg_t bit 15 first
-  wire in_r1 = y >= 12'd600 && y < 12'd648 && x[5:0] < 6'd48;
-  wire in_r2 = y >= 12'd656 && y < 12'd688 && x[4:0] < 5'd24;
-  wire in_r3 = y >= 12'd696 && y < 12'd728 && x[5:0] < 6'd48;
-  wire in_dbg = (in_r1 || in_r2 || in_r3) && x < 12'd1024;
-  wire dbg_bit = in_r1 ? dbg_v[x[9:6]] : in_r2 ? dbgpc_v[5'd31 - x[9:5]] : dbgt_v[4'd15 - x[9:6]];
-
-  always_ff @(posedge clk_vid) begin
-    vid_hs_o <= hs;
-    vid_vs_o <= vs;
-    vid_de_o <= de;
-    if (!de) begin
-      {vid_r_o, vid_g_o, vid_b_o} <= '0;
-    end else if (in_dbg) begin
-      vid_r_o <= dbg_bit ? 8'h00 : 8'hFF;
-      vid_g_o <= dbg_bit ? 8'hFF : 8'h00;
-      vid_b_o <= 8'h00;
-    end else if (edge_px) begin
-      {vid_r_o, vid_g_o, vid_b_o} <= '1;
-    end else if (y < 12'd576) begin
-      // white, yellow, cyan, green, magenta, red, blue, black
-      vid_r_o <= {8{~bar[1]}};
-      vid_g_o <= {8{~bar[2]}};
-      vid_b_o <= {8{~bar[0]}};
-    end else begin
-      {vid_r_o, vid_g_o, vid_b_o} <= {3{ramp}};
-    end
-  end
-  assign vid_ce_o = 1'b1;
-
   /* verilator lint_off UNUSEDSIGNAL */
-  wire unused_inputs = ^{opt_kbd_layout_i, opt_l2tlb_i,
-                         opt_eth_i, sd_ack_i[2:0], img_mounted_i[2:0], uart_cts_i, uart_dsr_i,
-                         ps2_key_i, ps2_mouse_i, frame, leds, rtc_i[63:56], cpu_tt, cpu_pc, cpu_commit, cpu_trap, cpu_halt, cpu_req.pa[27:24]};
+  wire unused_inputs = ^{opt_l2tlb_i, opt_eth_i, sd_ack_i[2:0], img_mounted_i[2:0], uart_cts_i, uart_dsr_i,
+                         leds, rtc_i[63:56], cpu_tt, cpu_pc, cpu_commit, cpu_trap, cpu_halt, dvma_r, ld_state, kb_leds[1]};
   /* verilator lint_on UNUSEDSIGNAL */
 
 endmodule

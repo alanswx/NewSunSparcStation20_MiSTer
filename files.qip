@@ -4,6 +4,8 @@ set_global_assignment -name SYSTEMVERILOG_FILE rtl/pkg/cpu_pkg.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/pkg/fpu_pkg.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/pkg/mmu_pkg.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/pkg/mem_pkg.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/pkg/sbus_pkg.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/pkg/ss20_ddr_pkg.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/lib/ram_2r1w_be.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/lib/ram_tdp_be.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/lib/ram_tdp8.sv
@@ -32,6 +34,14 @@ set_global_assignment -name SYSTEMVERILOG_FILE rtl/machine/ss20_loader.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/machine/ss20_uart.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/machine/ss20_osd.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/video_timing.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/machine/ss20_mbus.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sun4m/ss20_msi.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sun4m/sun_kbd.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sun4m/sun_mouse.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sun4m/tcx_dcram.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sun4m/tcx_fcode.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sun4m/tcx_scan.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sun4m/tcx.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/machine/ss20_machine.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/mister/ddram_arb.sv
 set_global_assignment -name QIP_FILE rtl/pll.qip

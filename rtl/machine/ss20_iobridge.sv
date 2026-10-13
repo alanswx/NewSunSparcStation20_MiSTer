@@ -25,8 +25,9 @@
 //   0xF_F16, F18, F1A, F1F  slave 5  system registers (slavio_misc)
 //   0xE_F000_0000-0xE_FFFF_FFFF   slave 6  the SBus slot F devices
 //   0xE_2000_0000-0xE_2FFF_FFFF   slave 7  slot 2 (the TCX)
+//   0xF_E000_0000-0xF_E00F_FFFF   slave 8  the MSI (IOMMU, M-to-S, MID)
 // The rest of the control space and slot E read 0 and ignore writes
-// (DEC-3): the MSI, the EMC, the floppy, the module control space. The
+// (DEC-3): the EMC, the floppy, the module control space. The
 // empty SBus slots 0, 1, 3 and the spaces PA[35:32] = 1-D time out with
 // err after TIMEOUT cycles (B1, A3). Slaves 6 and 7 are ports for the
 // phases that bring their devices (7 and 6); unconnected, tie their
@@ -35,7 +36,8 @@
 module ss20_iobridge
   import mem_pkg::*;
   #(
-  parameter int TIMEOUT = 64
+  parameter int TIMEOUT = 64,
+  parameter int NS      = 9               // slaves
 )(
   input  logic                 clk,
   input  logic                 rst,
@@ -43,15 +45,16 @@ module ss20_iobridge
   input  mem_req_t             req_i,       // single beats (no bursts)
   output mem_rsp_t             rsp_o,
 
-  output iobus_pkg::iob_req_t  io_o [8],    // to each slave; addr = PA[27:0]
-  input  iobus_pkg::iob_rsp_t  io_i [8]
+  output iobus_pkg::iob_req_t  io_o [NS],   // to each slave; addr = PA[27:0]
+  input  iobus_pkg::iob_rsp_t  io_i [NS]
 );
 
   // ----------------------------------------------------------------- decode
-  // 0..7 a slave, 8 reads 0, 9 times out
+  // 0..NS-1 a slave, R0 reads 0, TO times out
+  localparam logic [3:0] R0 = 4'd14, TO = 4'd15;
   logic [3:0] sel;
   always_comb begin
-    sel = 4'd8;
+    sel = R0;
     if (req_i.pa[35:32] == 4'hF) begin
       case (req_i.pa[31:20])
         12'hF10: sel = 4'd0;
@@ -60,17 +63,18 @@ module ss20_iobridge
         12'hF13: sel = 4'd3;
         12'hF14: sel = 4'd4;
         12'hF16, 12'hF18, 12'hF1A, 12'hF1F: sel = 4'd5;
-        default: sel = 4'd8;
+        12'hE00: sel = 4'd8;
+        default: sel = R0;
       endcase
     end else if (req_i.pa[35:32] == 4'hE) begin
       case (req_i.pa[31:28])
         4'h2:    sel = 4'd7;
         4'hF:    sel = 4'd6;
-        4'hE:    sel = 4'd8;
-        default: sel = 4'd9;              // the empty slots
+        4'hE:    sel = R0;
+        default: sel = TO;                // the empty slots
       endcase
     end else begin
-      sel = 4'd9;                         // reserved and VME spaces: no answer
+      sel = TO;                           // reserved and VME spaces: no answer
     end
   end
 
@@ -110,7 +114,7 @@ module ss20_iobridge
   assign go = beat.req;
 
   always_comb begin
-    for (int k = 0; k < 8; k++) begin
+    for (int k = 0; k < NS; k++) begin
       io_o[k] = beat;
       io_o[k].req = beat.req && sel == 4'(k);
     end
@@ -121,10 +125,10 @@ module ss20_iobridge
   logic [31:0] b_rdata;
   always_comb begin
     b_ack = 1'b0; b_err = 1'b0; b_rdata = '0;
-    if (sel < 4'd8) begin
-      for (int k = 0; k < 8; k++)
+    if (sel < 4'(NS)) begin
+      for (int k = 0; k < NS; k++)
         if (sel == 4'(k)) begin b_ack = io_i[k].ack; b_err = io_i[k].err; b_rdata = io_i[k].rdata; end
-    end else if (sel == 4'd8) begin
+    end else if (sel == R0) begin
       b_ack = go && tcount == 8'd1;       // a registered answer: the cycle after the beat starts
     end else begin
       b_err = go && tcount == 8'(TIMEOUT);
