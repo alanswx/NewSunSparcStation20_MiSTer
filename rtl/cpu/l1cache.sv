@@ -261,12 +261,12 @@ module l1cache
   logic [1:0]  sqb_we;
   logic [2:0]  sqb_wa [2];
   logic [31:0] sqb_wd [2];
-  logic [3:0]  sq_wr1;
-  assign sq_wr1 = sq_wr + 4'd1;
+  logic [2:0]  sq_wr1;               // (sq_wr + 1) / 2
+  assign sq_wr1 = sq_wr[3:1] + {2'b0, sq_wr[0]};
   always_comb
     for (int b = 0; b < 2; b++) begin
       sqb_we[b] = !rst && ((sq_push && sq_push2) || ((sq_push || sq_push2) && sq_wr[0] == b[0]));
-      sqb_wa[b] = sq_wr[0] == b[0] ? sq_wr[3:1] : sq_wr1[3:1];
+      sqb_wa[b] = sq_wr[0] == b[0] ? sq_wr[3:1] : sq_wr1;
       sqb_wd[b] = (sq_wr[0] == b[0] && sq_push) ? sq_in1 : sq_in2;
     end
   logic [31:0] sqb_rd [2];

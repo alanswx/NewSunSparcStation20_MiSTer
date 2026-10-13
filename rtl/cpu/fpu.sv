@@ -238,15 +238,20 @@ module fpu
   logic signed [13:0] e_big1;
   logic [57:0] ma, mb, m_big1, m_small, m_small_al1;
   logic [13:0] ediff;
+  // F?TOi uses the same shifter: rs2's significand down by 52 - exp
+  // (below, with the result in m_small_al[34:3]).
+  logic        al_b;                   // shift b
   always_comb begin
     sub_eff1 = (c_op == O_SUB) ^ c_a.sign ^ c_b.sign;
     a_bigger1 = (c_a.exp > c_b.exp) || (c_a.exp == c_b.exp && c_a.man >= c_b.man);
+    al_b = a_bigger1 || c_op == O_FTOI;
     ma = {2'b0, c_a.man, 3'b0};
     mb = {2'b0, c_b.man, 3'b0};
     e_big1  = a_bigger1 ? c_a.exp : c_b.exp;
     m_big1  = a_bigger1 ? ma : mb;
-    m_small = a_bigger1 ? mb : ma;
-    ediff = 14'(a_bigger1 ? (c_a.exp - c_b.exp) : (c_b.exp - c_a.exp));
+    m_small = al_b ? mb : ma;
+    if (c_op == O_FTOI) ediff = 14'sd52 - c_b.exp;
+    else ediff = 14'(a_bigger1 ? (c_a.exp - c_b.exp) : (c_b.exp - c_a.exp));
     al_sticky1 = 1'b0;
     if (ediff > 14'd60) begin
       m_small_al1 = '0;
@@ -300,18 +305,15 @@ module fpu
 
   // Integer conversions
   logic [31:0] itof_abs;
-  logic [5:0]  ftoi_sh;
-  logic [52:0] ftoi_mi;
   logic [31:0] ftoi_iv;
   logic        ftoi_inexact;
   always_comb begin
     itof_abs = c_b_bits[63] ? (32'd0 - c_b_bits[63:32]) : c_b_bits[63:32];
-    // value = man * 2^(exp - 52), 0 <= exp <= 31: integer part = man >> (52 - exp)
-    ftoi_sh = 6'(14'sd52 - c_b.exp);
-    ftoi_mi = c_b.man >> ftoi_sh;
-    ftoi_inexact = 1'b0;
-    for (int i = 0; i < 53; i++) if (i < int'(ftoi_sh) && c_b.man[i]) ftoi_inexact = 1'b1;
-    ftoi_iv = ftoi_mi[31:0];
+    // value = man * 2^(exp - 52), 0 <= exp <= 31: integer part = man >> (52 - exp),
+    // from the aligner ({man, 3'b0} shifted: the integer at [34:3], what fell off
+    // in [2:0] and the sticky)
+    ftoi_iv = m_small_al[34:3];
+    ftoi_inexact = al_sticky | (|m_small_al[2:0]);
   end
 
   // The direct results and the wide operand for the rounder, per op
@@ -436,7 +438,7 @@ module fpu
         if (c_b.nan) begin
           res_flags[FX_NV] = 1'b1; res_bits = {32'h7FFF_FFFF, 32'd0};
         end else if (c_b.inf || c_b.exp > 14'sd31 ||
-                     (c_b.exp == 14'sd31 && !(c_b.sign && ftoi_mi[31:0] == 32'h8000_0000))) begin
+                     (c_b.exp == 14'sd31 && !(c_b.sign && ftoi_iv == 32'h8000_0000))) begin
           // (a negative value that truncates to exactly -2^31 is in range)
           res_flags[FX_NV] = 1'b1;
           res_bits = {c_b.sign ? 32'h8000_0000 : 32'h7FFF_FFFF, 32'd0};
@@ -591,6 +593,6 @@ module fpu
 
   logic unused_ok;
   assign unused_ok = &{1'b0, ds_busy, req_i.rd_addr[0], req_i.fsr_wdata[29:28], req_i.fsr_wdata[22:12],
-                       ftoi_mi[52:32], m_small_al[57:56]};
+                       m_small_al[57:56]};
 
 endmodule
