@@ -13,7 +13,7 @@ acceptance list is mmu-notes.md §7.
 | I-cache geometry | **The real SuperSPARC one: 20 KB, 5 ways × 64 sets × 64-byte lines, a valid bit per 32-byte half-line; fills by half-line.** | The POST and `t_cache_diag` walk the diagnostic image (ASI 0x0C/0x0D) way 0-4, set VA[11:6], and check the two valid bits; the OBP's STAG loop runs at a 64-byte stride. A different storage would need a translated image anyway; the real one costs 20 KB of BRAM. |
 | D-cache geometry | The real one: 16 KB, 4 × 128 × 32 B. | ASI 0x0E/0x0F image, the POST's #8. |
 | Write policy | Write-through, no write-allocate, both caches physically tagged; main memory cached whatever PTE.C says (E3); snoop invalidation from every write on the interconnect (the own module's writes included for the I-cache, excluded for the D-cache, which updates its line instead). | PLAN §2; `t_cache_force`, `t_selfmod`, `t_smp_coherent`, `t_flash_clear`. Copy-back (MBus mode on the real chip) buys nothing on this interconnect and costs owned-line handling. |
-| TLB | 64 entries, fully associative, unified, Viking's replacement (first invalid, else limited-history LRU with lock bits), the ASI 6 image stored as the Viking fields (SEL 0-3), two lookup ports (I and D), one shared walker. | MMU-2, `t_mmu_diag`, the watchdog path's TLB writes. |
+| TLB | 64 entries, fully associative, unified, Viking's replacement (first invalid, else limited-history LRU with lock bits), the ASI 6 image stored as the Viking fields (SEL 0-3), two lookup ports (I and D), one shared walker. **Built from RAM** (2026-10-12): the image in three 64-word RAMs, V/lock/used in flops, the CAM as nine 16-row × 64-bit RAMs (§2). | MMU-2, `t_mmu_diag`, the watchdog path's TLB writes. The flop CAM was 9,200 ALMs, half the CPU; the RAM one is ~1,700 ALMs (the whole `srmmu`) and 21 M10K. |
 | L2 TLB / PTP cache (MCNTL bit 6) | Not in this version: bit 6 is stored and ignored; `t_mmu_l2` passes trivially. | PLAN §2 calls it an option; the Viking-size TLB makes it a performance item for later (`tlbbench`). |
 | Bus errors | V8's traps as the suite and the POST expect: `instruction_access_error` 0x21 / `data_access_error` 0x29 with FT 5 and TO (never BE); a table-walk error is FT 4 + L, trapped as the access exception of the access (tt 1 / 9). | mmu-notes §4.2; Viking's "always tt 1/9" is not what the SS20 PROM checks. |
 | FAV on instruction faults | Set, SFAR = the fetch VA. | `t_mmu_ifault` expects 0x366 (Viking would not write the SFAR). Bus errors on fetches: 0x874, no FAV (the suite). |
@@ -52,9 +52,19 @@ stalled access).
 ## 2. Translation (`srmmu`)
 
 A lookup port takes `{valid, va, at}` (AT as in the SFSR: bit 2 store,
-bit 1 instruction, bit 0 supervisor) and the ASI's rule, and answers in
-the same cycle on a TLB hit with `{pa, acc, fault}` or `miss`. The TLB
-has **one** CAM: the data side's request is served when it has one and
+bit 1 instruction, bit 0 supervisor) and the ASI's rule, and answers
+three cycles later (the side holds the request and sees `busy`) with
+`{pa, acc, fault}` or `miss`, provided the side still presents the same
+VA and AT. The CAM is RAM: the 36 compared bits {VA[31:12], CTX} in nine
+4-bit slices, each a 16-row RAM whose row r is the 64-bit vector of the
+entries matching nibble r; a lookup reads one row per slice (cycle A),
+ANDs the nine vectors with V and takes the first match, reading the image
+there (B), and answers (C). A level above 3 and the context of an ACC 6-7
+entry are handled when the entry is written: the bits they ignore are
+written as "match every row". Writing an entry (a fill; an ASI 6 write of
+SEL 0-2) rewrites its bit in all 16 rows of every slice, a 17-cycle
+read-modify-write, from the image; V is set only by those writes, so the
+CAM is consistent wherever V is. The TLB has **one** CAM: the data side's request is served when it has one and
 the instruction side is told `busy` and retries; the instruction side
 keeps an eight-entry micro-TLB of the pages it translated (VA tag, PPN,
 ACC; the permission re-checked on each use, a failing one going to the
@@ -94,6 +104,8 @@ the SFSR is written, return the fault to the IU).
   with the LVL conditions (page: LVL 3 & [31:12]; segment: LVL 2-3 &
   [31:18]; region: LVL 1-3 & [31:24]; all with ACC ≥ 6 or CTX equal;
   context: ACC ≤ 5 & CTX equal; entire: all); the other image bits stay.
+  Types 0-3 walk the image (65 cycles), entire and ASI 5/7 writes clear V
+  at once; lookups answer busy and TLB register accesses wait meanwhile.
 - **ASI 6:** entry VA[17:12], SEL VA[10:8]: 0 VA tag (bits 31:12), 1 CTX
   (15:0), 2 the PTE image {PPN 31:8, C, M, V(5), ACC, LVL(1:0)}, 3 lock
   (bit 0); 4-6 read 0, writes ignored. Word access only. Any ASI 5/6/7
