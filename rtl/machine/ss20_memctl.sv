@@ -127,6 +127,21 @@ module ss20_memctl
   logic [2:0]  beats_left;
   logic        burst_q;
   logic        ram_q;                     // the request is main memory (the EMC's corrections apply)
+
+  // Simulation only (+prom_wait=N): N cycles before each boot-PROM read,
+  // the access time of the real machine's byte-wide EPROM (about 0.7 us an
+  // instruction): OBP 2.25's POST times its counter/timer test by
+  // instruction loops (post-tests.md "PROCn Counter/Timer Test")
+  logic [7:0]  prom_wait, pw_cnt;
+`ifndef SYNTHESIS
+  initial begin
+    logic [7:0] n;
+    if (!$value$plusargs("prom_wait=%d", n)) n = 8'd0;
+    prom_wait = n;
+  end
+`else
+  assign prom_wait = 8'd0;
+`endif
   // the beat a read is at (a burst's in address order), for the EMC's
   // corrections
   logic [1:0] beat;
@@ -146,7 +161,7 @@ module ss20_memctl
     snoop_o <= '0;
     if (rst && st != S_RD_CMD && st != S_WR_CMD) begin
       st <= S_IDLE;
-      a_q <= '0; beats_left <= '0; burst_q <= 1'b0; ram_q <= 1'b0;
+      a_q <= '0; beats_left <= '0; burst_q <= 1'b0; ram_q <= 1'b0; pw_cnt <= '0;
     end else begin
       case (st)
         S_IDLE: begin
@@ -159,6 +174,7 @@ module ss20_memctl
               st <= S_RD_CMD;
             end else if (is_prom && !req_i.write) begin
               beats_left <= req_i.burst ? 3'd4 : 3'd1;
+              pw_cnt <= prom_wait;
               st <= S_RD_CMD;
             end else if (is_ram && req_i.write) begin
               wd_q <= req_i.wdata;
@@ -183,7 +199,8 @@ module ss20_memctl
             end
           end
         end
-        S_RD_CMD: if (!ddr_wait_i && owed == 4'd0) st <= rst ? S_IDLE : S_RD_DATA;   // (in reset: its beats are only counted)
+        S_RD_CMD: if (pw_cnt != 8'd0) pw_cnt <= pw_cnt - 8'd1;
+                  else if (!ddr_wait_i && owed == 4'd0) st <= rst ? S_IDLE : S_RD_DATA;   // (in reset: its beats are only counted)
         S_RD_DATA: begin
           if (is_low_empty) begin
             // the zero beats of a burst beyond the memory
@@ -228,7 +245,7 @@ module ss20_memctl
   always_comb begin
     ddr_burstcnt_o = burst_q ? 8'd4 : 8'd1;
     ddr_addr_o     = a_q;
-    ddr_rd_o       = st == S_RD_CMD && owed == 4'd0;   // the old read's beats first
+    ddr_rd_o       = st == S_RD_CMD && owed == 4'd0 && pw_cnt == 8'd0;   // the old read's beats first
     ddr_we_o       = st == S_WR_CMD;
     ddr_din_o      = wd_q;
     ddr_be_o       = be_q;

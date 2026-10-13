@@ -32,7 +32,11 @@
 // The rest of the control space and slot E read 0 and ignore writes
 // (DEC-3): the module control space. The
 // empty SBus slots 0, 1, 3 and the spaces PA[35:32] = 1-D time out with
-// err after TIMEOUT cycles (B1, A3). Slaves 6 and 7 are ports for the
+// err after TIMEOUT cycles (B1, A3). An SBus write (PA[35:32] = E) is
+// posted, as through the MSI's write buffer (Sun-4M §5.2.2): a time-out or
+// an error ack on it completes normally for the master and is reported on
+// mts_err_* instead (the MSI latches it in its AFSR and raises level 15;
+// OBP 2.25's POST checks this with byte stores to word-only registers). Slaves 6 and 7 are ports for the
 // phases that bring their devices (7 and 6); unconnected, tie their
 // responses to an immediate ack of 0.
 
@@ -49,7 +53,14 @@ module ss20_iobridge
   output mem_rsp_t             rsp_o,
 
   output iobus_pkg::iob_req_t  io_o [NS],   // to each slave; addr = PA[27:0]
-  input  iobus_pkg::iob_rsp_t  io_i [NS]
+  input  iobus_pkg::iob_rsp_t  io_i [NS],
+
+  // an SBus write that failed (posted: the master saw it complete), for
+  // the MSI's M-to-S AFSR/AFAR (ss20_msi mts_err_*)
+  output logic                 mts_err_o,   // pulse
+  output logic                 mts_to_o,    // 1 time-out, 0 error ack
+  output logic [35:0]          mts_pa_o,    // the beat's byte address
+  output logic [2:0]           mts_siz_o    // MBus size: 0 byte, 1 half, 2 word
 );
 
   // ----------------------------------------------------------------- decode
@@ -141,8 +152,26 @@ module ss20_iobridge
     end
   end
 
+  // a beat's error that is posted (an SBus write) rather than returned
+  logic posted;
+  assign posted = req_i.write && req_i.pa[35:32] == 4'hE;
+  logic [1:0] nbytes;                     // enabled bytes - 1 (1, 2 or 4)
+  always_comb
+    case (beat.be)
+      4'b1000, 4'b0100, 4'b0010, 4'b0001: nbytes = 2'd0;
+      4'b1100, 4'b0011:                   nbytes = 2'd1;
+      default:                            nbytes = 2'd3;
+    endcase
+
   always_ff @(posedge clk) begin
     rsp_o <= '0;
+    mts_err_o <= 1'b0;
+    if (go && b_err && posted) begin
+      mts_err_o <= 1'b1;
+      mts_to_o  <= sel == TO;
+      mts_pa_o  <= {req_i.pa[35:28], beat.addr};
+      mts_siz_o <= nbytes == 2'd0 ? 3'd0 : nbytes == 2'd1 ? 3'd1 : 3'd2;
+    end
     if (rst) begin
       bs <= B_IDLE;
       hi_data <= '0;
@@ -152,10 +181,10 @@ module ss20_iobridge
       case (bs)
         B_IDLE: if (req_i.valid) bs <= hi ? B_HI : B_LO;
         B_HI: begin
-          if (b_err) begin
+          if (b_err && !posted) begin
             rsp_o.ack <= 1'b1; rsp_o.err <= 1'b1;
             bs <= B_GAP;
-          end else if (b_ack) begin
+          end else if (b_ack || b_err) begin
             if (lo) begin
               hi_data <= b_rdata;
               bs <= B_LO;
@@ -167,10 +196,10 @@ module ss20_iobridge
           end
         end
         B_LO: begin
-          if (b_err) begin
+          if (b_err && !posted) begin
             rsp_o.ack <= 1'b1; rsp_o.err <= 1'b1;
             bs <= B_GAP;
-          end else if (b_ack) begin
+          end else if (b_ack || b_err) begin
             rsp_o.ack <= 1'b1;
             rsp_o.rdata <= {hi ? hi_data : 32'd0, b_rdata};
             bs <= B_GAP;

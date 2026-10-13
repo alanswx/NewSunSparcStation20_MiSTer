@@ -262,7 +262,11 @@ module ss20_machine #(
 
   iob_req_t    iob_q [12];
   iob_rsp_t    iob_r [12];
-  ss20_iobridge u_io (.clk, .rst(rst_m), .req_i(io_req), .rsp_o(io_rsp), .io_o(iob_q), .io_i(iob_r));
+  logic        mts_err, mts_to;
+  logic [35:0] mts_pa;
+  logic [2:0]  mts_siz;
+  ss20_iobridge u_io (.clk, .rst(rst_m), .req_i(io_req), .rsp_o(io_rsp), .io_o(iob_q), .io_i(iob_r),
+    .mts_err_o(mts_err), .mts_to_o(mts_to), .mts_pa_o(mts_pa), .mts_siz_o(mts_siz));
 
   // ------------------------------------------------- the system devices --
   // interrupt sources and strobes of the devices below
@@ -406,6 +410,7 @@ module ss20_machine #(
   iob_rsp_t f_r [4];
   logic [1:0] f_sel;
   logic       f_any;
+  logic       le_bad, le_bad_r;          // (below)
   always_comb begin
     f_any = 1'b1;
     case (iob_q[6].addr[23:20])
@@ -416,10 +421,18 @@ module ss20_machine #(
     endcase
     for (int k = 0; k < 4; k++) begin
       f_q[k] = iob_q[6];
-      f_q[k].req = iob_q[6].req && f_sel == 2'(k);
+      f_q[k].req = iob_q[6].req && f_sel == 2'(k) && !(k == 3 && le_bad);
     end
-    iob_r[6] = f_r[f_sel];
+    iob_r[6] = le_bad_r ? '{ack: 1'b0, err: 1'b1, rdata: 32'd0} : f_r[f_sel];
   end
+
+  // a byte write to the LANCE's 16-bit ports is a size error: dropped,
+  // an error ack (posted: the MSI's AFSR), E_CSR's SLAVE_ERR (OBP 2.25's
+  // POST "LANCE Address/Data Port Tests")
+  assign le_bad = iob_q[6].req && iob_q[6].we && iob_q[6].addr[23:20] == 4'hC &&
+                  (iob_q[6].be == 4'b1000 || iob_q[6].be == 4'b0100 ||
+                   iob_q[6].be == 4'b0010 || iob_q[6].be == 4'b0001);
+  always_ff @(posedge clk) le_bad_r <= le_bad && !le_bad_r && !rst_m;
 
   // the MACIO ID register (the rest of page 0 reads it too)
   always_ff @(posedge clk) begin
@@ -438,7 +451,7 @@ module ss20_machine #(
     .esp_dack_o(esp_dack), .esp_ddata_o(esp_m2d), .esp_rst_o(esp_crst), .irq_esp_o(irq_esp),
     .esp_dvma_o(dvma_q[0]), .esp_dvma_i(dvma_r[0]),
     .le_req_i(le_mem), .le_rsp_o(le_mem_r), .le_dvma_o(dvma_q[1]), .le_dvma_i(dvma_r[1]),
-    .le_irq_i(le_irq), .irq_le_o(irq_le), .le_rst_o(le_rst));
+    .le_irq_i(le_irq), .le_size_err_i(le_bad_r), .irq_le_o(irq_le), .le_rst_o(le_rst));
 
   // the SCSI targets on hps_io's SD slots 0-2: disks at IDs 3 and 1, the CD at 6
   logic [31:0] esp_lba;
@@ -490,8 +503,8 @@ module ss20_machine #(
   ss20_msi u_msi (
     .clk, .rst(rst_m), .bus_i(iob_q[8]), .bus_o(iob_r[8]), .bus_mid_i(4'd8),
     .dvma_req_i(dvma_q), .dvma_rsp_o(dvma_r), .mem_req_o(dma_req), .mem_rsp_i(dma_rsp),
-    .mts_err_i(1'b0), .mts_err_to_i(1'b0), .mts_err_pa_i(36'd0), .mts_err_siz_i(3'd0),
-    .mts_err_s_i(1'b0), .mts_err_mid_i(4'd0), .irq_err_o(irq_msi), .arb_en_o());
+    .mts_err_i(mts_err), .mts_err_to_i(mts_to), .mts_err_pa_i(mts_pa), .mts_err_siz_i(mts_siz),
+    .mts_err_s_i(1'b1), .mts_err_mid_i(mb_mid), .irq_err_o(irq_msi), .arb_en_o());
 
   // 11: the memory controller's registers (the SMC at 0xF_0000_0000),
   // watching main-memory accesses for the ECC errors firmware injects
