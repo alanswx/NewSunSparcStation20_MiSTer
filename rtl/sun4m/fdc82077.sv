@@ -127,7 +127,11 @@ module fdc82077
   logic [3:0] cls;
   logic [1:0] ds;
   logic       hd;
-  assign cls = cmd_info(fifo[0])[7:4];
+  logic [7:0] ci_f0, ci_wb;               // cmd_info of the FIFO's first byte / the byte written
+  assign ci_f0 = cmd_info(fifo[0]);
+  assign cls = ci_f0[7:4];
+  logic unused_ci;
+  assign unused_ci = ^ci_f0[3:0];
   assign ds  = fifo[1][1:0];
   assign hd  = fifo[1][2];
 
@@ -135,6 +139,7 @@ module fdc82077
   logic [2:0] roff;                 // register addressed by the access
   logic       lane_ok;
   logic [7:0] wbyte;
+  assign ci_wb = cmd_info(wbyte);
   logic [7:0] msr;
   logic [7:0] rbyte;
 
@@ -331,13 +336,13 @@ module fdc82077
             fifo[pos] <= wbyte;
             pos <= pos + 4'd1;
             if (pos == 4'd0) begin
-              if (cmd_info(wbyte)[7:4] == C_INVALID) begin
+              if (ci_wb[7:4] == C_INVALID) begin
                 fifo[0] <= 8'h80;
                 phase <= P_RES; pos <= 4'd0; len <= 4'd1; res_irq <= 1'b0;
-              end else if (cmd_info(wbyte)[3:0] == 4'd0) begin
+              end else if (ci_wb[3:0] == 4'd0) begin
                 phase <= P_EXEC; len <= 4'd1;
               end else begin
-                len <= cmd_info(wbyte)[3:0] + 4'd1;
+                len <= ci_wb[3:0] + 4'd1;
               end
             end else if (pos + 4'd1 == len) begin
               phase <= P_EXEC;
