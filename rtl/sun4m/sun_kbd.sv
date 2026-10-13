@@ -39,7 +39,7 @@
 // dropped); the Menu key is Compose, the Windows keys the Meta diamonds.
 //
 // Left out: Type 5's power/volume keys, the Kana LED and key-click timing
-// beyond a pulse (click_o is one cycle per make; ts_beep shapes it).
+// beyond a pulse (click_o is one cycle per make; kbd_beep shapes it).
 
 module sun_kbd #(
   parameter int CLK_HZ     = 55_000_000,

@@ -26,8 +26,8 @@ architecture, the phases and the requirements learned on the VHDL core.
 | `rtl/obio/` | the new sun4m system devices: `slavio_timer`, `slavio_intctl`, `slavio_misc`, `m48t08`, `escc` (+ benches in `tb/`) | ours |
 | `sim/iu/` | the IU harness: the CPU test suite's integer subset on the IU with a behavioural memory, compared with QEMU (`run.sh`) | ours |
 | `rtl/tb/` | `run.sh`: lint every module and run every block bench under Verilator; `tb_pkg.sv` | ours |
-| `rtl/mister/` | `ddram_arb.sv` (+ benches), `eth_hps.vhd`, `nvram_sd.vhd`: to be ported to SV | ours |
-| `rtl/sun4m/` | `scsi_targets.vhd`, `ts_fdc.vhd`, `ts_beep.vhd`, the FCode packages, `tb/tb_kbd.vhd`: to be ported | ours / GPL-2 (TCX FCode) |
+| `rtl/mister/` | `ddram_arb.sv`, `eth_hps.sv`, `nvram_sd.sv` (+ benches; the VHDL originals are in git history) | ours |
+| `rtl/sun4m/` | `scsi_targets.sv` (ported), `kbd_beep.sv` (the keyboard bell and click); the FCode PROMs are now `tcx_fcode.sv` and `cs4231_fcode.sv` | ours / GPL-2 (TCX FCode) |
 | `tests/cpu/` | bare-metal SPARC V8 / sun4m test suite that runs as the boot PROM, QEMU references | ours |
 | `sim/` | Verilator harness (Main's hps_io, SD, DDR, UART, Ethernet models) | ours |
 | `scripts/` | build, deploy, board regression (`hwtest.sh`, `board/`) | ours |

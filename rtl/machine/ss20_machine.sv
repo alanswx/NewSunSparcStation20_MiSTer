@@ -270,6 +270,8 @@ module ss20_machine #(
   logic [7:0] kb_tx, kb_rx, ms_rx;
   logic       kb_tx_v, kb_rx_v, kb_rx_rdy, ms_rx_v, ms_rx_rdy;
   logic [3:0] kb_leds;
+  logic       kb_bell, kb_click;
+  logic [15:0] beep;
   escc #(.CLK_HZ(CLK_HZ)) u_escc_kbd (
     .clk, .rst(rst_m), .bus_i(iob_q[0]), .bus_o(iob_r[0]),
     .txd_a_o(), .rxd_a_i(1'b1), .dcd_a_i(1'b1), .cts_a_i(1'b1), .rts_a_o(), .dtr_a_o(),
@@ -284,7 +286,9 @@ module ss20_machine #(
     .clk, .rst(rst_m), .ps2_key_i, .layout_i(opt_kbd_layout_i),
     .tx_byte_i(kb_tx), .tx_byte_valid_i(kb_tx_v),
     .rx_byte_o(kb_rx), .rx_byte_valid_o(kb_rx_v), .rx_byte_ready_i(kb_rx_rdy),
-    .bell_o(), .click_o(), .leds_o(kb_leds), .any_key_o(), .held_o());
+    .bell_o(kb_bell), .click_o(kb_click), .leds_o(kb_leds), .any_key_o(), .held_o());
+
+  kbd_beep #(.CLK_HZ(CLK_HZ)) u_beep (.clk, .rst(rst_m), .bell_i(kb_bell), .click_i(kb_click), .audio_o(beep));
 
   sun_mouse #(.CLK_HZ(CLK_HZ)) u_mouse (
     .clk, .rst(rst_m), .ps2_mouse_i,
@@ -500,9 +504,17 @@ module ss20_machine #(
   assign sd_wr_o          = {nv_wr, esp_wr};
   assign kbd_led_status_o = {kb_leds[3], kb_leds[0], kb_leds[2]};   // Caps, Num, Scroll
   assign kbd_led_use_o    = 3'b111;
-  // the CS4231 and CD audio, each at half level (the beeper: phase 10)
-  assign audio_l_o        = 16'(($signed({aud_l[15], aud_l}) + $signed({cd_l[15], cd_l})) >>> 1);
-  assign audio_r_o        = 16'(($signed({aud_r[15], aud_r}) + $signed({cd_r[15], cd_r})) >>> 1);
+  // the CS4231 and CD audio at half level each, plus the keyboard's beeper
+  // (small), saturated
+  function automatic logic [15:0] mix3(input logic [15:0] x, input logic [15:0] y, input logic [15:0] z);
+    logic signed [17:0] m;
+    m = (($signed({x[15], x[15], x}) + $signed({y[15], y[15], y})) >>> 1) + $signed({z[15], z[15], z});
+    if (m > 18'sd32767)  return 16'h7FFF;
+    if (m < -18'sd32768) return 16'h8000;
+    return m[15:0];
+  endfunction
+  assign audio_l_o        = mix3(aud_l, cd_l, beep);
+  assign audio_r_o        = mix3(aud_r, cd_r, beep);
   assign led_disk_o       = esp_busy;
   assign led_user_o       = !aux_led;   // the Aux register's LED bit (0 = lit), as the board's LED
 
