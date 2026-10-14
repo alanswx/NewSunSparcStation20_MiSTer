@@ -21,6 +21,19 @@ instead of 123 s).
    the CD drive (target 6). [docs/disk-images.md](../docs/disk-images.md)
    says how the test images were made.
 
+4. Video: the screen is 1024x768 (4:3, square pixels). On a 720p output
+   Main shrinks it to 960x720 and drops a pixel column and row in every
+   16, which breaks Sun's one-pixel fonts. Give the core its own mode in
+   `MiSTer.ini`:
+
+   ```ini
+   [SunSparcStation]
+   video_mode=1        ; 1024x768@60: the picture 1:1
+   ```
+
+   (or, on a 1080p TV, `video_mode=8` with `vscale_mode=1`: integer
+   scaling, 1024x768 unscaled with borders).
+
 Sun's own PROM (OBP 2.25, from a real SS20) also runs as `boot.rom`; it
 is Sun's code and is not distributed here.
 
