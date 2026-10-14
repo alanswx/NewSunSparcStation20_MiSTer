@@ -372,7 +372,13 @@ static const struct cpudef sparc_defs[] = {
     },
     {
         .iu_version = 0x40000000,
+#ifndef CONFIG_TACUS
         .name = "TI,TMS390Z55",
+#else
+        /* TACUS: a SuperSPARC with its on-chip caches only, no SuperCache
+           (MXCC): an SM50 module, as the Sun PROM names it on the core */
+        .name = "TI,TMS390Z50",
+#endif
         .psr_impl = 4,
         .psr_vers = 0,
         .impl = 0,
@@ -678,6 +684,10 @@ static void setup_cpu(int mid_offset)
         push_str("icache-associativity");
         fword("property");
 
+#ifndef CONFIG_TACUS
+        /* TACUS: no external cache (no ecache-* properties, as on an SM50
+           under the Sun PROM): the OS would size a 1 MB cache that is not
+           there */
         PUSH(cpu->ecache_line_size);
         fword("encode-int");
         push_str("ecache-line-size");
@@ -692,6 +702,7 @@ static void setup_cpu(int mid_offset)
         fword("encode-int");
         push_str("ecache-associativity");
         fword("property");
+#endif
 
         PUSH(2);
         fword("encode-int");
