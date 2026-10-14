@@ -18,12 +18,12 @@
 //
 // The slot (iob addr = offset in slot 3; every access acks, never err):
 //   0x0000000-0x00007FF  FCode PROM (cs4231_fcode, tools/fcode_cs4231.py)
-//   0x0C00000 + 4n, n=0-3 codec R0 IAR, R1 IDR, R2 status, R3 PIO data: a
+//   0xC000000 + 4n, n=0-3 codec R0 IAR, R1 IDR, R2 status, R3 PIO data: a
 //          byte register at a word address; reads return it in every byte
 //          lane, writes take the lowest enabled lane (a byte store at 4n
 //          or a word store with the value in bits 7:0 both work)
-//   0x0C00010  APC CSR      0x0C00020/24/28/2C  capture  VA, count, next VA, next count
-//                           0x0C00030/34/38/3C  playback VA, count, next VA, next count
+//   0xC000010  APC CSR      0xC000020/24/28/2C  capture  VA, count, next VA, next count
+//                           0xC000030/34/38/3C  playback VA, count, next VA, next count
 //          (APC registers are whole words: the byte enables are ignored)
 //   anything else reads 0 and ignores writes.
 //
