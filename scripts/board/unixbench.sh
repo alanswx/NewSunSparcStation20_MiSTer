@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 #
 # unixbench.sh [--core NAME] [--rom FILE] [--img IMAGE] [--copies N]
-#              [--tests "T..."] [--log FILE] - UnixBench's System Benchmarks
+#              [--nvram FILE] [--tests "T..."] [--log FILE] - UnixBench's System Benchmarks
 # Index on the board: NetBSD from IMAGE (default netbsd11-ub.raw, a NetBSD 11
 # image with /root/ub holding UnixBench's programs built by
 # tools/unixbench/ub.sh) at HD0, the console on ttya, then
@@ -13,18 +13,21 @@
 #                 VHDL core's release copied under another name)
 #   --rom FILE    a boot ROM for this run (default: the board's openbios.rom)
 #   --copies N    parallel copies (UnixBench -c N), default 1
+#   --nvram NAME  an NVRAM image in the games folder (with --rom = Sun's
+#                 PROM: ss20-obp.nvr, its console on ttya); default none
 #
 # A full single-copy run takes 25-60 minutes.
 set -u
 . "$(dirname "$0")/../common.sh"
 . scripts/board/lib.sh
-CORE=SunSparcStation20; ROM=""; IMG=netbsd11-ub.raw; COPIES=1; TESTS=""; LOG=""
+CORE=SunSparcStation20; ROM=""; IMG=netbsd11-ub.raw; COPIES=1; TESTS=""; LOG=""; NVR=""
 while [ $# -gt 0 ]; do
     case "$1" in
         --core)   CORE=$2; shift ;;
         --rom)    ROM=$2; shift ;;
         --img)    IMG=$2; shift ;;
         --copies) COPIES=$2; shift ;;
+        --nvram)  NVR=$2; shift ;;
         --tests)  TESTS=$2; shift ;;
         --log)    LOG=$2; shift ;;
         *) echo "unknown argument $1" >&2; exit 2 ;;
@@ -35,7 +38,7 @@ mkdir -p sim/out
 fail() { echo "FAIL: $*"; cap_stop; restore_openbios; exit 1; }
 
 if [ -n "$ROM" ]; then put_rom "$ROM" || exit 1; else rsh "cp $G/openbios.rom $G/boot.rom"; fi
-scripts/mount.sh --hd0 "$IMG" --hd1 "" --cd "" --nvram "" > /dev/null
+scripts/mount.sh --hd0 "$IMG" --hd1 "" --cd "" --nvram "$NVR" > /dev/null
 scripts/setopt.sh console=serial autoboot=on > /dev/null 2>&1 || exit 1
 cap_stop; cap_start "$LOG" 10800
 core_start "$CORE"
