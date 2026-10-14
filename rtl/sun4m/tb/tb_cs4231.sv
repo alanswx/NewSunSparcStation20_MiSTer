@@ -364,6 +364,7 @@ module tb_cs4231;
     iw(9, 8'h01);                               // PEN
     // interrupt 1: buffer A done, B moved in
     wait_irq(20 * P48, "PI after the first buffer");
+    t0 = int'(cyc);
     rd32(CSR, v);
     check((v & (IP | PI | PD)) == (IP | PI | PD) && (v & PMI) == 0, $sformatf("first buffer done: IP PI PD, no PMI (%08x)", v));
     rd32(PVA, c); check(c >= BB && c <= BB + 16, "PVA in the second buffer");
@@ -376,6 +377,9 @@ module tb_cs4231;
     wr32(PNVA, BC); wr32(PNC, 8);
     // interrupt 2: buffer B done, C moved in
     wait_irq(10 * P48, "PI after the second buffer");
+    t0 = int'(cyc) - t0;
+    // the pace: buffer B is 4 frames, one a sample period at 48 kHz
+    check(t0 > 3 * P48 && t0 < 5 * P48, $sformatf("buffer B (4 frames) played in ~4 periods at 48 kHz (%0d cycles, P48 %0d)", t0, P48));
     rd32(CSR, v);
     check((v & (PI | PD | PMI)) == (PI | PD), $sformatf("second buffer done: PI PD, no PMI (%08x)", v));
     wr32(CSR, v);
