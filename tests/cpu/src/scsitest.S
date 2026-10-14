@@ -401,12 +401,33 @@ subch:
 9:      ret
         restore
 
+#if defined(TARGET_SS20)
+/* spin(n %o0): n ticks (500 ns) of the system counter (pa 0xf_f131_0004,
+ * ticks in bits 30:9, free-running from reset); leaf. Not a loop count:
+ * this ROM runs in boot mode, whose PROM fetches run at the real EPROM's
+ * pace, so loops are no measure of time (as kbdtest). */
+#  define SYS_CTR       0xf1310004      /* ASI 0x2f */
+spin:   set SYS_CTR, %o1
+        lda [%o1] 0x2f, %o2             /* the count at the last look */
+1:      lda [%o1] 0x2f, %o3
+        sub %o3, %o2, %o4               /* ticks since */
+        mov %o3, %o2
+        srl %o4, 9, %o4
+        set 0x3fffff, %o3               /* (the 22-bit count wraps) */
+        and %o4, %o3, %o4
+        subcc %o0, %o4, %o0
+        bg 1b
+        nop
+        retl
+        nop
+#else
 /* spin(n %o0): about n loops of nothing; leaf */
 spin:   subcc %o0, 1, %o0
         bne spin
         nop
         retl
         nop
+#endif
 
 /* the CDBs */
         .pushsection .rodata
