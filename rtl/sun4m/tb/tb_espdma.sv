@@ -667,6 +667,9 @@ module tb_espdma;
     for (int i = 0; i < 5; i++) begin
       esp_go(C_TI, in, st);
       check32({24'd0, in}, {24'd0, I_FC}, $sformatf("SDTR reply byte %0d: Function Complete", i));
+      // ACK held until MESSAGE ACCEPTED: still MESSAGE IN, even after the
+      // last byte (Solaris's esp driver under OBP waits otherwise)
+      check32({29'd0, st[2:0]}, 32'd7, $sformatf("SDTR reply byte %0d: the phase, ACK held", i));
       esp_r(R_FIFO, b);
       check32({24'd0, b}, {24'd0, c[i]}, $sformatf("SDTR reply byte %0d", i));
       esp_go(C_MSGACC, in, st);

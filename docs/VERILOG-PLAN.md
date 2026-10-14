@@ -361,7 +361,7 @@ test for each in `tests/cpu` or a unit bench.
 | DEC-4 | Slot e answers with a named FCode node | NeXTSTEP |
 | DMA-5 | ESP DMA: the partial last word | `scsitest` t_scsi_sense1 |
 | ESP-7 | A select's interrupt is held ~1 ms | NeXTSTEP |
-| ESP-8 | MESSAGE ACCEPTED → Bus Service while the target wants more | `scsitest` t_scsi_sdtr1 |
+| ESP-8 | MESSAGE ACCEPTED → Bus Service while the target wants more; after each MESSAGE IN byte (TI or ICCS) the phase reads MESSAGE IN until MESSAGE ACCEPTED (ACK held: Solaris under OBP) | `scsitest` t_scsi_sdtr1, `tb_espdma` |
 | SCSI-TAG | Two-byte (queue tag) messages accepted | `scsitest` t_scsi_tag1 |
 | CD-512 | The CD powers up at 512-byte blocks, follows MODE SELECT | Solaris |
 | LAN-2 | Oversize received frames dropped | `ethtest` t_eth_oversize |

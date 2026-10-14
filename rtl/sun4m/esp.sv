@@ -59,8 +59,9 @@
 //    message); otherwise it waits for the target's next REQ and gives
 //    Bus Service (the esp driver's SDTR reply, a byte at a time). ICCS
 //    drops bsy after a COMMAND COMPLETE, so scsi_targets is free even when
-//    no MESSAGE ACCEPTED follows (modes 0 and 2); the phase still reads
-//    MESSAGE IN until then, as the chip's (OBP 2.25 relies on it);
+//    no MESSAGE ACCEPTED follows (modes 0 and 2). After any MESSAGE IN
+//    byte the phase reads MESSAGE IN until MESSAGE ACCEPTED, as the
+//    chip's with ACK held (OBP 2.25 and Solaris rely on it);
 //  - scsi_targets has no BSY of its own: the ESP knows the target leaves
 //    the bus after COMMAND COMPLETE/DISCONNECT in (above) and after an
 //    ABORT or BUS DEVICE RESET it sent (Disconnected, bsy dropped);
@@ -236,14 +237,18 @@ module esp
   logic unused_ok;
   assign unused_ok = &{1'b0, bus_i.addr[IOB_AW-1:6], bus_i.addr[1:0], bus_i.pair, tgt_pc};
 
-  // The phase lines: the target's while it holds the bus. After the
-  // message that ends the nexus (ICCS's COMMAND COMPLETE) the chip still
-  // holds ACK, so the phase reads MESSAGE IN until MESSAGE ACCEPTED, even
-  // though scsi_targets has already left (ESP-8): OBP 2.25's esp driver
-  // reads the phase after ICCS and answers MESSAGE IN with MESSAGE
-  // ACCEPTED (with 0 it started a data transfer and waited forever).
+  // The phase lines: the target's while it holds the bus. After a MESSAGE
+  // IN byte (a TI's or ICCS's) the chip holds ACK, so the target cannot
+  // change phase: the lines read MESSAGE IN until MESSAGE ACCEPTED, even
+  // though scsi_targets has already moved on (to the next phase, or off
+  // the bus after COMMAND COMPLETE) (ESP-8). OBP 2.25's esp driver reads
+  // the phase after ICCS and answers MESSAGE IN with MESSAGE ACCEPTED
+  // (with 0 it started a data transfer and waited forever); Solaris's
+  // takes an SDTR reply a byte at a time and, seeing COMMAND after the
+  // last byte instead, never accepted it ("Connected command timeout").
+  logic       min_held;
   logic [2:0] st_phase;
-  assign st_phase = bsy ? tgt_phase : (conn && nexus_end) ? PH_MIN : 3'b000;
+  assign st_phase = min_held ? PH_MIN : bsy ? tgt_phase : 3'b000;
 
   logic [7:0] rbyte;
   always_comb begin
@@ -363,6 +368,7 @@ module esp
       min_len  <= 1'b0;
       min_rem  <= 8'd0;
       nexus_end <= 1'b0;
+      min_held <= 1'b0;
       mo_len   <= 1'b0;
       mo_rem   <= 8'd0;
       mo_abort <= 1'b0;
@@ -539,6 +545,7 @@ module esp
             if (!dma || f_cnt == 5'd0) begin
               rz |= I_FC;
               fin = 1'b1;
+              min_held <= 1'b1;
             end
           end else if (xph == PH_MOUT && xph_v && mo_abort && !more) begin
             // ABORT / BUS DEVICE RESET sent: the target has left
@@ -573,6 +580,7 @@ module esp
               if (ends) bsy <= 1'b0;     // the target leaves the bus
               rz |= I_FC;
               fin = 1'b1;
+              min_held <= 1'b1;
             end
           end else if (tgt_req && !(tgt_phase == PH_STAT && !got_st) && tgt_phase != PH_MIN) begin
             rz |= I_BS;                  // not the status/message the command expects
@@ -653,6 +661,10 @@ module esp
       end
 
       if (ex_v) begin
+        // ACK released (MESSAGE ACCEPTED, a select, a reset, ...); NOP,
+        // FLUSH and SET/RESET ATN (a message about to be rejected) keep it
+        if (ex_c[6:0] != 7'h00 && ex_c[6:0] != 7'h01 && ex_c[6:0] != 7'h1A && ex_c[6:0] != 7'h1B)
+          min_held <= 1'b0;
         if (ex_c[7]) begin
           tc <= tc_lat == 16'd0 ? 17'h10000 : {1'b0, tc_lat};
           stat_tc <= 1'b0;
@@ -743,5 +755,26 @@ module esp
       end
     end
   end
+
+`ifndef SYNTHESIS
+  // +esplog: register accesses, the bytes of the non-data phases, the
+  // interrupt line (simulation)
+  logic esplog, irq_q;
+  initial esplog = $test$plusargs("esplog");
+  always_ff @(posedge clk) begin
+    irq_q <= irq_o;
+    if (esplog) begin
+      if (access)
+        $display("esp %0t: %s r%x=%02x st=%0d ph=%0d bsy=%0d f=%0d tc=%0x", $time,
+                 bus_i.we ? "W" : "R", ra, bus_i.we ? wbyte : rbyte, st, tgt_phase, bsy,
+                 f_cnt, tc);
+      if (esp_ack && tgt_phase[2:1] != 2'b00)
+        $display("esp %0t: bus ph=%0d %s %02x", $time, tgt_phase,
+                 tgt_phase[0] ? "in" : "out", tgt_phase[0] ? tgt_d : f_head);
+      if (irq_o != irq_q)
+        $display("esp %0t: irq %0d istat=%02x seq=%0d", $time, irq_o, istat, seq);
+    end
+  end
+`endif
 
 endmodule
