@@ -16,7 +16,9 @@
 //   +0  System Interrupt Pending (R): the level-sensitive sources as they
 //       stand, in the SI_* bit positions of sun4m_pkg.
 //   +4  Interrupt Target Mask (R), +8 mask clear (W), +C mask set (W):
-//       a masked source does not reach the target; bit 31 (MA) masks all.
+//       a masked source does not reach the target; bit 31 (MA) masks all
+//       of them (the system sources; not the processors' own counters
+//       and soft interrupts, which bypass the mask: §5.7.4).
 //       All mask bits are set at reset.
 //   +10 Interrupt Target (RW): the processor that takes the undirected
 //       interrupts, the "Current Interrupt Target".
@@ -167,7 +169,10 @@ module slavio_intctl
     always_comb begin
       hard       = '0;
       hard[13:1] = is_target ? hard_lvl[13:1] : '0;
-      hard[14]   = timer_cpu_i[n] & ~mask[SI_MA];
+      // the processor's own counter goes straight into its pending register
+      // (§5.7.4's flow: Timer N and Soft Int N bypass the system mask, MA
+      // included); TACUS OpenBIOS leaves MA set and ticks at level 14
+      hard[14]   = timer_cpu_i[n];
       hard[15]   = l15[n];
     end
 

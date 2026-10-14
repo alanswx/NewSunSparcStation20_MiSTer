@@ -157,7 +157,7 @@ module tb_slavio_intctl;
     check(irl[1] == 4'd14 && irl[0] == 4'd0, "cpu1 timer -> cpu1 level 14");
     bus_read(CPU1 + PEND, v);   check32(v, hw(14), "cpu1 pending HARD_INT<14>");
     bus_write(SYS + MSET, MA);
-    check(irl[1] == 4'd0, "MA masks the timer too");
+    check(irl[1] == 4'd14, "MA does not mask the processor's timer (5.7.4)");
     bus_write(SYS + MCLR, MA);
     tmr[1] = 0; cycles(3);
     check(irl[1] == 4'd0, "timer released");
