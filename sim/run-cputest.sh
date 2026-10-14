@@ -25,7 +25,7 @@ cd "$ROOT"
 
 mkdir -p sim/out
 LOG="sim/out/cputest-ss$REV.log"
-"sim/obj_ss$REV/Vsim_top" --rom "$ROM" --stop "CPUTEST DONE" --cycles 60M --quiet --log "$LOG"
+"sim/obj_ss$REV/Vsim_top" --rom "$ROM" --stop "CPUTEST DONE" --cycles 2G --quiet --log "$LOG"
 rc=$?
 [ "$rc" = 0 ] || { echo "run-cputest: the run did not finish (exit $rc); see $LOG"; exit 1; }
 

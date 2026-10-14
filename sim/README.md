@@ -48,6 +48,8 @@ sim/obj_ss20/Vsim_top --cycles 5M --frame sim/out/frame.ppm
 - `--ram MB`: the OSD memory option (464, 256, 128, 64). Sun's OBP clears
   all of memory at every start: 64 saves minutes.
 - `+iolog`: print every I/O access (system space and SBus) as it completes.
+- `+promlog`: every 10M cycles, the memory requests each CPU started, its
+  boot-PROM reads (and how many waited), and how busy ss20_memctl was.
 - `+prom_wait=N`: replaces ss20_memctl's PROM_WAIT (36 at 55 MHz, ~0.65 us),
   the wait before every boot-PROM read a CPU makes in boot mode
   (MCNTL.BM), the real machine's byte-wide EPROM pace. OBP 2.25's POST

@@ -355,6 +355,21 @@ highmem_mp:
         add     %g2, 4, %g2
         sta     %g0, [%g2] ASI_M_CTL         ! clear softints
         
+        ! TACUS: wait with the I-cache on (MCNTL.ICE), flushed first: with
+        ! it off this CPU fetched every instruction of the loop from memory
+        ! and took half the memory from the first one, for as long as no OS
+        ! starts it (a uniprocessor kernel never does). Off again below.
+        set     0, %g2
+        set     0x4000, %g3
+flush_mp1:
+        sta     %g0, [%g2] ASI_CACHE_FLUSH_COMBINED_ALL
+        cmp     %g2, %g3
+        bne     flush_mp1
+         add    %g2, 8, %g2
+        lda     [%g0] ASI_M_MMUREGS, %g3
+        or      %g3, 0x200, %g3
+        sta     %g3, [%g0] ASI_M_MMUREGS
+
         ! Wait for an softint to awake secondary CPUs
         set     PHYS_SS10_INTR0, %g3
         sll     %g7, 12, %g2
@@ -386,6 +401,18 @@ waiting:
         add     %g2, 4, %g2
         sta     %g0, [%g2] ASI_M_CTL         ! clear softints
         
+        ! The I-cache off again, as the OS expects it, and flushed
+        lda     [%g0] ASI_M_MMUREGS, %g3
+        andn    %g3, 0x200, %g3
+        sta     %g3, [%g0] ASI_M_MMUREGS
+        set     0, %g2
+        set     0x4000, %g3
+flush_mp2:
+        sta     %g0, [%g2] ASI_CACHE_FLUSH_COMBINED_ALL
+        cmp     %g2, %g3
+        bne     flush_mp2
+         add    %g2, 8, %g2
+
         ! Get start of private memory in %g6
         set     0x2000, %g2
         sub     %g1, %g2, %g6

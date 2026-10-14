@@ -258,4 +258,40 @@ module ss20_memctl
     io_req_o.valid = st == S_IO;
   end
 
+`ifndef SYNTHESIS
+  // +promlog: every 10M cycles, the memory requests each master started
+  // (MID 8 + n = CPU n), how many were boot-PROM reads and how many of
+  // those waited (boot mode), and how busy this controller was
+  // (simulation)
+  logic        promlog;
+  int unsigned pl_cyc, pl_busy, pl_rd [16], pl_wt [16], pl_all [16];
+  initial begin
+    promlog = $test$plusargs("promlog");
+    pl_cyc = 0; pl_busy = 0;
+    for (int i = 0; i < 16; i++) begin pl_rd[i] = 0; pl_wt[i] = 0; pl_all[i] = 0; end
+  end
+  /* verilator lint_off BLKSEQ */
+  always_ff @(posedge clk) begin
+    if (promlog) begin
+      if (st != S_IDLE) pl_busy = pl_busy + 1;
+      if (st == S_IDLE && req_i.valid) begin
+        pl_all[mid_i] = pl_all[mid_i] + 1;
+        if (is_prom && !req_i.write) begin
+          pl_rd[mid_i] = pl_rd[mid_i] + 1;
+          if (boot_mode_i) pl_wt[mid_i] = pl_wt[mid_i] + 1;
+        end
+      end
+      pl_cyc = pl_cyc + 1;
+      if (pl_cyc % 10000000 == 0) begin
+        $display("promlog %0dM: requests cpu0 %0d cpu1 %0d; PROM reads cpu0 %0d (%0d waited), cpu1 %0d (%0d waited); memctl busy %0d%%",
+                 pl_cyc / 1000000, pl_all[8], pl_all[9], pl_rd[8], pl_wt[8], pl_rd[9], pl_wt[9],
+                 pl_busy / 100000);
+        pl_busy = 0;
+        for (int i = 0; i < 16; i++) begin pl_rd[i] = 0; pl_wt[i] = 0; pl_all[i] = 0; end
+      end
+    end
+  end
+  /* verilator lint_on BLKSEQ */
+`endif
+
 endmodule
