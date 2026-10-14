@@ -1037,6 +1037,43 @@ module iu
       $display("ct %0d pc=%08x i=%08x%s%s rd=%0d%s=%08x icc=%x y=%08x cwp=%0d", ct_cyc, w_pc, w_inst,
                w_trap ? " TRAP" : "", w_second ? " 2nd" : "", rf_rd, rf_we ? "" : "(-)", rf_wdata, icc, y, cwp);
   end
+
+  // +perf: every 10M cycles, where this IU's cycles went, each cycle given
+  // to the oldest stage that explains it: a commit (user/supervisor), W's
+  // second cycle, M waiting on a load / a store or atomic, E waiting on
+  // mul/div, D held for an FP op in flight / another hazard (load-use,
+  // serialising), D empty (fetch: an I-cache miss, a redirect, a trap's
+  // refill); also taken control transfers and traps.
+  logic        perf_on;
+  longint      pf_cyc, pf_cu, pf_cs, pf_w2, pf_ld, pf_st, pf_md, pf_fp, pf_hz, pf_fe, pf_ot, pf_br, pf_tr;
+  initial begin
+    perf_on = $test$plusargs("perf");
+    pf_cyc = 0; pf_cu = 0; pf_cs = 0; pf_w2 = 0; pf_ld = 0; pf_st = 0; pf_md = 0; pf_fp = 0;
+    pf_hz = 0; pf_fe = 0; pf_ot = 0; pf_br = 0; pf_tr = 0;
+  end
+  /* verilator lint_off BLKSEQ */
+  always_ff @(posedge clk) begin
+    if (perf_on && !rst) begin
+      pf_cyc = pf_cyc + 1;
+      if (w_commit)                                  begin if (s) pf_cs = pf_cs + 1; else pf_cu = pf_cu + 1; end
+      else if (w_valid && w_stall)                   pf_w2 = pf_w2 + 1;
+      else if (m_is_mem && !m_acked)                 begin if (m_dec.cls == C_LOAD || m_dec.cls == C_FPLOAD) pf_ld = pf_ld + 1; else pf_st = pf_st + 1; end
+      else if (e_valid && md_wait)                   pf_md = pf_md + 1;
+      else if (d_hazard && is_fp(d_dec.cls) && fp_inflight) pf_fp = pf_fp + 1;
+      else if (d_hazard)                             pf_hz = pf_hz + 1;
+      else if (!d_valid)                             pf_fe = pf_fe + 1;
+      else                                           pf_ot = pf_ot + 1;
+      if (redirect && e_go) pf_br = pf_br + 1;
+      if (w_valid && !w_stall && w_trap) pf_tr = pf_tr + 1;
+      if (pf_cyc % 10000000 == 0) begin
+        $display("perf %m %0dM: commit user %0d sup %0d | w2 %0d | mem ld %0d st %0d | muldiv %0d | fp %0d | hazard %0d | fetch %0d | other %0d | taken %0d traps %0d",
+                 pf_cyc / 1000000, pf_cu, pf_cs, pf_w2, pf_ld, pf_st, pf_md, pf_fp, pf_hz, pf_fe, pf_ot, pf_br, pf_tr);
+        pf_cu = 0; pf_cs = 0; pf_w2 = 0; pf_ld = 0; pf_st = 0; pf_md = 0; pf_fp = 0; pf_hz = 0;
+        pf_fe = 0; pf_ot = 0; pf_br = 0; pf_tr = 0;
+      end
+    end
+  end
+  /* verilator lint_on BLKSEQ */
   // synthesis translate_on
 `endif
 

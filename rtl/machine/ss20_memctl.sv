@@ -264,11 +264,11 @@ module ss20_memctl
   // those waited (boot mode), and how busy this controller was
   // (simulation)
   logic        promlog;
-  int unsigned pl_cyc, pl_busy, pl_rd [16], pl_wt [16], pl_all [16];
+  int unsigned pl_cyc, pl_busy, pl_rd [16], pl_wt [16], pl_all [16], pl_wr [16], pl_ln [16];
   initial begin
     promlog = $test$plusargs("promlog");
     pl_cyc = 0; pl_busy = 0;
-    for (int i = 0; i < 16; i++) begin pl_rd[i] = 0; pl_wt[i] = 0; pl_all[i] = 0; end
+    for (int i = 0; i < 16; i++) begin pl_rd[i] = 0; pl_wt[i] = 0; pl_all[i] = 0; pl_wr[i] = 0; pl_ln[i] = 0; end
   end
   /* verilator lint_off BLKSEQ */
   always_ff @(posedge clk) begin
@@ -276,6 +276,8 @@ module ss20_memctl
       if (st != S_IDLE) pl_busy = pl_busy + 1;
       if (st == S_IDLE && req_i.valid) begin
         pl_all[mid_i] = pl_all[mid_i] + 1;
+        if (req_i.write) pl_wr[mid_i] = pl_wr[mid_i] + 1;
+        else if (req_i.burst) pl_ln[mid_i] = pl_ln[mid_i] + 1;
         if (is_prom && !req_i.write) begin
           pl_rd[mid_i] = pl_rd[mid_i] + 1;
           if (boot_mode_i) pl_wt[mid_i] = pl_wt[mid_i] + 1;
@@ -283,11 +285,12 @@ module ss20_memctl
       end
       pl_cyc = pl_cyc + 1;
       if (pl_cyc % 10000000 == 0) begin
-        $display("promlog %0dM: requests cpu0 %0d cpu1 %0d; PROM reads cpu0 %0d (%0d waited), cpu1 %0d (%0d waited); memctl busy %0d%%",
-                 pl_cyc / 1000000, pl_all[8], pl_all[9], pl_rd[8], pl_wt[8], pl_rd[9], pl_wt[9],
-                 pl_busy / 100000);
+        $display("promlog %0dM: requests cpu0 %0d (%0d writes, %0d line reads) cpu1 %0d (%0d, %0d) dvma %0d; PROM reads cpu0 %0d (%0d waited), cpu1 %0d (%0d waited); memctl busy %0d%% (%0d cycles a request)",
+                 pl_cyc / 1000000, pl_all[8], pl_wr[8], pl_ln[8], pl_all[9], pl_wr[9], pl_ln[9], pl_all[0],
+                 pl_rd[8], pl_wt[8], pl_rd[9], pl_wt[9], pl_busy / 100000,
+                 (pl_all[8] + pl_all[9] + pl_all[0]) != 0 ? pl_busy / (pl_all[8] + pl_all[9] + pl_all[0]) : 0);
         pl_busy = 0;
-        for (int i = 0; i < 16; i++) begin pl_rd[i] = 0; pl_wt[i] = 0; pl_all[i] = 0; end
+        for (int i = 0; i < 16; i++) begin pl_rd[i] = 0; pl_wt[i] = 0; pl_all[i] = 0; pl_wr[i] = 0; pl_ln[i] = 0; end
       end
     end
   end
