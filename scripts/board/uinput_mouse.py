@@ -18,6 +18,11 @@ comes before its mouseN node (the one Main reads), so that rescan misses it:
 a second, dummy device is created and removed after the mouse to make Main
 rescan once the mouseN node exists. Then 2 s for Main to settle, and 0.5 s
 before removing the mouse.
+
+Solaris: its `ms` STREAMS module discards the first 48 packets after the
+mouse is opened (X's start; the baud-rate detection settling), so start a
+session with a warm-up of at least 48 packets (e.g. m-400,-400 = 50 steps
+of 8) before moves that matter.
 """
 import fcntl, os, struct, sys, time
 

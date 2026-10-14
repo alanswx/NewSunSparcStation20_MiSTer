@@ -80,3 +80,6 @@ sim/iu/obj/
 # simulation builds and logs
 sim/*/obj/
 sim/*/obj_run.txt
+
+# The OpenBIOS boot ROM of a test build: our GPL build from bios/ (never a Sun PROM)
+!releases/boot.rom

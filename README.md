@@ -47,10 +47,12 @@ skip). Where the work stands, and what is next:
 | `docs/arch/` | the bus definitions (`bus.md`) and the physical address map (`memory-map.md`) | ours |
 | `docs/references/` | the index of the reference library (datasheets, Sun specs, emulator and OS sources) kept locally in `scratch/reference/` | ours |
 | `docs/legacy/` | the VHDL core's plans, gap audits, design notes and session hand-offs | ours |
+| `releases/` | test builds: the core's rbf and the OpenBIOS `boot.rom` it needs ([releases/README.md](releases/README.md)) | GPL |
 | `scratch/` | local only, gitignored: reference manuals, Sun PROM images and their full disassembly, candidate RTL from other cores (see `scratch/README.md`) | not in git |
 
 Not here, on purpose: Grabulosaure's RTL and tools; Keith Conger's CS4231
-model; Sun PROM images and their disassembly listings; release binaries.
+model; Sun PROM images and their disassembly listings. Test builds (an
+rbf and the matching OpenBIOS ROM) are in [releases/](releases/README.md).
 
 ## License
 
