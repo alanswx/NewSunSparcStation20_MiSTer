@@ -85,7 +85,13 @@ if [ "$WHAT" != netbsd ]; then
     drv=$(tr -d '\r' < "$LOG" | grep -a -c -i 'audiocs')
 else
     tty_run 'dmesg | grep -i -E "audiocs|audio[0-9]"' 60 "$LOG"
-    tty_run 'dd if=/dev/zero bs=8000 count=2 > /tmp/a.raw; time dd if=/tmp/a.raw of=/dev/audio bs=8000' 60 "$LOG"
+    # written through a write-only open: dd opens its output O_RDWR, which
+    # starts NetBSD's recording track too, and cs4231_sbus runs its
+    # playback and capture soft handlers on one level (both on either
+    # interrupt), so with capture running each block counts about twice
+    # and the play ends in about half the time (the APC keeps the 48 kHz
+    # pace: tests/cpu/src/audiotest.S)
+    tty_run 'dd if=/dev/zero bs=8000 count=2 > /tmp/a.raw; time sh -c "cat /tmp/a.raw > /dev/audio"' 60 "$LOG"
     node=$(tr -d '\r' < "$LOG" | grep -a -c 'audiocs0 at sbus0')
     drv=$node
 fi
