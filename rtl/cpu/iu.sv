@@ -48,7 +48,11 @@
 module iu
   import cpu_pkg::*;
 #(
-  parameter bit HAS_FPU = 1'b0
+  parameter bit HAS_FPU = 1'b0,
+  // FAST_ACK: M moves on in the cycle its memory answer arrives (a cache
+  // hit: one cycle less a load or store), taking the data and fault from
+  // the answer itself; else from the next cycle, from registers
+  parameter bit FAST_ACK = 1'b1
 )(
   input  logic        clk,
   input  logic        rst,
@@ -866,8 +870,11 @@ module iu
     end
   end
 
-  assign m_go    = m_valid && !w_stall && (!m_is_mem || m_acked);
+  assign m_go    = m_valid && !w_stall && (!m_is_mem || m_acked || (FAST_ACK && m_done));
   assign m_stall = m_valid && !m_go;
+  // the access's fault: registered, or the answer of this cycle (FAST_ACK)
+  logic [1:0] m_fault_now;
+  assign m_fault_now = m_acked ? m_fault : dmem_rsp_i.fault;
 
   always_ff @(posedge clk) begin
     if (rst || flush) begin
@@ -882,7 +889,7 @@ module iu
       w_pc <= m_pc;
       w_npc <= m_npc;
       w_result <= m_result;
-      w_rdata <= m_rdata;
+      w_rdata <= m_acked ? m_rdata : dmem_rsp_i.rdata;
       w_icc <= m_icc;
       w_wicc <= m_wicc;
       w_y <= m_y;
@@ -891,9 +898,9 @@ module iu
       w_newcwp <= m_newcwp;
       w_trap <= m_trap;
       w_tt <= m_tt;
-      if (!m_trap && m_is_mem && m_fault != 2'd0) begin
+      if (!m_trap && m_is_mem && m_fault_now != 2'd0) begin
         w_trap <= 1'b1;
-        w_tt <= (m_fault == 2'd1) ? TT_DATA_ACCESS_EXC : TT_DATA_ACCESS_ERR;
+        w_tt <= (m_fault_now == 2'd1) ? TT_DATA_ACCESS_EXC : TT_DATA_ACCESS_ERR;
       end
     end else if (!w_stall) begin
       w_valid <= 1'b0;
