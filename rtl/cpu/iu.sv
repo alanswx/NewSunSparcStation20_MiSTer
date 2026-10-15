@@ -68,7 +68,7 @@ module iu
   output logic        error_o,        // error mode: halted after a trap with ET = 0
   output logic [2:0]  cwp_o,          // for debugging
   output logic        halt_o,         // = error_o
-  // for the board's hang reporter (rtl/hybrid/hang_dump.sv)
+  // for the board's hang reporter (rtl/lib/hang_dump.sv)
   output logic        dbg_commit_o,   // an instruction commits (its PC in dbg_pc_o)
   output logic        dbg_trap_o,     // a trap is taken (tt in dbg_tt_o, PC in dbg_pc_o)
   output logic [7:0]  dbg_tt_o,

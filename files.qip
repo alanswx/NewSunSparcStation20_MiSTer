@@ -11,6 +11,7 @@ set_global_assignment -name SYSTEMVERILOG_FILE rtl/lib/ram_2r1w_be.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/lib/ram_sdp_be.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/lib/ram_tdp_be.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/lib/ram_tdp8.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/lib/hang_dump.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/cpu/iu_alu.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/cpu/iu_decode.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/cpu/iu_regfile.sv

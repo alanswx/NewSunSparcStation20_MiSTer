@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 //
-// hang_dump: a board-side debugging aid for the CPU hybrid. It watches the
-// IU's commits and traps; when no instruction has committed for 2^CBITS
+// hang_dump: a board-side debugging aid (ss20_machine's HANG_DUMP, and
+// the old CPU hybrid's cpu_plomb.sv). It watches the IU's commits and traps; when no instruction has committed for 2^CBITS
 // CPU cycles ("C"), or no trap has been taken for 2^TBITS cycles ("T": a
 // running kernel takes clock interrupts, so this is a spin with traps
-// off; armed by the first interrupt trap after reset, as firmware runs for
-// seconds at PIL 15 without one), it snapshots the CPU's state and prints it once as one text line
+// off; armed once an interrupt trap and a user-mode commit have both been
+// seen since reset, as firmware runs for seconds at PIL 15 without the
+// first, and a PROM's POST spins for seconds with traps off after it but
+// never runs user code), it snapshots the CPU's state and prints it once as one text line
 // on its own serial output (8N1, DIV clocks a bit), which the core muxes
 // onto the console's line while act_o is high:
 //
@@ -49,8 +51,9 @@ module hang_dump #(
   logic [TBITS:0] nt;                 // wraps
   logic        fire_c, fire_t;
   logic        t_armed;               // an interrupt trap was seen
+  logic        u_seen;                // a user-mode commit was seen
   assign fire_c = nc == {1'b0, {CBITS{1'b1}}};
-  assign fire_t = t_armed && nt == {1'b0, {TBITS{1'b1}}};
+  assign fire_t = t_armed && u_seen && nt == {1'b0, {TBITS{1'b1}}};
 
   logic [31:0] snap [NW];
   logic        kind;                  // 0: no commit, 1: no trap
@@ -90,7 +93,7 @@ module hang_dump #(
 
   always_ff @(posedge clk) begin
     if (rst) begin
-      rp <= '0; tp <= '0; nc <= '0; nt <= '0; t_armed <= 1'b0;
+      rp <= '0; tp <= '0; nc <= '0; nt <= '0; t_armed <= 1'b0; u_seen <= 1'b0;
       busy <= 1'b0; kind <= 1'b0;
       ph <= '0; hi <= '0; wi <= '0; ni <= '0; ti <= 1'b0;
       sh <= '1; nbits <= '0; dcnt <= '0; last <= 1'b0;
@@ -98,6 +101,7 @@ module hang_dump #(
     end else begin
       if (commit_i) begin
         ring[rp] <= pc_i; rp <= rp + 4'd1; nc <= '0;
+        if (!psr_i[7]) u_seen <= 1'b1;
       end else if (!nc[CBITS]) begin
         nc <= nc + 1'b1;
       end

@@ -42,7 +42,7 @@ module cpu_module
   output logic        halt_o,         // the IU is in error mode (until the watchdog)
   output logic        boot_mode_o,    // MCNTL.BM: fetches go to the boot PROM (the memory controller's PROM timing)
 
-  // for the board's hang reporter (rtl/hybrid/hang_dump.sv)
+  // for the board's hang reporter (rtl/lib/hang_dump.sv)
   output logic        dbg_commit_o,
   output logic        dbg_trap_o,
   output logic [7:0]  dbg_tt_o,

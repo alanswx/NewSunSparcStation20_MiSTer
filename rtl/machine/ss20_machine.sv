@@ -31,7 +31,12 @@
 module ss20_machine #(
   parameter int CLK_HZ     = 55_000_000,
   parameter bit SKIP_CLEAR = 1'b0,       // simulation: its DDR model starts zeroed
-  parameter int NCPU       = 2           // CPU modules, MID 8 up (1 to 4; two fit the Cyclone V)
+  parameter int NCPU       = 2,          // CPU modules, MID 8 up (1 to 4; two fit the Cyclone V)
+  // the hang reporter (rtl/lib/hang_dump.sv) on CPU 0: a line "#HANGC ..."
+  // on ttya when it stops committing for 0.6 s, "#HANGT ..." when it runs
+  // 4.9 s without a trap once interrupts and user code have run. Off by
+  // default: it costs ~2.8k ALMs (98 % full with it, HDMI +0.08 ns)
+  parameter bit HANG_DUMP  = 1'b0
 )(
   input  logic         clk,
   input  logic         rst,            // synchronous to clk
@@ -159,6 +164,10 @@ module ss20_machine #(
   logic [NCPU-1:0] snoop_holds, wd_resets, boot_modes;
   logic [NCPU-1:0][3:0] irl_v;
   logic        snoop_hold, wd_reset;
+  logic [NCPU-1:0]       dbg_commit, dbg_trap;      // the hang reporter's view of each CPU
+  logic [NCPU-1:0][7:0]  dbg_tt;
+  logic [NCPU-1:0][31:0] dbg_pc, dbg_psr;
+  logic [NCPU-1:0][5:0][31:0] dbg_w;
 
   genvar gc;
   generate for (gc = 0; gc < NCPU; gc = gc + 1) begin : g_cpu
@@ -166,7 +175,8 @@ module ss20_machine #(
       .clk, .rst(rst_m), .mid_i(4'(8 + gc)), .irl_i(irl_v[gc]), .cache_en_i(1'b1), .ram_mb_i({2'b00, opt_ram_mb_i}),
       .mem_req_o(bus_req[gc]), .mem_rsp_i(bus_rsp[gc]), .snoop_i(snoop), .snoop_hold_o(snoop_holds[gc]),
       .wd_reset_o(wd_resets[gc]), .si_reset_o(), .halt_o(), .boot_mode_o(boot_modes[gc]),
-      .dbg_commit_o(), .dbg_trap_o(), .dbg_tt_o(), .dbg_pc_o(), .dbg_psr_o(), .dbg_w_o());
+      .dbg_commit_o(dbg_commit[gc]), .dbg_trap_o(dbg_trap[gc]), .dbg_tt_o(dbg_tt[gc]),
+      .dbg_pc_o(dbg_pc[gc]), .dbg_psr_o(dbg_psr[gc]), .dbg_w_o(dbg_w[gc]));
   end endgenerate
   assign snoop_hold = |snoop_holds;
   assign wd_reset   = |wd_resets;
@@ -339,8 +349,35 @@ module ss20_machine #(
 
   ss20_uart #(.CLK_HZ(CLK_HZ)) u_uart (
     .clk, .rst,
-    .tx_byte_i(ta_tx), .tx_valid_i(ta_tx_v), .txd_o(uart_txd_o),
+    .tx_byte_i(ta_tx), .tx_valid_i(ta_tx_v), .txd_o(con_txd),
     .rxd_i(uart_rxd_i), .rx_byte_o(ta_rx), .rx_valid_o(ta_rx_v), .rx_ready_i(ta_rx_rdy), .brk_o(ta_brk));
+  // the hang reporter's line replaces ttya's while it prints
+  logic con_txd, hd_txd, hd_act;
+  logic [31:0] hd_x;
+  always_comb begin
+    hd_x = '0;
+    hd_x[31:28] = irl_v[0];
+    for (int k = 0; k <= NCPU && k < 5; k++) begin
+      hd_x[23 + k] = bus_req[k].valid;
+      hd_x[18 + k] = bus_rsp[k].ack;
+    end
+    hd_x[17] = snoop_hold;
+    hd_x[16] = wd_reset;
+    hd_x[15] = io_req.valid;
+    hd_x[14] = io_rsp.ack;
+    hd_x[13] = ld_active;
+  end
+  generate if (HANG_DUMP) begin : g_hang
+    hang_dump #(.DIV(CLK_HZ / 115_200), .CBITS(CLK_HZ > 40_000_000 ? 25 : 24),
+                .TBITS(CLK_HZ > 40_000_000 ? 28 : 27)) u_hang (
+      .clk, .rst(rst_m), .commit_i(dbg_commit[0]), .trap_i(dbg_trap[0]), .tt_i(dbg_tt[0]),
+      .pc_i(dbg_pc[0]), .psr_i(dbg_psr[0]), .w_i(dbg_w[0]), .x_i(hd_x),
+      .txd_o(hd_txd), .act_o(hd_act));
+  end else begin : g_nohang
+    assign hd_txd = 1'b1;
+    assign hd_act = 1'b0;
+  end endgenerate
+  assign uart_txd_o = hd_act ? hd_txd : con_txd;
   assign uart_rts_o = 1'b0;
   assign uart_dtr_o = 1'b0;
 
@@ -576,7 +613,8 @@ module ss20_machine #(
 
   /* verilator lint_off UNUSEDSIGNAL */
   wire unused_inputs = ^{opt_l2tlb_i, uart_cts_i, uart_dsr_i,
-                         leds, rtc_i[63:56], ld_state, kb_leds[1], arb_en};
+                         leds, rtc_i[63:56], ld_state, kb_leds[1], arb_en,
+                         dbg_commit, dbg_trap, dbg_tt, dbg_pc, dbg_psr, dbg_w, hd_x};  // (CPU 0's only, with HANG_DUMP)
   /* verilator lint_on UNUSEDSIGNAL */
 
 endmodule
