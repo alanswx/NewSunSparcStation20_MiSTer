@@ -25,8 +25,9 @@
 // The CPU side holds req_i until done_o; a read hit answers in the cycle
 // after the request (the compare cycle) and the next request may be
 // presented in that same cycle. A cacheable read fills on a miss (a 32-byte
-// burst) and answers after the last beat; a write goes to memory and
-// updates a hit line; an atomic drops the line and does a locked read then
+// burst) and answers after the last beat; a write updates a hit line and
+// goes to memory -- in the D-cache through a write buffer (below), so it
+// answers at once; an atomic drops the line and does a locked read then
 // the write; an uncacheable access is a single beat. A snoop or line
 // invalidation goes through a 16-entry queue (two pushes a cycle: a snoop
 // and an invalidation), then reads the set's tags on the second port and
@@ -39,6 +40,21 @@
 // snoop that hits a line being filled stops that fill from being
 // validated. A flash clear sweeps the tag (or lock) words of every set,
 // two cycles a set, with the CPU side held off meanwhile (flash_busy_o).
+//
+// The D-cache's write buffer (WB_DEPTH cacheable stores, in order): a
+// cacheable store updates its hit line, enters the buffer and answers in
+// the same cycle (the next request is taken then, as after a read hit; a
+// load of the doubleword just written gets the stored bytes forwarded,
+// since the data RAM's other port is being written in that cycle); the buffer drains to memory in the background, its head on
+// the memory port whenever it is not empty. Everything else this cache
+// sends to memory (a fill, an uncacheable access, an atomic) waits until
+// it is empty, so a load sees its own earlier stores (a hit reads the
+// updated line, a miss's fill follows them), stores stay in order (TSO),
+// and an I/O access or an atomic comes after them. wb_empty_o tells the
+// module's arbiter, which gives the port to the table walker or the
+// I-cache only then (a walk must not read a PTE a buffered store changes).
+// A buffered store's memory error is dropped (a posted write, as on the
+// chip); the CPU suite expects stores to be posted.
 
 module l1cache
   import mmu_pkg::*;
@@ -87,6 +103,7 @@ module l1cache
   // Memory port
   output mem_pkg::mem_req_t mem_req_o,
   input  mem_pkg::mem_rsp_t mem_rsp_i,
+  output logic        wb_empty_o,      // the D-cache's write buffer is empty (always, the I-cache)
   output logic [7:0]  dbg_o            // request / snoop-queue / fill states, for the hang reporter
 );
 
@@ -176,6 +193,25 @@ module l1cache
   logic        single_lock;
 
   assign r_set = r_pa[11:SET_LSB];
+
+  // ---------------------------------------------------------------------
+  // The write buffer (D-cache)
+  // ---------------------------------------------------------------------
+  localparam int WB_DEPTH = 4;
+  logic [35:3] wb_pa [WB_DEPTH];
+  logic [7:0]  wb_be [WB_DEPTH];
+  logic [63:0] wb_d  [WB_DEPTH];
+  logic [1:0]  wb_rd, wb_wr;
+  logic [2:0]  wb_cnt;
+  logic        wb_busy, wb_pop, wb_push, wb_room;
+  assign wb_busy    = !ICACHE && wb_cnt != 3'd0;
+  assign wb_pop     = wb_busy && mem_rsp_i.ack;
+  assign wb_room    = wb_cnt != 3'(WB_DEPTH) || wb_pop;
+  assign wb_empty_o = !wb_busy;
+  assign wb_push    = !ICACHE && st == S_WRITE_WAIT && wb_room;
+  // the acknowledgement of this cache's own request (not of a buffered write)
+  logic ack;
+  assign ack = mem_rsp_i.ack && !wb_busy;
 
   // Tag compare in S_LOOKUP (port A outputs are from the accept cycle)
   logic [WAYS-1:0] hit_way;
@@ -354,7 +390,7 @@ module l1cache
   assign sa_addr = idx_i[8 -: SET_W];
 
   logic fill_beat_now;             // a fill beat arrives this cycle
-  assign fill_beat_now = st == S_FILL && mem_rsp_i.ack && !mem_rsp_i.err;
+  assign fill_beat_now = st == S_FILL && ack && !mem_rsp_i.err;
   logic st_hit_now;                // a write hit updates the line this cycle
   assign st_hit_now = st == S_WRITE_WAIT && hit && !st_hit_written && r_cacheable;
   logic fill_tag_go, fill_end_go, atomic_inval_go, snoop_rd_go, snoop_wr_go, flash_go, dg_tag_go, dg_data_go, mru_go;
@@ -448,14 +484,14 @@ module l1cache
   // ---------------------------------------------------------------------
   always_comb begin
     mem_req_o = '0;
+    if (wb_busy) begin
+      mem_req_o.valid = 1'b1; mem_req_o.write = 1'b1;
+      mem_req_o.pa = {wb_pa[wb_rd], 3'b000}; mem_req_o.be = wb_be[wb_rd]; mem_req_o.wdata = wb_d[wb_rd];
+    end else
     case (st)
       S_FILL: begin
         mem_req_o.valid = 1'b1; mem_req_o.burst = 1'b1;
         mem_req_o.pa = {r_pa[35:5], 5'b00000}; mem_req_o.be = 8'hFF;
-      end
-      S_WRITE_WAIT: begin
-        mem_req_o.valid = 1'b1; mem_req_o.write = 1'b1;
-        mem_req_o.pa = {r_pa[35:3], 3'b000}; mem_req_o.be = r_be; mem_req_o.wdata = r_wdata;
       end
       S_SINGLE: begin
         mem_req_o.valid = 1'b1; mem_req_o.write = r_we;
@@ -478,21 +514,38 @@ module l1cache
   // State
   // ---------------------------------------------------------------------
   // A read hit answers in its compare cycle, and the next request is taken
-  // in that cycle (one lookup per cycle on hits); everything else answers
-  // from the registered done/rdata/err. Nothing is taken during a flash sweep.
+  // in that cycle (one lookup per cycle on hits); so does a cacheable store
+  // with room in the write buffer (wr_now); everything else answers from
+  // the registered done/rdata/err. Nothing is taken during a flash sweep.
   logic        done_q, err_q;
   logic [63:0] rdata_q;
-  logic        hit_now;
+  logic        hit_now, wr_now;
   assign hit_now = st == S_LOOKUP && !r_atomic && hit;
-  assign done_o  = done_q | hit_now;
-  assign rdata_o = hit_now ? da_rdata[hit_idx] : rdata_q;
-  assign err_o   = hit_now ? 1'b0 : err_q;
+  assign wr_now  = !ICACHE && st == S_WRITE_WAIT && wb_room;
+  // A store's line update (port B) in the cycle the next request is taken
+  // (port A reads the same RAM): its bytes are forwarded to that request's
+  // compare cycle if it reads the same doubleword of the same way.
+  logic        fw_v;
+  logic [8:0]  fw_idx;
+  logic [WW-1:0] fw_way;
+  logic [7:0]  fw_be;
+  logic [63:0] fw_d;
+  logic [63:0] hit_data;
+  always_comb begin
+    hit_data = da_rdata[hit_idx];
+    if (fw_v && fw_idx == r_pa[11:3] && fw_way == hit_idx)
+      for (int b = 0; b < 8; b++)
+        if (fw_be[7 - b]) hit_data[8*(7-b) +: 8] = fw_d[8*(7-b) +: 8];
+  end
+  assign done_o  = done_q | hit_now | wr_now;
+  assign rdata_o = hit_now ? hit_data : rdata_q;
+  assign err_o   = (hit_now || wr_now) ? 1'b0 : err_q;
   // The request's fields are latched whenever one could be taken, whether
   // or not req_i is up (the CPU side's request valid comes late: it hangs
   // off the answer of the previous request); only the state change waits
   // for it. Nothing reads them outside the states a request leads to.
   logic can_take, accept;
-  assign can_take = !done_q && (st == S_IDLE || hit_now) && fs == F_IDLE && !flash_v_i && !flash_l_i;
+  assign can_take = !done_q && (st == S_IDLE || hit_now || wr_now) && fs == F_IDLE && !flash_v_i && !flash_l_i;
   assign accept   = req_i && can_take;
   assign taken_o  = accept;
 
@@ -507,6 +560,8 @@ module l1cache
       st_hit_written <= 1'b0; single_lock <= 1'b0;
       rdata_q <= '0; err_q <= 1'b0;
       sq_wr <= '0; sq_rd <= '0; sq_count <= '0;
+      wb_rd <= '0; wb_wr <= '0; wb_cnt <= '0;
+      fw_v <= 1'b0; fw_idx <= '0; fw_way <= '0; fw_be <= '0; fw_d <= '0;
       qs <= Q_IDLE; q_cur <= '0; q_way_q <= '0; q_word_q <= '0;
       fs <= F_IDLE; f_kind_l <= 1'b0; f_set <= '0;
       ds <= D_IDLE; diag_rdata_o <= '0;
@@ -538,7 +593,7 @@ module l1cache
           st <= S_FILL;
         end
         S_FILL: begin
-          if (mem_rsp_i.ack) begin
+          if (ack) begin
             if (mem_rsp_i.err) fill_err <= 1'b1;
             if (fill_beat == r_pa[4:3]) fill_data <= mem_rsp_i.rdata;
             fill_beat <= fill_beat + 2'd1;
@@ -554,16 +609,16 @@ module l1cache
           st <= S_IDLE;
         end
         S_WRITE_WAIT: begin
-          // the write is on the port; the hit line (tags from the accept cycle) is updated once
+          // the hit line (tags from the accept cycle) is updated once; the
+          // store enters the write buffer when there is room, and answers
           if (st_hit_now) st_hit_written <= 1'b1;
-          if (mem_rsp_i.ack) begin
-            err_q <= mem_rsp_i.err;
-            done_q <= 1'b1;
+          if (wb_room) begin              // answered now (wr_now); a request taken this cycle sets st below
+            err_q <= 1'b0;
             st <= S_IDLE;
           end
         end
         S_SINGLE: begin
-          if (mem_rsp_i.ack) begin
+          if (ack) begin
             rdata_q <= mem_rsp_i.rdata;
             err_q <= mem_rsp_i.err;
             done_q <= 1'b1;
@@ -571,7 +626,7 @@ module l1cache
           end
         end
         S_ATOMIC_RD: begin
-          if (mem_rsp_i.ack) begin
+          if (ack) begin
             rdata_q <= mem_rsp_i.rdata;
             err_q <= mem_rsp_i.err;
             st <= mem_rsp_i.err ? S_IDLE : S_ATOMIC_WR;
@@ -579,13 +634,32 @@ module l1cache
           end
         end
         S_ATOMIC_WR: begin
-          if (mem_rsp_i.ack) begin
+          if (ack) begin
             done_q <= 1'b1;
             st <= S_IDLE;
           end
         end
         default: st <= S_IDLE;
       endcase
+
+      // the store's bytes for the next request's compare cycle
+      fw_v   <= st_hit_now && accept;
+      fw_idx <= r_pa[11:3];
+      fw_way <= hit_idx;
+      fw_be  <= r_be;
+      fw_d   <= r_wdata;
+
+      // ---- the write buffer ----
+      if (wb_push) begin
+        wb_pa[wb_wr] <= r_pa[35:3]; wb_be[wb_wr] <= r_be; wb_d[wb_wr] <= r_wdata;
+        wb_wr <= wb_wr + 2'd1;
+      end
+      if (wb_pop) wb_rd <= wb_rd + 2'd1;
+      wb_cnt <= wb_cnt + {2'd0, wb_push} - {2'd0, wb_pop};
+`ifndef SYNTHESIS
+      if (wb_pop && mem_rsp_i.err)
+        $display("%0t l1cache: a buffered store to pa %09x answered an error (dropped)", $time, {wb_pa[wb_rd], 3'b000});
+`endif
 
       // A write to the line being filled -- seen on the broadcast from the
       // miss decision on, or taken from the snoop queue while the fill's tag

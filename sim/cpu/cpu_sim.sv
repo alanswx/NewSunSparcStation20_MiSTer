@@ -77,10 +77,11 @@ module cpu_sim
   logic     c_hold, c_hold_q;
   always_ff @(posedge cpu_clk) c_hold_q <= c_hold;
 
+  logic boot_mode;                    // (the harness's memory model has no PROM pace)
   cpu_module #(.HAS_FPU(1'b1)) u_cpu (
     .clk(cpu_clk), .rst, .mid_i(4'd8), .irl_i(h_irl), .cache_en_i(1'b1), .ram_mb_i(12'd16),
     .mem_req_o(cmr), .mem_rsp_i(cms), .snoop_i(csn), .snoop_hold_o(c_hold),
-    .wd_reset_o(wd_reset), .si_reset_o(si_reset), .halt_o(halt), .boot_mode_o(),
+    .wd_reset_o(wd_reset), .si_reset_o(si_reset), .halt_o(halt), .boot_mode_o(boot_mode),
     .dbg_commit_o(dbg_commit), .dbg_trap_o(dbg_trap), .dbg_tt_o(dbg_tt), .dbg_pc_o(dbg_pc),
     .dbg_psr_o(dbg_psr), .dbg_w_o(dbg_w));
 
@@ -497,6 +498,6 @@ module cpu_sim
   end
 
   logic unused_ok;
-  assign unused_ok = &{1'b0, tmr_irq_sys, tmr_irq_cpu, tx_byte_a, tx_byte_b, tx_byte_valid_a, tx_byte_valid_b, rx_byte_ready_a, rx_byte_ready_b, txd_a, txd_b, rts_a, dtr_a, rts_b, dtr_b, irq, halt, si_reset, leds, led, fd_tc, power_off, pwr_irq, misc_sw_reset};
+  assign unused_ok = &{1'b0, boot_mode, tmr_irq_sys, tmr_irq_cpu, tx_byte_a, tx_byte_b, tx_byte_valid_a, tx_byte_valid_b, rx_byte_ready_a, rx_byte_ready_b, txd_a, txd_b, rts_a, dtr_a, rts_b, dtr_b, irq, halt, si_reset, leds, led, fd_tc, power_off, pwr_irq, misc_sw_reset};
 
 endmodule

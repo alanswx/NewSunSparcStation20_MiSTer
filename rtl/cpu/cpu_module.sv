@@ -158,6 +158,8 @@ module cpu_module
   logic        ic_dg_req, ic_dg_done, dc_dg_req, dc_dg_done;
   logic [63:0] ic_dg_rdata, dc_dg_rdata;
   mem_req_t    mem_i, mem_d;
+  logic        dc_wb_empty;            // the D-cache's write buffer is empty (the arbiter waits for it)
+  logic        ic_wb_empty;            // (the I-cache has none)
   mem_rsp_t    mem_i_r, mem_d_r;
   logic        ic_hold, dc_hold;
   assign snoop_hold_o = ic_hold | dc_hold;
@@ -170,7 +172,7 @@ module cpu_module
     .flash_v_i(ic_flash_v), .flash_l_i(ic_flash_l), .flash_busy_o(ic_flash_busy),
     .diag_req_i(ic_dg_req), .diag_we_i(dmr.write), .diag_tag_i(!dmr.asi[0]), .diag_va_i(dmr.va), .diag_wdata_i(diag_wdata),
     .diag_done_o(ic_dg_done), .diag_rdata_o(ic_dg_rdata),
-    .mem_req_o(mem_i), .mem_rsp_i(mem_i_r), .dbg_o(dbg_ic));
+    .mem_req_o(mem_i), .mem_rsp_i(mem_i_r), .wb_empty_o(ic_wb_empty), .dbg_o(dbg_ic));
 
   logic        dc_req, dc_we, dc_atomic, dc_cacheable, dc_done, dc_err;
   /* verilator lint_off UNUSEDSIGNAL */
@@ -198,11 +200,14 @@ module cpu_module
     .flash_v_i(dc_flash_v), .flash_l_i(dc_flash_l), .flash_busy_o(dc_flash_busy),
     .diag_req_i(dc_dg_req), .diag_we_i(dmr.write), .diag_tag_i(!dmr.asi[0]), .diag_va_i(dmr.va), .diag_wdata_i(diag_wdata),
     .diag_done_o(dc_dg_done), .diag_rdata_o(dc_dg_rdata),
-    .mem_req_o(mem_d), .mem_rsp_i(mem_d_r), .dbg_o(dbg_dc));
+    .mem_req_o(mem_d), .mem_rsp_i(mem_d_r), .wb_empty_o(dc_wb_empty), .dbg_o(dbg_dc));
 
   // ---------------------------------------------------------------------
   // The memory-port arbiter: walker > data > instruction; the owner keeps
-  // the port while its request is valid, and through a locked pair
+  // the port while its request is valid, and through a locked pair. The
+  // walker and the I-cache are given the port only while the D-cache's
+  // write buffer is empty (they must not read memory a buffered store is
+  // about to change: a PTE, code); the data side drains it meanwhile.
   // ---------------------------------------------------------------------
   logic [1:0] owner_q, owner;        // 0 none, 1 walker, 2 data, 3 instruction
   logic       owner_busy, locked_q;
@@ -214,9 +219,9 @@ module cpu_module
       default: owner_busy = 1'b0;
     endcase
     if (owner_busy) owner = owner_q;
-    else if (mem_w.valid) owner = 2'd1;
+    else if (mem_w.valid && dc_wb_empty) owner = 2'd1;
     else if (mem_d.valid) owner = 2'd2;
-    else if (mem_i.valid) owner = 2'd3;
+    else if (mem_i.valid && dc_wb_empty) owner = 2'd3;
     else owner = 2'd0;
     case (owner)
       2'd1: mem_req_o = mem_w;
@@ -832,7 +837,7 @@ module cpu_module
   // synthesis translate_on
 `endif
   logic unused_ok;
-  assign unused_ok = &{1'b0, iu_halt, iu_cwp, be_masked, xd_r.pte_c, xi_r.pte_c, xi_r.m, ifr.supv, dmr.va[7:0]};
+  assign unused_ok = &{1'b0, ic_wb_empty, iu_halt, iu_cwp, be_masked, xd_r.pte_c, xi_r.pte_c, xi_r.m, ifr.supv, dmr.va[7:0]};
 
   // the hang reporter's words: the IU's pipeline, the data request, the
   // fetch, the states of the data side, instruction side, arbiter, MMU
