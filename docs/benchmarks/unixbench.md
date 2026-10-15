@@ -99,3 +99,12 @@ exit() is the real one, so the timed loops cost the same); rebuild with
 `sh ub.sh build` on the guest. The 9513915 version of the fix also made
 the children's exit() an _exit and inflated spawn by ~16 %: do not use
 scores from it.
+
+## The patch for byte-unixbench itself
+
+`tools/unixbench/byte-unixbench-sparc.patch` carries the same two fixes
+as source changes against github.com/kdlucas/byte-unixbench (master),
+for a build with its own Makefile instead of `ub.sh build`: the execl
+time_t fix, and `src/ub_sigsafe.h` (the signal-handler-only exit) with
+spawn and looper linked `-z now`. Apply in the repository's top
+directory with `git am`, `git apply` or `patch -p1`.
