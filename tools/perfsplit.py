@@ -27,6 +27,7 @@ def main():
     path = sys.argv[1]
     cpu = sys.argv[2] if len(sys.argv) > 2 else "0"
     phase, text = "boot", ""
+    last = [0]
     order = ["boot"]
     acc = {"boot": {k: 0 for k in KEYS + ["cyc", "req", "wr", "ln", "busy", "nprom"]}}
     with open(path, errors="replace") as f:
@@ -57,7 +58,11 @@ def main():
                     a = acc[phase]
                     for k, v in zip(KEYS, m.groups()[2:]):
                         a[k] += int(v)
-                    a["cyc"] += 10_000_000
+                    # the window: from the previous line's stamp (any
+                    # +perf_period; the stamps are in millions of cycles)
+                    stamp = int(m.group(2))
+                    a["cyc"] += (stamp - last[0]) * 1_000_000
+                    last[0] = stamp
                 continue
             m = PROM.search(line)
             if m:
