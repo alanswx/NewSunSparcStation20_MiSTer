@@ -36,14 +36,22 @@ build() {
 	# when the alarm lands inside fork(), NetBSD 11's dynamic linker holds
 	# its exclusive lock, exit() (and a first fprintf's lazy binding) waits
 	# for it, and the process parks on itself for ever (seen on the board
-	# and in QEMU in minutes). Their exit becomes fflush + _exit, and they
-	# bind at load (-z now); the timed loops are unchanged.
+	# and in QEMU in minutes). Their signal handlers run with a flag set,
+	# and exit() leaves through fflush + _exit only then: the children's
+	# exit() in the timed loop stays the real one. They bind at load (-z now).
 	cat > src/ub_sigsafe.h <<'EOH'
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
-static void ub_exit(int c) { fflush(NULL); _exit(c); }
+static volatile sig_atomic_t ub_in_handler;
+static void (*ub_handler)(int);
+static void ub_exit(int c) { if (ub_in_handler) { fflush(NULL); _exit(c); } exit(c); }
+static void ub_wrap(int sig) { ub_in_handler = 1; ub_handler(sig); ub_in_handler = 0; }
+static void (*ub_signal(int sig, void (*f)(int)))(int)
+{ if (f == SIG_IGN || f == SIG_DFL) return signal(sig, f); ub_handler = f; return signal(sig, ub_wrap); }
 #define exit ub_exit
+#define signal ub_signal
 EOH
 	S="-include src/ub_sigsafe.h -Wl,-z,now"
 	set -x

@@ -93,6 +93,9 @@ build machine.
 Runs built with the earlier tools/unixbench/ub.sh can freeze for good in
 spawn or shell8 (once in a few dozen 30 s runs, on the board and in QEMU
 alike): the programs' SIGALRM handler calls exit() while fork() holds
-NetBSD 11's dynamic-linker lock. ub.sh now builds spawn and looper with
-a signal-safe exit; rebuild with `sh ub.sh build` on the guest. Scores
-are unaffected (the timed loops are the same).
+NetBSD 11's dynamic-linker lock. ub.sh now builds spawn and looper so
+that an exit() from a signal handler is fflush + _exit (every other
+exit() is the real one, so the timed loops cost the same); rebuild with
+`sh ub.sh build` on the guest. The 9513915 version of the fix also made
+the children's exit() an _exit and inflated spawn by ~16 %: do not use
+scores from it.
