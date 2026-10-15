@@ -87,3 +87,12 @@ System Benchmarks Index Score                                  2.6 (11/12)      
 
 Logs: `scratch/unixbench-dl/` (local), and `sim/out/ub-*.log` on the
 build machine.
+
+## Note: the spawn/shell freeze (fixed 2026-10-15)
+
+Runs built with the earlier tools/unixbench/ub.sh can freeze for good in
+spawn or shell8 (once in a few dozen 30 s runs, on the board and in QEMU
+alike): the programs' SIGALRM handler calls exit() while fork() holds
+NetBSD 11's dynamic-linker lock. ub.sh now builds spawn and looper with
+a signal-safe exit; rebuild with `sh ub.sh build` on the guest. Scores
+are unaffected (the timed loops are the same).

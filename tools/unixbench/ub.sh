@@ -32,12 +32,29 @@ build() {
 	    src/execl.c > src/execl-fixed.c || exit 1
 	grep -q 'st_' src/execl-fixed.c || { echo "execl.c patch did not apply"; exit 1; }
 	F="$CFLAGS -DTIME -I src"
+	# spawn and looper end their run from SIGALRM with fprintf and exit;
+	# when the alarm lands inside fork(), NetBSD 11's dynamic linker holds
+	# its exclusive lock, exit() (and a first fprintf's lazy binding) waits
+	# for it, and the process parks on itself for ever (seen on the board
+	# and in QEMU in minutes). Their exit becomes fflush + _exit, and they
+	# bind at load (-z now); the timed loops are unchanged.
+	cat > src/ub_sigsafe.h <<'EOH'
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+static void ub_exit(int c) { fflush(NULL); _exit(c); }
+#define exit ub_exit
+EOH
+	S="-include src/ub_sigsafe.h -Wl,-z,now"
 	set -x
 	$CC $F -DHZ=100 -DREG=register -o pgms/dhry2reg src/dhry_1.c src/dhry_2.c || exit 1
 	$CC $F -DDP -DGTODay -DUNIXBENCH -o pgms/whetstone-double src/whets.c -lm || exit 1
 	$CC $F -o pgms/execl src/execl-fixed.c || exit 1
-	for p in pipe spawn fstime syscall context1 looper; do
+	for p in pipe fstime syscall context1; do
 		$CC $F -o pgms/$p src/$p.c || exit 1
+	done
+	for p in spawn looper; do
+		$CC $F $S -o pgms/$p src/$p.c || exit 1
 	done
 	set +x
 	echo "UB-BUILD-DONE"
