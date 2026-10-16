@@ -106,7 +106,7 @@ module fpu
   typedef enum logic [1:0] {FP_EXECUTE, FP_PENDING, FP_EXCEPTION} fstate_t;
   fstate_t state;
 
-  typedef enum logic [2:0] {S_IDLE, S_UNPA, S_NORM, S_START, S_WAIT, S_ROUND, S_DONE} exstate_t;
+  typedef enum logic [2:0] {S_IDLE, S_NORM, S_START, S_WAIT, S_ROUND, S_DONE} exstate_t;
   exstate_t ex;
 
   always_comb begin
@@ -173,9 +173,8 @@ module fpu
   // Operands: the pair, a single taken from its half into [63:32]. Idle,
   // the registers the FPop presented names; running, the latched FPop's
   // (the registers do not change until its result is written), so the
-  // operand patterns are read again rather than kept. One unpacker: rs2's
-  // operand as the FPop is taken, rs1's in the next cycle (S_UNPA, only
-  // for the two-operand ops).
+  // operand patterns are read again rather than kept. Both operands are
+  // unpacked as the FPop is taken (two unpackers).
   logic [63:0] a_bits, b_bits, a_pair, b_pair;
   logic        idle, o_dbl, o_a_odd, o_b_odd;
   logic [4:0]  o_rs1, o_rs2;
@@ -195,8 +194,10 @@ module fpu
     b_bits = o_dbl ? b_pair : (o_b_odd ? {b_pair[31:0], 32'd0} : {b_pair[63:32], 32'd0});
   end
 
-  fp_t u_v;
-  fp_unpack u_unp (.dbl_i(o_dbl), .bits_i(idle ? b_bits : a_bits), .v_o(u_v));
+  // Two unpackers: rs2's and rs1's operands both as the FPop is taken
+  fp_t u_v, u_va;
+  fp_unpack u_unp  (.dbl_i(o_dbl), .bits_i(b_bits), .v_o(u_v));
+  fp_unpack u_unpa (.dbl_i(o_dbl), .bits_i(a_bits), .v_o(u_va));
 
   logic two_op;
   assign two_op = op == O_ADD || op == O_SUB || op == O_MUL || op == O_DIV || op == O_CMP || op == O_CMPE;
@@ -508,6 +509,10 @@ module fpu
   // ---------------------------------------------------------------------
   logic [63:0] fin_bits;
   logic [4:0]  fin_flags;
+  logic [63:0] f_bits;                 // the result as S_ROUND finishes
+  logic [4:0]  f_flags;
+  assign f_bits  = res_direct_q ? res_bits_q : rnd_bits;
+  assign f_flags = res_direct_q ? res_flags_q : (rnd_flags | res_flags_q);
   assign dp_wr_addr = c_rd;
   assign dp_wr_dbl  = c_dst_dbl;
   assign dp_wr_data = fin_bits;
@@ -553,13 +558,10 @@ module fpu
             c_op <= op; c_src_dbl <= src_dbl; c_dst_dbl <= dst_dbl; c_rd <= rd;
             c_inst <= req_i.fpop_inst; c_pc <= req_i.fpop_pc;
             c_b <= u_v;
+            c_a <= u_va;
             c_two <= two_op;
-            ex <= two_op ? S_UNPA : denorm(u_v) ? S_NORM : S_START;
+            ex <= (denorm(u_v) || (two_op && denorm(u_va))) ? S_NORM : S_START;
           end
-        end
-        S_UNPA: begin
-          c_a <= u_v;
-          ex <= (denorm(u_v) || denorm(c_b)) ? S_NORM : S_START;
         end
         S_NORM: begin
           if (c_two && denorm(c_a)) begin
@@ -597,11 +599,25 @@ module fpu
           end
         end
         S_ROUND: begin
-          // (a tiny result: the rounder denormalises it first)
+          // (a tiny result: the rounder denormalises it first); the result
+          // is final now: the FSR and the state as in S_DONE, the register
+          // write next cycle
           if (res_direct_q || !rnd_busy) begin
-            ex <= S_DONE;
-            fin_bits <= res_direct_q ? res_bits_q : rnd_bits;
-            fin_flags <= res_direct_q ? res_flags_q : (rnd_flags | res_flags_q);
+            ex <= S_IDLE;
+            fin_bits <= f_bits;
+            fin_flags <= f_flags;
+            if ((f_flags & fsr_tem) != 5'd0) begin
+              fsr_ftt <= FTT_IEEE;
+              fsr_cexc <= f_flags;
+              qne <= 1'b1;
+              state <= FP_PENDING;
+            end else begin
+              fsr_ftt <= FTT_NONE;
+              fsr_cexc <= f_flags;
+              fsr_aexc <= fsr_aexc | f_flags;
+              if (res_is_cmp_q) fsr_fcc <= res_fcc_q;
+              else dp_wr <= 1'b1;
+            end
           end
         end
         S_DONE: begin
