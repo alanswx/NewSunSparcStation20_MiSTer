@@ -118,3 +118,6 @@ directory with `git am`, `git apply` or `patch -p1`.
   back-to-back rerun against a rebuild of ba7156e did not reproduce (see
   profile-20261014.md, 2026-10-16). Board runs swing; rerun a low test
   after a reboot before believing it.
+- The same with the area cuts (rbf c118d8d9, ub-s6-c1.log): **3.5**
+  (Dhrystone 57.7k lps 4.9, Whetstone 19.9 MWIPS 3.6, pipe 9.0k 7.2,
+  syscall 10.3k 6.9); the old core 2.9.

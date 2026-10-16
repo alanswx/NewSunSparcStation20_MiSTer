@@ -55,6 +55,9 @@ module emc
   import iobus_pkg::*, mem_pkg::*;
 #(
   parameter int NENT      = 8,           // doublewords with injected check bits
+                                         // (4, with the report a cycle late,
+                                         // failed OBP's ECC Multiple CE test
+                                         // on CPU 1 on the board)
   parameter int IRQ_DELAY = 32
 )(
   input  logic       clk,
@@ -162,6 +165,8 @@ module emc
   logic [NENT-1:0] ent_v;
   logic [35:3]     ent_pa [NENT];
   logic [7:0]      ent_s  [NENT];        // the syndrome a check of it gives
+  logic [6:0]      ent_b  [NENT];        // data_bit(ent_s): what a read corrects
+  logic [NENT-1:0] ent_ce;               // correctable(ent_s)
   logic [EW-1:0]   victim;               // replaced when every entry is in use
 
   logic            m_full, m_diag;
@@ -170,8 +175,8 @@ module emc
     m_full = mem_req_i.burst || mem_req_i.be == 8'hFF;
     m_diag = dr[11:10] == 2'b01;
     for (int k = 0; k < NENT; k++)
-      m_ent[k] = ent_v[k] && (mem_req_i.burst ? ent_pa[k][35:5] == mem_req_i.pa[35:5]
-                                              : ent_pa[k] == mem_req_i.pa[35:3]);
+      m_ent[k] = ent_v[k] && ent_pa[k][35:5] == mem_req_i.pa[35:5]
+                 && (mem_req_i.burst || ent_pa[k][4:3] == mem_req_i.pa[4:3]);
   end
 
   // the error an access finds: the lowest entry it touches, its syndrome
@@ -179,14 +184,14 @@ module emc
   logic [7:0] f_synd;
   logic [1:0] f_dw;
   always_comb begin
-    f_any = 1'b0; f_synd = '0; f_dw = '0;
+    f_any = 1'b0; f_synd = '0; f_dw = '0; f_ce = 1'b0;
     for (int k = NENT - 1; k >= 0; k--)
       if (m_ent[k]) begin
         f_any  = 1'b1;
         f_synd = ent_s[k];
+        f_ce   = ent_ce[k];
         f_dw   = mem_req_i.burst ? ent_pa[k][4:3] : 2'd0;
       end
-    f_ce = correctable(f_synd);
   end
 
   // the access's EFAR0 size field
@@ -213,6 +218,8 @@ module emc
   // the entry a new injection takes: the one already holding this
   // doubleword, else the first free one, else the oldest
   logic [EW-1:0] slot;
+  logic [7:0]    inj_s;                  // the syndrome a new injection gives
+  assign inj_s = check_bits(mem_req_i.wdata) ^ dr[7:0];
   always_comb begin
     slot = victim;
     for (int k = NENT - 1; k >= 0; k--)
@@ -222,9 +229,9 @@ module emc
   end
 
   // an error to report this cycle: a read or a partial write that finds an
-  // injected word, with ECC checking on
+  // injected word (whose syndrome is never 0), with ECC checking on
   logic rep, rep_ue, cap_any;
-  assign rep     = mem_v_i && mer[0] && f_any && f_synd != 8'h00 && !(mem_req_i.write && m_full);
+  assign rep     = mem_v_i && mer[0] && f_any && !(mem_req_i.write && m_full);
   assign rep_ue  = !f_ce;
   assign cap_any = e_ue || e_ce;
 
@@ -235,10 +242,11 @@ module emc
     for (int j = 0; j < 4; j++) begin
       logic [6:0] b;
       b = '0;
+      // (m_ent: the line, or for a single access the doubleword; a burst's
+      // beat j is the entry's own doubleword in the line)
       for (int k = 0; k < NENT; k++)
-        if (ent_v[k] && (mem_req_i.burst ? ent_pa[k] == {mem_req_i.pa[35:5], 2'(j)}
-                                         : (j == 0 && ent_pa[k] == mem_req_i.pa[35:3])))
-          b = data_bit(ent_s[k]);
+        if (m_ent[k] && (mem_req_i.burst ? ent_pa[k][4:3] == 2'(j) : j == 0))
+          b = ent_b[k];
       fx_v[j]   = b[6] && mer[0];
       fx_bit[j] = b[5:0];
     end
@@ -288,10 +296,12 @@ module emc
       end
       if (mem_v_i && mem_req_i.write) begin
         ent_v <= ent_v & ~m_ent;
-        if (m_full && m_diag && !mem_req_i.burst && check_bits(mem_req_i.wdata) != dr[7:0]) begin
+        if (m_full && m_diag && !mem_req_i.burst && inj_s != 8'h00) begin
           ent_v[slot]  <= 1'b1;
           ent_pa[slot] <= mem_req_i.pa[35:3];
-          ent_s[slot]  <= check_bits(mem_req_i.wdata) ^ dr[7:0];
+          ent_s[slot]  <= inj_s;
+          ent_b[slot]  <= data_bit(inj_s);
+          ent_ce[slot] <= correctable(inj_s);
           if (&ent_v) victim <= victim + 1'b1;
         end
       end

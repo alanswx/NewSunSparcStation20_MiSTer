@@ -557,8 +557,9 @@ module iu
   always_ff @(posedge clk) begin
     if (rst || flush) begin
       e_valid <= 1'b0;
-      e_dec <= '0; e_inst <= '0; e_pc <= '0; e_npc <= '0; e_trap <= 1'b0; e_tt <= '0; e_pred <= 1'b0;
-      e_rs1 <= '0; e_rs2 <= '0; e_rs3 <= '0; e_rs4 <= '0;
+      // (the data -- e_inst, e_pc, e_npc, e_rs1..4 -- is not cleared: nothing
+      // reads it without e_valid, and the clear cost a LUT input on each bit)
+      e_dec <= '0; e_trap <= 1'b0; e_tt <= '0; e_pred <= 1'b0;
     end else if (d_go) begin
       e_valid <= 1'b1;
       e_dec <= d_annul_now ? nop_dec() : d_dec;
@@ -867,9 +868,8 @@ module iu
   always_ff @(posedge clk) begin
     if (rst || flush) begin
       m_valid <= 1'b0;
-      m_dec <= '0; m_inst <= '0; m_pc <= '0; m_npc <= '0; m_trap <= 1'b0; m_tt <= '0;
-      m_result <= '0; m_wdata <= '0; m_icc <= '0; m_wicc <= 1'b0; m_y <= '0; m_wy <= 1'b0;
-      m_wr_val <= '0; m_newcwp <= '0;
+      m_dec <= '0; m_trap <= 1'b0; m_tt <= '0;          // (the data as in E)
+      m_icc <= '0; m_wicc <= 1'b0; m_wy <= 1'b0; m_newcwp <= '0;
     end else if (e_go) begin
       m_valid <= 1'b1;
       m_dec <= e_dec;
@@ -945,9 +945,8 @@ module iu
   always_ff @(posedge clk) begin
     if (rst || flush) begin
       w_valid <= 1'b0;
-      w_dec <= '0; w_inst <= '0; w_pc <= '0; w_npc <= '0; w_trap <= 1'b0; w_tt <= '0;
-      w_result <= '0; w_rdata <= '0; w_icc <= '0; w_wicc <= 1'b0; w_y <= '0; w_wy <= 1'b0;
-      w_wr_val <= '0; w_newcwp <= '0;
+      w_dec <= '0; w_trap <= 1'b0; w_tt <= '0;          // (the data as in E)
+      w_icc <= '0; w_wicc <= 1'b0; w_wy <= 1'b0; w_newcwp <= '0;
     end else if (m_go) begin
       w_valid <= 1'b1;
       w_dec <= m_dec;

@@ -65,34 +65,37 @@ module ss20_iobridge
 );
 
   // ----------------------------------------------------------------- decode
-  // 0..NS-1 a slave, R0 reads 0, TO times out
+  // 0..NS-1 a slave, R0 reads 0, TO times out. The request is decoded as
+  // it arrives and kept in rq/sel for its beats, which begin the next
+  // cycle: the slaves see registers, not the CPU's request path.
   localparam logic [3:0] R0 = 4'd14, TO = 4'd15;
-  logic [3:0] sel;
+  mem_req_t   rq;
+  logic [3:0] sel, sel_d;
   always_comb begin
-    sel = R0;
+    sel_d = R0;
     if (req_i.pa[35:32] == 4'hF) begin
       case (req_i.pa[31:20])
-        12'hF10: sel = 4'd0;
-        12'hF11: sel = 4'd1;
-        12'hF12: sel = 4'd2;
-        12'hF13: sel = 4'd3;
-        12'hF14: sel = 4'd4;
-        12'hF17: sel = 4'd9;
-        12'hF16, 12'hF18, 12'hF1A, 12'hF1F: sel = 4'd5;
-        12'hE00: sel = 4'd8;
-        12'h000: sel = 4'd11;
-        default: sel = R0;
+        12'hF10: sel_d = 4'd0;
+        12'hF11: sel_d = 4'd1;
+        12'hF12: sel_d = 4'd2;
+        12'hF13: sel_d = 4'd3;
+        12'hF14: sel_d = 4'd4;
+        12'hF17: sel_d = 4'd9;
+        12'hF16, 12'hF18, 12'hF1A, 12'hF1F: sel_d = 4'd5;
+        12'hE00: sel_d = 4'd8;
+        12'h000: sel_d = 4'd11;
+        default: sel_d = R0;
       endcase
     end else if (req_i.pa[35:32] == 4'hE) begin
       case (req_i.pa[31:28])
-        4'h2:    sel = 4'd7;
-        4'h3:    sel = 4'd10;
-        4'hF:    sel = 4'd6;
-        4'hE:    sel = 4'd12;
-        default: sel = TO;                // the empty slots
+        4'h2:    sel_d = 4'd7;
+        4'h3:    sel_d = 4'd10;
+        4'hF:    sel_d = 4'd6;
+        4'hE:    sel_d = 4'd12;
+        default: sel_d = TO;                // the empty slots
       endcase
     end else begin
-      sel = TO;                           // reserved and VME spaces: no answer
+      sel_d = TO;                           // reserved and VME spaces: no answer
     end
   end
 
@@ -104,8 +107,8 @@ module ss20_iobridge
   logic [7:0]  tcount;
   logic        go;                        // a beat is out to a slave (or to the time-out)
 
-  assign hi = req_i.be[7:4] != 4'h0;
-  assign lo = req_i.be[3:0] != 4'h0;
+  assign hi = rq.be[7:4] != 4'h0;
+  assign lo = rq.be[3:0] != 4'h0;
 
   /* verilator lint_off UNUSEDSIGNAL */   // (be[0]: the last byte, the default)
   function automatic logic [1:0] first_byte(input logic [3:0] be);
@@ -120,13 +123,13 @@ module ss20_iobridge
   always_comb begin
     beat = '0;
     beat.req   = bs == B_HI || bs == B_LO;
-    beat.we    = req_i.write;
+    beat.we    = rq.write;
     // the interconnect's PA is doubleword-aligned (the caches send the
     // bytes as enables); byte devices decode the byte's own address, the
     // first enabled byte of the word
-    beat.addr  = {req_i.pa[27:3], bs == B_LO, first_byte(bs == B_LO ? req_i.be[3:0] : req_i.be[7:4])};
-    beat.be    = bs == B_LO ? req_i.be[3:0] : req_i.be[7:4];
-    beat.wdata = bs == B_LO ? req_i.wdata[31:0] : req_i.wdata[63:32];
+    beat.addr  = {rq.pa[27:3], bs == B_LO, first_byte(bs == B_LO ? rq.be[3:0] : rq.be[7:4])};
+    beat.be    = bs == B_LO ? rq.be[3:0] : rq.be[7:4];
+    beat.wdata = bs == B_LO ? rq.wdata[31:0] : rq.wdata[63:32];
     beat.pair  = hi && lo;
   end
   assign go = beat.req;
@@ -155,7 +158,7 @@ module ss20_iobridge
 
   // a beat's error that is posted (an SBus write) rather than returned
   logic posted;
-  assign posted = req_i.write && req_i.pa[35:32] == 4'hE;
+  assign posted = rq.write && rq.pa[35:32] == 4'hE;
   logic [1:0] nbytes;                     // enabled bytes - 1 (1, 2 or 4)
   always_comb
     case (beat.be)
@@ -170,7 +173,7 @@ module ss20_iobridge
     if (go && b_err && posted) begin
       mts_err_o <= 1'b1;
       mts_to_o  <= sel == TO;
-      mts_pa_o  <= {req_i.pa[35:28], beat.addr};
+      mts_pa_o  <= {rq.pa[35:28], beat.addr};
       mts_siz_o <= nbytes == 2'd0 ? 3'd0 : nbytes == 2'd1 ? 3'd1 : 3'd2;
     end
     if (rst) begin
@@ -180,7 +183,11 @@ module ss20_iobridge
     end else begin
       tcount <= go && !(b_ack || b_err) ? tcount + 8'd1 : 8'd0;
       case (bs)
-        B_IDLE: if (req_i.valid) bs <= hi ? B_HI : B_LO;
+        B_IDLE: if (req_i.valid) begin
+          rq  <= req_i;
+          sel <= sel_d;
+          bs  <= req_i.be[7:4] != 4'h0 ? B_HI : B_LO;
+        end
         B_HI: begin
           if (b_err && !posted) begin
             rsp_o.ack <= 1'b1; rsp_o.err <= 1'b1;
@@ -217,11 +224,11 @@ module ss20_iobridge
   initial iolog = $test$plusargs("iolog");
   always_ff @(posedge clk)
     if (iolog && go && (b_ack || b_err))
-      $display("io: %s sel=%0d pa=%09x addr=%07x be=%x %s=%08x%s", beat.we ? "W" : "R", sel, req_i.pa,
+      $display("io: %s sel=%0d pa=%09x addr=%07x be=%x %s=%08x%s", beat.we ? "W" : "R", sel, rq.pa,
                beat.addr, beat.be, beat.we ? "wd" : "rd", beat.we ? beat.wdata : b_rdata, b_err ? " ERR" : "");
 `endif
 
   logic unused_ok;
-  assign unused_ok = &{1'b0, req_i.burst, req_i.lock};
+  assign unused_ok = &{1'b0, rq.burst, rq.lock, rq.valid, rq.pa[2:0]};
 
 endmodule

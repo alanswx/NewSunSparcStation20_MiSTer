@@ -134,41 +134,54 @@ module tb_emc;
     ck32(EFSR, 0, "clean memory: EFSR 0");
     wr32(MER, DEF);
 
-    for (int fp = 0; fp <= 8; fp += 8) begin
+    // The POST's three ECC tests, each a loop over fp = 0, 8, run by each
+    // CPU in turn (CPU 0 then CPU 1). Each test first rewrites its area
+    // (mem_quick_check, DR = 0); the CE words its reads found stay bad, so
+    // CPU 1 injects with several of CPU 0's still live.
+    for (int cpu = 0; cpu < 2; cpu++) begin
       // ---- ECC Multiple UE Test
-      wr32(DR, 32'h400);
-      mem(1'b1, 36'h50_32C0 + 36'(fp), 8'hFF, 64'hD5A5_A5A5_A5A5_A5A5);
-      mem(1'b1, 36'h50_32E0 + 36'(fp), 8'hFF, 64'hA5A5_A5A5_55A5_A5A6);
-      wr32(DR, 0); wr32(EFSR, 0);
-      wr32(MER, DEF | 1);
-      mem(1'b1, 36'h50_32C0 + 36'(fp), 8'hC0, 64'h0);       // stha
-      mem(1'b1, 36'h50_32E0 + 36'(fp), 8'h80, 64'h0);       // stba
-      handler(32'h0001_D008, 32'h8FFF_C100, 32'h50_32C0 + fp, 1'b1, "UE");
-      wr32(MER, DEF);
+      for (int q = 0; q < 8; q++) mem(1'b1, 36'h50_32C0 + 36'(8 * q), 8'hFF, 64'h0);
+      for (int fp = 0; fp <= 8; fp += 8) begin
+        wr32(DR, 32'h400);
+        mem(1'b1, 36'h50_32C0 + 36'(fp), 8'hFF, 64'hD5A5_A5A5_A5A5_A5A5);
+        mem(1'b1, 36'h50_32E0 + 36'(fp), 8'hFF, 64'hA5A5_A5A5_55A5_A5A6);
+        wr32(DR, 0); wr32(EFSR, 0);
+        wr32(MER, DEF | 1);
+        mem(1'b1, 36'h50_32C0 + 36'(fp), 8'hC0, 64'h0);       // stha
+        mem(1'b1, 36'h50_32E0 + 36'(fp), 8'h80, 64'h0);       // stba
+        handler(32'h0001_D008, 32'h8FFF_C100, 32'h50_32C0 + fp, 1'b1, "UE");
+        wr32(MER, DEF);
+      end
 
       // ---- ECC Multiple CE Test
-      wr32(DR, 32'h400);
-      mem(1'b1, 36'h50_3B20 + 36'(fp), 8'hFF, 64'h8000_0000_0000_0000);
-      mem(1'b1, 36'h50_3B40 + 36'(fp), 8'hFF, 64'hFFFF_FFFF_FFFF_FFFE);
-      wr32(DR, 0); wr32(EFSR, 0);
-      wr32(MER, DEF | 3);
-      mem(1'b0, 36'h50_3B20 + 36'(fp), 8'hFF, 64'h0);       // ldda
-      mem(1'b0, 36'h50_3B40 + 36'(fp), 8'hFF, 64'h0);
-      handler(32'h0001_8501, 32'h8FFF_C310, 32'h50_3B20 + fp, 1'b1, "CE");
-      wr32(MER, DEF);
+      for (int q = 0; q < 8; q++) mem(1'b1, 36'h50_3B20 + 36'(8 * q), 8'hFF, 64'h0);
+      for (int fp = 0; fp <= 8; fp += 8) begin
+        wr32(DR, 32'h400);
+        mem(1'b1, 36'h50_3B20 + 36'(fp), 8'hFF, 64'h8000_0000_0000_0000);
+        mem(1'b1, 36'h50_3B40 + 36'(fp), 8'hFF, 64'hFFFF_FFFF_FFFF_FFFE);
+        wr32(DR, 0); wr32(EFSR, 0);
+        wr32(MER, DEF | 3);
+        mem(1'b0, 36'h50_3B20 + 36'(fp), 8'hFF, 64'h0);       // ldda
+        mem(1'b0, 36'h50_3B40 + 36'(fp), 8'hFF, 64'h0);
+        handler(32'h0001_8501, 32'h8FFF_C310, 32'h50_3B20 + fp, 1'b1, "CE");
+        wr32(MER, DEF);
+      end
 
       // ---- ECC Multiple CE, UE Test
-      wr32(DR, 32'h400);
-      mem(1'b1, 36'h50_3300 + 36'(fp), 8'hFF, 64'hFFFF_FFFF_FFBF_FFFF);
-      mem(1'b1, 36'h50_34E0 + 36'(fp), 8'hFF, 64'hA5A5_A555_A5A5_A5A5);
-      wr32(DR, 0); wr32(EFSR, 0);
-      wr32(MER, DEF | 1);
-      mem(1'b0, 36'h50_3300 + 36'(fp), 8'hFF, 64'h0);       // ldda: CE, EI off: no interrupt
-      cycles(12);
-      check(!irq, "CE with EI off: no interrupt");
-      mem(1'b1, 36'h50_34E0 + 36'(fp), 8'h80, 64'h0);       // stba: UE
-      handler(32'h0001_A509, 32'h8FFF_C000, 32'h50_34E0 + fp, 1'b1, "CE,UE");
-      wr32(MER, DEF);
+      for (int q = 0; q < 64; q++) mem(1'b1, 36'h50_3300 + 36'(8 * q), 8'hFF, 64'h0);
+      for (int fp = 0; fp <= 8; fp += 8) begin
+        wr32(DR, 32'h400);
+        mem(1'b1, 36'h50_3300 + 36'(fp), 8'hFF, 64'hFFFF_FFFF_FFBF_FFFF);
+        mem(1'b1, 36'h50_34E0 + 36'(fp), 8'hFF, 64'hA5A5_A555_A5A5_A5A5);
+        wr32(DR, 0); wr32(EFSR, 0);
+        wr32(MER, DEF | 1);
+        mem(1'b0, 36'h50_3300 + 36'(fp), 8'hFF, 64'h0);       // ldda: CE, EI off: no interrupt
+        cycles(12);
+        check(!irq, "CE with EI off: no interrupt");
+        mem(1'b1, 36'h50_34E0 + 36'(fp), 8'h80, 64'h0);       // stba: UE
+        handler(32'h0001_A509, 32'h8FFF_C000, 32'h50_34E0 + fp, 1'b1, "CE,UE");
+        wr32(MER, DEF);
+      end
     end
 
     // a bad word stays bad until a whole write; a burst finds it, with DW

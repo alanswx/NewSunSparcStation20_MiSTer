@@ -243,23 +243,34 @@ module cs4231
   // ---------------------------------------------------------------------
   // Sample clock and timer clock
   // ---------------------------------------------------------------------
-  localparam logic [39:0] CLK40 = 40'(CLK_HZ);
-  logic [39:0] s_thr, s_acc, s_sum, t_thr, t_acc, t_sum, xtal;
+  // The rates are exact: each period is CLK_HZ * divide / crystal cycles,
+  // counted by adding the crystal's frequency each cycle. Everything is
+  // scaled by the common factor of the clock and both crystals (400 at
+  // 55 MHz), which keeps the accumulators near 30 bits instead of 40.
+  function automatic longint gcd(input longint a, input longint b);
+    longint t;
+    while (b != 0) begin t = a % b; a = b; b = t; end
+    return a;
+  endfunction
+  localparam longint SG    = gcd(gcd(longint'(CLK_HZ), 64'd16_934_400), 64'd24_576_000);
+  localparam longint CLKS  = longint'(CLK_HZ) / SG;
+  localparam int     AW    = $clog2(CLKS * 3072 + 24_576_000 / SG) + 1;
+  logic [AW-1:0] s_thr, s_acc, s_sum, t_thr, t_acc, t_sum, xtal;
   logic        s_tick, t_tick;
 
-  assign xtal = ir[8][0] ? 40'd16_934_400 : 40'd24_576_000;
+  assign xtal = ir[8][0] ? AW'(16_934_400 / SG) : AW'(24_576_000 / SG);
   always_comb
     unique case (ir[8][3:1])
-      3'd0: s_thr = CLK40 * 40'd3072;
-      3'd1: s_thr = CLK40 * 40'd1536;
-      3'd2: s_thr = CLK40 * 40'd896;
-      3'd3: s_thr = CLK40 * 40'd768;
-      3'd4: s_thr = CLK40 * 40'd448;
-      3'd5: s_thr = CLK40 * 40'd384;
-      3'd6: s_thr = CLK40 * 40'd512;
-      default: s_thr = CLK40 * 40'd2560;
+      3'd0: s_thr = AW'(CLKS * 3072);
+      3'd1: s_thr = AW'(CLKS * 1536);
+      3'd2: s_thr = AW'(CLKS * 896);
+      3'd3: s_thr = AW'(CLKS * 768);
+      3'd4: s_thr = AW'(CLKS * 448);
+      3'd5: s_thr = AW'(CLKS * 384);
+      3'd6: s_thr = AW'(CLKS * 512);
+      default: s_thr = AW'(CLKS * 2560);
     endcase
-  assign t_thr  = ir[8][0] ? CLK40 * 40'd168 : CLK40 * 40'd245;
+  assign t_thr  = ir[8][0] ? AW'(CLKS * 168) : AW'(CLKS * 245);
   assign s_sum  = s_acc + xtal;
   assign t_sum  = t_acc + xtal;
   assign s_tick = (s_sum >= s_thr);
