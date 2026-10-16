@@ -68,11 +68,13 @@ module cpu_module
   logic [2:0]  iu_cwp;
   logic        iu_rst;              // reset or the watchdog
 
+  logic        ic_fast;                // (the I-cache has no fast path)
   logic [15:0] dbg_pipe;
+  logic [8:0]  d_nidx;                 // the IU's next M index: the D-cache's RAMs are read a cycle ahead
   logic [7:0]  dbg_mmu, dbg_ic, dbg_dc;
 
   iu #(.HAS_FPU(HAS_FPU)) u_iu (
-    .clk, .rst(iu_rst), .ifetch_req_o(ifr), .ifetch_rsp_i(ifs), .dmem_req_o(dmr), .dmem_rsp_i(dms),
+    .clk, .rst(iu_rst), .ifetch_req_o(ifr), .ifetch_rsp_i(ifs), .dmem_req_o(dmr), .dmem_nidx_o(d_nidx), .dmem_rsp_i(dms),
     .fpu_req_o(fpr), .fpu_rsp_i(fps), .irl_i, .error_o(iu_error), .cwp_o(iu_cwp), .halt_o(iu_halt),
     .dbg_commit_o, .dbg_trap_o, .dbg_tt_o, .dbg_pc_o, .dbg_psr_o, .dbg_pipe_o(dbg_pipe));
 
@@ -166,8 +168,8 @@ module cpu_module
 
   l1cache #(.ICACHE(1'b1)) u_ic (
     .clk, .rst, .enable_i(ie), .mid_i,
-    .req_i(ic_req), .we_i(1'b0), .atomic_i(1'b0), .cacheable_i(ic_cacheable), .pa_i(ic_pa), .idx_i(ic_idx), .be_i(8'hFF), .wdata_i(64'd0),
-    .taken_o(ic_taken), .done_o(ic_done), .rdata_o(ic_rdata), .err_o(ic_err),
+    .req_i(ic_req), .freq_i(1'b0), .we_i(1'b0), .atomic_i(1'b0), .cacheable_i(ic_cacheable), .pa_i(ic_pa), .idx_i(ic_idx), .be_i(8'hFF), .wdata_i(64'd0),
+    .taken_o(ic_taken), .done_o(ic_done), .fast_o(ic_fast), .rdata_o(ic_rdata), .err_o(ic_err),
     .inval_i(ic_inval), .inval_line_i(inval_line), .snoop_i(snoop_m), .snoop_hold_o(ic_hold),
     .flash_v_i(ic_flash_v), .flash_l_i(ic_flash_l), .flash_busy_o(ic_flash_busy),
     .diag_req_i(ic_dg_req), .diag_we_i(dmr.write), .diag_tag_i(!dmr.asi[0]), .diag_va_i(dmr.va), .diag_wdata_i(diag_wdata),
@@ -175,6 +177,8 @@ module cpu_module
     .mem_req_o(mem_i), .mem_rsp_i(mem_i_r), .wb_empty_o(ic_wb_empty), .dbg_o(dbg_ic));
 
   logic        dc_req, dc_we, dc_atomic, dc_cacheable, dc_done, dc_err;
+  logic        dc_fast;                // a read hit answered in its request cycle (D_IDLE)
+  logic        d_hit_now;              // a normal-ASI request translated by the micro-TLB this cycle (below)
   /* verilator lint_off UNUSEDSIGNAL */
   logic        dc_taken;               // (the data side needs no such flag: its index is the VA's)
   /* verilator lint_on UNUSEDSIGNAL */
@@ -192,10 +196,10 @@ module cpu_module
   assign dc_inval_any  = dc_inval | walk_wr_ack;
   assign dc_inval_line = walk_wr_ack ? mem_w.pa[35:5] : inval_line;
 
-  l1cache #(.ICACHE(1'b0)) u_dc (
+  l1cache #(.ICACHE(1'b0), .FAST_HIT(1'b1)) u_dc (
     .clk, .rst, .enable_i(de), .mid_i,
-    .req_i(dc_req), .we_i(dc_we), .atomic_i(dc_atomic), .cacheable_i(dc_cacheable), .pa_i(dc_pa), .idx_i(dc_idx), .be_i(dc_be), .wdata_i(dc_wdata),
-    .taken_o(dc_taken), .done_o(dc_done), .rdata_o(dc_rdata), .err_o(dc_err),
+    .req_i(dc_req), .freq_i(d_hit_now), .we_i(dc_we), .atomic_i(dc_atomic), .cacheable_i(dc_cacheable), .pa_i(dc_pa), .idx_i(dc_idx), .be_i(dc_be), .wdata_i(dc_wdata),
+    .taken_o(dc_taken), .done_o(dc_done), .fast_o(dc_fast), .rdata_o(dc_rdata), .err_o(dc_err),
     .inval_i(dc_inval_any), .inval_line_i(dc_inval_line), .snoop_i(snoop_m), .snoop_hold_o(dc_hold),
     .flash_v_i(dc_flash_v), .flash_l_i(dc_flash_l), .flash_busy_o(dc_flash_busy),
     .diag_req_i(dc_dg_req), .diag_we_i(dmr.write), .diag_tag_i(!dmr.asi[0]), .diag_va_i(dmr.va), .diag_wdata_i(diag_wdata),
@@ -512,7 +516,7 @@ module cpu_module
   // TLB (D_XLAT: two cycles from registered state), the cache request then
   // follows from the registered PA. Line flushes look up in D_FLUSH_XLAT.
   dmem_rsp_t   dms_q;                   // the registered part of the answer
-  logic        d_new, d_bypass_now, d_hit_now;
+  logic        d_new, d_bypass_now;     // (d_hit_now: above, the D-cache's freq_i)
   assign d_new        = ds == D_IDLE && dmr.valid && !dms_q.ack && d_normal;
   assign d_bypass_now = ds == D_IDLE && dmr.valid && !dms_q.ack && d_bypass;
 
@@ -608,7 +612,7 @@ module cpu_module
   assign dc_atomic = dmr.atomic;
   assign dc_pa    = !d_fast_sel ? d_pa : d_bypass ? {dmr.asi[3:0], dmr.va} : d_fast_pa;
   assign dc_cacheable = !d_fast_sel ? d_cacheable : d_bypass ? 1'b0 : cacheable_pa(d_fast_pa);
-  assign dc_idx   = dmr.va[11:3];      // = the PA's (the page offset), and the IU holds the request: no wait for the TLB
+  assign dc_idx   = d_nidx;            // the next cycle's VA[11:3] (= the PA's, the page offset): no wait for the TLB
   assign dc_be    = lanes_be(dmr.size, dc_pa[2:0]);     // from the PA of this cycle, not the latched one
   assign dc_wdata = lanes_wdata(dmr.size, dmr.wdata);
   assign rg_valid = ds == D_REG;
@@ -644,7 +648,10 @@ module cpu_module
   // The answer to the IU: the cache's in its own cycle, the rest registered
   always_comb begin
     dms = dms_q;
-    if (ds == D_CACHE && dc_done) begin
+    if (ds == D_IDLE && dc_fast) begin
+      dms.ack = 1'b1;
+      dms.rdata = lanes_rdata(dmr.size, d_fast_pa[2:0], dc_rdata);
+    end else if (ds == D_CACHE && dc_done) begin
       dms.ack = 1'b1;
       dms.rdata = lanes_rdata(dmr.size, d_pa[2:0], dc_rdata);
       dms.fault = (dc_err && !d_masked && !(dmr.write && !dmr.atomic)) ? 2'd2 : 2'd0;
@@ -671,7 +678,7 @@ module cpu_module
               if (dut_ok) begin                // translated this cycle (d_hit_now): the cache has it
                 d_pa <= d_fast_pa;
                 d_cacheable <= cacheable_pa(d_fast_pa);
-                ds <= D_CACHE;
+                if (!dc_fast) ds <= D_CACHE;   // (a read hit with its lines read ahead: answered now)
               end else begin
                 ds <= D_XLAT;                  // the MMU's TLB: misses, faults and walks are found there
               end
@@ -837,7 +844,7 @@ module cpu_module
   // synthesis translate_on
 `endif
   logic unused_ok;
-  assign unused_ok = &{1'b0, ic_wb_empty, iu_halt, iu_cwp, be_masked, xd_r.pte_c, xi_r.pte_c, xi_r.m, ifr.supv, dmr.va[7:0]};
+  assign unused_ok = &{1'b0, ic_wb_empty, ic_fast, iu_halt, iu_cwp, be_masked, xd_r.pte_c, xi_r.pte_c, xi_r.m, ifr.supv, dmr.va[7:0]};
 
   // the hang reporter's words: the IU's pipeline, the data request, the
   // fetch, the states of the data side, instruction side, arbiter, MMU

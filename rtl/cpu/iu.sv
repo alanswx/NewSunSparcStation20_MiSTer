@@ -60,6 +60,7 @@ module iu
   output ifetch_req_t ifetch_req_o,
   input  ifetch_rsp_t ifetch_rsp_i,
   output dmem_req_t   dmem_req_o,
+  output logic [8:0]  dmem_nidx_o,    // the doubleword index (VA[11:3]) M holds next cycle: the D-cache reads its RAMs ahead
   input  dmem_rsp_t   dmem_rsp_i,
   output fpu_pkg::fpu_req_t fpu_req_o,
   input  fpu_pkg::fpu_rsp_t fpu_rsp_i,
@@ -869,6 +870,10 @@ module iu
       m_fault <= dmem_rsp_i.fault;
     end
   end
+
+  // the D-cache's lookup index for next cycle: E's address when E moves
+  // on, else M's own (the cache's request path reads it in the accept cycle)
+  assign dmem_nidx_o = e_go ? e_result[11:3] : m_result[11:3];
 
   assign m_go    = m_valid && !w_stall && (!m_is_mem || m_acked || (FAST_ACK && m_done));
   assign m_stall = m_valid && !m_go;

@@ -59,7 +59,10 @@
 module l1cache
   import mmu_pkg::*;
 #(
-  parameter bit ICACHE = 1'b1
+  parameter bit ICACHE = 1'b1,
+  // FAST_HIT (D-cache): idx_i is the index of the request coming next
+  // cycle, so a read hit can be answered in its request cycle (below)
+  parameter bit FAST_HIT = 1'b0
 )(
   input  logic        clk,
   input  logic        rst,
@@ -68,6 +71,7 @@ module l1cache
 
   // CPU side
   input  logic        req_i,
+  input  logic        freq_i,        // FAST_HIT: req_i without the terms that wait for done_o (a fast hit may answer it)
   input  logic        we_i,
   input  logic        atomic_i,
   input  logic        cacheable_i,
@@ -77,6 +81,7 @@ module l1cache
   input  logic [63:0] wdata_i,
   output logic        taken_o,       // the request is taken this cycle
   output logic        done_o,
+  output logic        fast_o,        // done_o for a read hit in its request cycle (FAST_HIT)
   output logic [63:0] rdata_o,
   output logic        err_o,
 
@@ -208,7 +213,7 @@ module l1cache
   assign wb_pop     = wb_busy && mem_rsp_i.ack;
   assign wb_room    = wb_cnt != 3'(WB_DEPTH) || wb_pop;
   assign wb_empty_o = !wb_busy;
-  assign wb_push    = !ICACHE && st == S_WRITE_WAIT && wb_room;
+  assign wb_push    = !ICACHE && ((st == S_WRITE_WAIT && wb_room) || fast_st);
   // the acknowledgement of this cache's own request (not of a buffered write)
   logic ack;
   assign ack = mem_rsp_i.ack && !wb_busy;
@@ -240,8 +245,20 @@ module l1cache
 
   // The set's lock and MRU bits (port A, read in the accept cycle)
   logic [WAYS-1:0] cur_lck, cur_mru;
-  assign cur_lck = sa_rdata[WAYS-1:0];
-  assign cur_mru = sa_rdata[8 +: WAYS];
+  // the set word as last written: port A returns the old word when port B
+  // wrote the address it read in the same cycle (hits in successive cycles)
+  logic [15:0] sa_word;
+  logic        sbw_q;                  // port B wrote the set word port A read last cycle
+  logic [15:0] sbw_d_q;
+  // FAST_HIT: a read hit (fast_ld) or a cacheable store (fast_st) answered
+  // in its request cycle, from the lines read ahead at idx_i in the cycle
+  // before; the compare is on pa_i
+  logic        fast, fast_ld, fast_st;
+  logic [WAYS-1:0] fhit_way;
+  logic [WW-1:0]   fhit_idx;
+  assign sa_word = sbw_q ? sbw_d_q : sa_rdata;
+  assign cur_lck = sa_word[WAYS-1:0];
+  assign cur_mru = sa_word[8 +: WAYS];
 
   // The victim: an unlocked way with no valid (half-)line, else the
   // highest unlocked way without history (Viking fills line 4 first)
@@ -414,8 +431,8 @@ module l1cache
   assign flash_go        = fs != F_IDLE && !fill_tag_go && !fill_end_go && !atomic_inval_go && !snoop_wr_go && !snoop_rd_go && !q_retry_go;
   assign dg_tag_go       = ds == D_IDLE && diag_req_i && diag_tag_i && !fill_tag_go && !fill_end_go && !atomic_inval_go &&
                            !snoop_wr_go && !snoop_rd_go && !q_retry_go && fs == F_IDLE;
-  assign dg_data_go      = ds == D_IDLE && diag_req_i && !diag_tag_i && !fill_beat_now && !st_hit_now;
-  assign mru_go          = (st == S_LOOKUP && !r_atomic && hit) || fill_end_go;
+  assign dg_data_go      = ds == D_IDLE && diag_req_i && !diag_tag_i && !fill_beat_now && !st_hit_now && !(fast_st && fhit);
+  assign mru_go          = (st == S_LOOKUP && !r_atomic && hit) || fill_end_go || fast_ld;
 
   // data port B
   always_comb begin
@@ -424,6 +441,8 @@ module l1cache
       db_we = 1'b1; db_addr = {r_pa[11:5], fill_beat}; db_wdata = mem_rsp_i.rdata; db_we_way[fill_way] = 1'b1;
     end else if (st_hit_now) begin
       db_we = 1'b1; db_addr = r_pa[11:3]; db_be = r_be; db_wdata = r_wdata; db_we_way[hit_idx] = 1'b1;
+    end else if (fast_st && fhit) begin   // a fast store's hit line
+      db_we = 1'b1; db_addr = pa_i[11:3]; db_be = be_i; db_wdata = wdata_i; db_we_way[fhit_idx] = 1'b1;
     end else if (dg_data_go) begin
       db_addr = dg_daddr; db_wdata = diag_wdata_i;
       if (diag_we_i && dg_way_ok) begin db_we = 1'b1; db_we_way[dg_way] = 1'b1; end
@@ -465,8 +484,8 @@ module l1cache
   always_comb begin
     sb_we = 1'b0; sb_addr = '0; sb_wdata = '0;
     if (mru_go) begin
-      sb_we = 1'b1; sb_addr = r_set;
-      sb_wdata = mru_after(cur_mru, cur_lck, (st == S_DONE) ? fill_way : hit_idx);
+      sb_we = 1'b1; sb_addr = fast_ld ? pa_i[11:SET_LSB] : r_set;
+      sb_wdata = mru_after(cur_mru, cur_lck, fast_ld ? fhit_idx : (st == S_DONE) ? fill_way : hit_idx);
     end else if (fs != F_IDLE) begin
       sb_addr = f_set;
       if (fs == F_WRITE) begin
@@ -537,9 +556,10 @@ module l1cache
       for (int b = 0; b < 8; b++)
         if (fw_be[7 - b]) hit_data[8*(7-b) +: 8] = fw_d[8*(7-b) +: 8];
   end
-  assign done_o  = done_q | hit_now | wr_now;
-  assign rdata_o = hit_now ? hit_data : rdata_q;
-  assign err_o   = (hit_now || wr_now) ? 1'b0 : err_q;
+  assign done_o  = done_q | hit_now | wr_now | fast;
+  assign fast_o  = fast;
+  assign rdata_o = hit_now ? hit_data : fast_ld ? da_rdata[fhit_idx] : rdata_q;
+  assign err_o   = (hit_now || wr_now || fast) ? 1'b0 : err_q;
   // The request's fields are latched whenever one could be taken, whether
   // or not req_i is up (the CPU side's request valid comes late: it hangs
   // off the answer of the previous request); only the state change waits
@@ -548,6 +568,34 @@ module l1cache
   assign can_take = !done_q && (st == S_IDLE || hit_now || wr_now) && fs == F_IDLE && !flash_v_i && !flash_l_i;
   assign accept   = req_i && can_take;
   assign taken_o  = accept;
+
+  // FAST_HIT: the port A outputs are this request's when last cycle's index
+  // was its doubleword's and port B did not write that address meanwhile
+  // (the RAMs return the old word then): then a cacheable read compares on
+  // pa_i now and answers, and the next request may come in the next cycle.
+  logic [8:0] ra_q;                    // the index port A read last cycle
+  logic       pbw_q;                   // port B wrote it (tags or data) in that cycle
+  logic       fhit;
+  always_comb begin
+    fhit_way = '0;
+    for (int i = 0; i < WAYS; i++)
+      fhit_way[i] = (ta_rdata[i][23:0] == pa_i[35:12]) && tag_v(ta_rdata[i], pa_i);
+    fhit = |fhit_way;
+    fhit_idx = '0;
+    for (int i = WAYS - 1; i >= 0; i--) if (fhit_way[i]) fhit_idx = WW'(i);
+  end
+  logic fast_ok;
+  assign fast_ok = FAST_HIT && !ICACHE && st == S_IDLE && freq_i && can_take && !atomic_i && cacheable_i && enable_i &&
+                   ra_q == pa_i[11:3] && !pbw_q;
+  assign fast_ld = fast_ok && !we_i && fhit;
+  assign fast_st = fast_ok && we_i && wb_room;   // updates a hit line, enters the write buffer
+  assign fast    = fast_ld || fast_st;
+  always_ff @(posedge clk) begin
+    ra_q    <= idx_i;
+    pbw_q   <= (db_we && db_addr == idx_i) || (|tb_we_way && tb_addr == idx_i[8 -: SET_W]);
+    sbw_q   <= sb_we && sb_addr == idx_i[8 -: SET_W];
+    sbw_d_q <= sb_wdata;
+  end
 
   always_ff @(posedge clk) begin
     done_q <= 1'b0;
@@ -651,7 +699,8 @@ module l1cache
 
       // ---- the write buffer ----
       if (wb_push) begin
-        wb_pa[wb_wr] <= r_pa[35:3]; wb_be[wb_wr] <= r_be; wb_d[wb_wr] <= r_wdata;
+        if (fast_st) begin wb_pa[wb_wr] <= pa_i[35:3]; wb_be[wb_wr] <= be_i; wb_d[wb_wr] <= wdata_i; end
+        else         begin wb_pa[wb_wr] <= r_pa[35:3]; wb_be[wb_wr] <= r_be; wb_d[wb_wr] <= r_wdata; end
         wb_wr <= wb_wr + 2'd1;
       end
       if (wb_pop) wb_rd <= wb_rd + 2'd1;
@@ -682,8 +731,8 @@ module l1cache
         fill_err <= 1'b0; fill_snooped <= 1'b0;
         if (atomic_i) st <= S_LOOKUP;
         else if (!(cacheable_i && enable_i)) begin single_lock <= 1'b0; st <= S_SINGLE; end
-        else if (we_i) st <= S_WRITE_WAIT;
-        else st <= S_LOOKUP;
+        else if (we_i) begin if (!fast_st) st <= S_WRITE_WAIT; end
+        else if (!fast) st <= S_LOOKUP;   // (a fast hit has answered: the next request may come)
       end
 
       // ---- the snoop queue: read the set's tags, compare, clear the valid bit ----
@@ -772,6 +821,6 @@ module l1cache
   end
 
   logic unused_ok;
-  assign unused_ok = &{1'b0, q_cur[31], r_pa[2:0], diag_va_i[29], diag_va_i[25:12], diag_va_i[2:0], sa_rdata, sb_rdata};
+  assign unused_ok = &{1'b0, q_cur[31], r_pa[2:0], diag_va_i[29], diag_va_i[25:12], diag_va_i[2:0], sa_rdata, sb_rdata, sa_word};
 
 endmodule
