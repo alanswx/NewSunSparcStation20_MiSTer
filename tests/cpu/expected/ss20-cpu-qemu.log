@@ -59,7 +59,9 @@ PASS cache: SS20 write-backs of 32 modified lines reach memory intact
 PASS cache: a patched instruction runs after FLUSH
 PASS cache: the words of a line used right after its miss are memory's
 PASS cache: a routine fetched through its line fill runs memory's words
+PASS iu: ba,a / ba / call to .+4: the target that is also the slot
 PASS fpu: misaligned st %f with a pending fp_exception takes tt 7 first
+PASS fpu: back-to-back FP instructions: deferred trap on the next one, dependent chain
 PASS fpu: FQ holds the trapping FPop; STDFQ empties it, is privileged, traps when empty
 PASS trap: LDC/STC family -> cp_disabled (0x24), no memory access
 PASS trap: wr %psr with CWP = NWINDOWS -> illegal_instruction
@@ -94,4 +96,4 @@ SKIP buserr: through a mapping: load tt 0x29 (AT 1, SFAR), fetch tt 0x21 (FT 5, 
 SKIP dma: a transfer at a line every two cycles into cached lines, under stores and an I-cache flash clear, is what the module reads
 SKIP dma: a transfer into lines the module keeps reloading meanwhile ends with memory's data in the cache
 SKIP irq: an interrupt never resumes into an annulled delay slot (ba,a / be,a untaken / bn,a under a level-10 source)
-CPUTEST DONE pass=54 fail=11 skip=8
+CPUTEST DONE pass=56 fail=11 skip=8

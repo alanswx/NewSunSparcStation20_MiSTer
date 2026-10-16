@@ -108,3 +108,13 @@ for a build with its own Makefile instead of `ub.sh build`: the execl
 time_t fix, and `src/ub_sigsafe.h` (the signal-handler-only exit) with
 spawn and looper linked `-z now`. Apply in the repository's top
 directory with `git am`, `git apply` or `patch -p1`.
+
+## Later builds (single copy, OpenBIOS + GENERIC)
+
+- ba7156e (FAST_HIT): **3.2** (ub-lh-c1.log; FAST_ACK 3.0, ub-fa-c1.log).
+- Branch prediction + FP overlap (rbf 1cd977fa, ub-fx-c1.log): Dhrystone
+  5.0, Whetstone 3.6 (the old core 4.6 and 3.9); the index of that run is
+  2.8 because its file copies and pipe came out at half, which a
+  back-to-back rerun against a rebuild of ba7156e did not reproduce (see
+  profile-20261014.md, 2026-10-16). Board runs swing; rerun a low test
+  after a reboot before believing it.

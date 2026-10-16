@@ -52,7 +52,16 @@ module iu
   // FAST_ACK: M moves on in the cycle its memory answer arrives (a cache
   // hit: one cycle less a load or store), taking the data and fault from
   // the answer itself; else from the next cycle, from registers
-  parameter bit FAST_ACK = 1'b1
+  parameter bit FAST_ACK = 1'b1,
+  // BPRED: a Bicc/FBfcc that branches back, BA/FBA and CALL are predicted
+  // taken as they arrive from the cache (the fetch after their delay slot
+  // is their target); E redirects only when the guess was wrong (to pc+8)
+  parameter bit BPRED = 1'b1,
+  // FP_OVERLAP: an FPop or FP load does not wait in D for the FP work ahead;
+  // it waits in W, where it meets the FPU, until the FPU is idle (and takes
+  // a deferred fp_exception there). FP stores, FBfcc and LDFSR still wait
+  // in D: they read the FPU's registers, fcc or FSR in E.
+  parameter bit FP_OVERLAP = 1'b1
 )(
   input  logic        clk,
   input  logic        rst,
@@ -109,6 +118,8 @@ module iu
   logic [7:0]  d_tt;           // trap tag (valid when d_trap)
   logic        d_trap;
   logic        d_annulled;     // the delay slot was annulled: a no-op
+  logic        d_pred, e_pred; // BPRED: the fetch already went to this DCTI's target after its slot
+  logic [31:0] e_pc8;          // e_pc + 8, registered: where a mispredicted DCTI continues
   // E
   logic        e_valid;
   dec_t        e_dec;
@@ -150,6 +161,7 @@ module iu
   logic [31:0] w_wr_val;
   logic [2:0]  w_newcwp;
   logic        w_second;       // the second cycle of ldd / of a trap (l2)
+  logic        w_fp_hold, w_fp_cvt; // FP_OVERLAP: W waits for the FPU / takes the deferred trap (below)
 
   // =====================================================================
   // Stall and flush control
@@ -186,17 +198,45 @@ module iu
   assign rsp_taken = ifetch_rsp_i.valid & rsp_ready;
   assign rsp_valid = ifetch_rsp_i.valid & f_pending & ~f_pend_discard & (~f_have | f_take_buf);
 
+  // BPRED: the instruction arriving now, if a DCTI predicted taken whose
+  // delay slot has not been issued before this cycle (it is issued now, or
+  // later): the fetch after the slot is its target. Not for a DCTI in a
+  // delay slot (npc != pc + 4) nor while a redirect or trap changes the
+  // stream this very cycle. Nor for a target of pc + 4 (NetBSD's locore has
+  // "ba,a .+4; wr %tbr"): the slot and the target would have the same pc,
+  // the slot is known by its pc, and annulling the slot annulled the target.
+  // (Bits 21:0 only, for CALL too: a call that loses its guess is harmless.)
+  logic        pr_ok;
+  logic [31:0] pr_target, pr_target4;   // (target + 4 from pc + 4: two adders side by side, not in series)
+  always_comb begin
+    logic [31:0] inst;
+    logic        bcc, call, back;
+    inst = ifetch_rsp_i.inst;
+    bcc  = inst[31:30] == 2'b00 && (inst[24:22] == 3'b010 || inst[24:22] == 3'b110);   // Bicc, FBfcc
+    call = inst[31:30] == 2'b01;
+    back = inst[21];                                                                 // disp22 < 0
+    pr_target  = f_pend_pc + (call ? {inst[29:0], 2'b00} : {{8{inst[21]}}, inst[21:0], 2'b00});
+    pr_target4 = (f_pend_pc + 32'd4) + (call ? {inst[29:0], 2'b00} : {{8{inst[21]}}, inst[21:0], 2'b00});
+    pr_ok = BPRED && rsp_valid && ifetch_rsp_i.fault == 2'd0 &&
+            (call || (bcc && (inst[28:25] == 4'h8 || (inst[28:25] != 4'h0 && back)))) && inst[21:0] != 22'd1 &&
+            f_pend_npc == f_pend_pc + 32'd4 && f_pc == f_pend_pc + 32'd4 && !redirect && !flush;
+  end
+  logic        f_buf_pred;     // the buffered instruction is a predicted DCTI
+
   // What D would take this cycle
   logic        take_from_buf;
   logic [31:0] take_inst, take_pc, take_npc;
   logic [1:0]  take_fault;
+  logic        take_pred;
   logic        take_avail;
   always_comb begin
     take_from_buf = f_have;
     take_avail = f_have | rsp_valid;
     if (f_have) begin
       take_inst = f_buf_inst; take_pc = f_buf_pc; take_npc = f_buf_npc; take_fault = f_buf_fault;
+      take_pred = f_buf_pred;
     end else begin
+      take_pred = pr_ok;
       take_inst = ifetch_rsp_i.inst; take_pc = f_pend_pc; take_npc = f_pend_npc; take_fault = ifetch_rsp_i.fault;
     end
   end
@@ -273,7 +313,7 @@ module iu
       f_pend_pc <= '0; f_pend_npc <= '0;
       f_pend_discard <= 1'b0;
       f_have <= 1'b0;
-      f_buf_inst <= '0; f_buf_pc <= '0; f_buf_npc <= '0; f_buf_fault <= '0;
+      f_buf_inst <= '0; f_buf_pc <= '0; f_buf_npc <= '0; f_buf_fault <= '0; f_buf_pred <= 1'b0;
       f_annul_next <= 1'b0;
       f_buf_annul <= 1'b0;
       f_slot_pending <= 1'b0;
@@ -297,6 +337,18 @@ module iu
         f_buf_pc <= f_pend_pc;
         f_buf_npc <= f_pend_npc;
         f_buf_fault <= ifetch_rsp_i.fault;
+        f_buf_pred <= pr_ok;
+      end
+      // BPRED: the slot is issued with the target as its npc (now), or the
+      // target follows it when it is issued (later)
+      if (pr_ok) begin
+        if (can_issue) begin
+          f_pend_npc <= pr_target;
+          f_pc <= pr_target;
+          f_npc <= pr_target4;
+        end else begin
+          f_npc <= pr_target;
+        end
       end
       if (f_take && f_have) f_buf_annul <= 1'b0;
       if (rsp_to_buf) f_buf_annul <= 1'b0;          // marked below if it is the annulled slot
@@ -315,6 +367,7 @@ module iu
           if (!(slot_arriving && rsp_to_buf)) f_have <= 1'b0;
         end else if (slot_in_buf) begin
           f_buf_npc <= redirect_target;
+          f_buf_pred <= 1'b0;                        // (what it predicted is dropped with the rest)
           if (f_pending && !rsp_taken) f_pend_discard <= 1'b1;
           if (f_take_buf) f_have <= 1'b0;            // the slot goes to D; a response arriving is behind it
         end else if (slot_pending) begin
@@ -329,7 +382,7 @@ module iu
       end
       // the response of the slot arriving while D stalls goes to the buffer
       // with the new npc
-      if (rsp_to_buf && redirect && slot_arriving) f_buf_npc <= redirect_target;
+      if (rsp_to_buf && redirect && slot_arriving) begin f_buf_npc <= redirect_target; f_buf_pred <= 1'b0; end
       if (annul_slot) begin
         if (slot_arriving && rsp_to_buf) f_buf_annul <= 1'b1;
         else if (slot_in_buf && !f_take_buf) f_buf_annul <= 1'b1;   // (taken now: take_annul has it)
@@ -443,7 +496,10 @@ module iu
   // With a serialising instruction in flight every instruction waits: the
   // window, S, ET and PIL may all change (rare enough; a later version can
   // forward the window and let the independent ones through).
-  assign d_hazard = d_valid && !d_trap && (d_uses_rd_of_e || ser_inflight || (is_fp(d_dec.cls) && fp_inflight));
+  logic d_fp_quiet;            // this FP instruction needs the FP work ahead finished in E
+  assign d_fp_quiet = is_fp(d_dec.cls) &&
+                      (!FP_OVERLAP || d_dec.cls == C_FPSTORE || d_dec.cls == C_FBFCC || (d_dec.cls == C_FPLOAD && d_dec.fsr));
+  assign d_hazard = d_valid && !d_trap && (d_uses_rd_of_e || ser_inflight || (d_fp_quiet && fp_inflight));
 
   assign d_go    = d_valid && !e_stall && !d_hazard;
   assign d_stall = d_valid && !d_go;
@@ -455,13 +511,14 @@ module iu
   always_ff @(posedge clk) begin
     if (rst || flush) begin
       d_valid <= 1'b0;
-      d_inst <= '0; d_pc <= '0; d_npc <= '0; d_tt <= '0; d_trap <= 1'b0; d_annulled <= 1'b0;
+      d_inst <= '0; d_pc <= '0; d_npc <= '0; d_tt <= '0; d_trap <= 1'b0; d_annulled <= 1'b0; d_pred <= 1'b0;
     end else begin
       if (f_take) begin
         d_valid <= 1'b1;
         d_inst <= take_inst;
         d_pc <= take_pc;
         d_npc <= take_npc_eff;
+        d_pred <= take_pred && !(redirect && take_pc == slot_pc);
         d_annulled <= take_annul;
         // trap tags that come with the fetch, or the interrupt
         d_trap <= 1'b0;
@@ -476,7 +533,7 @@ module iu
       end
       // the DCTI in E resolves while its delay slot sits in D (when the slot
       // leaves D at this edge, the E latch below takes these instead)
-      if (slot_in_d && redirect && !d_go) d_npc <= redirect_target;
+      if (slot_in_d && redirect && !d_go) begin d_npc <= redirect_target; d_pred <= 1'b0; end
       if (slot_in_d && annul_slot && !d_go) d_annulled <= 1'b1;
     end
   end
@@ -500,7 +557,7 @@ module iu
   always_ff @(posedge clk) begin
     if (rst || flush) begin
       e_valid <= 1'b0;
-      e_dec <= '0; e_inst <= '0; e_pc <= '0; e_npc <= '0; e_trap <= 1'b0; e_tt <= '0;
+      e_dec <= '0; e_inst <= '0; e_pc <= '0; e_npc <= '0; e_trap <= 1'b0; e_tt <= '0; e_pred <= 1'b0;
       e_rs1 <= '0; e_rs2 <= '0; e_rs3 <= '0; e_rs4 <= '0;
     end else if (d_go) begin
       e_valid <= 1'b1;
@@ -508,6 +565,8 @@ module iu
       e_inst <= d_inst;
       e_pc <= d_pc;
       e_npc <= (slot_in_d && redirect) ? redirect_target : d_npc;
+      e_pred <= d_pred && !(slot_in_d && redirect);
+      e_pc8 <= d_pc + 32'd8;
       // the RF output is a cycle old: a write landing at this edge is taken here
       e_rs1 <= (rf_we && rf_rd == d_dec.rs1) ? rf_wdata : rf_q1;
       e_rs2 <= (rf_we && rf_rd == d_dec.rs2) ? rf_wdata : rf_q2;
@@ -786,8 +845,10 @@ module iu
   end
   logic e_ctl_now;
   assign e_ctl_now = e_valid && !e_resolved && !e_trap && !e_tag_trap;
-  assign redirect        = e_ctl_now && e_taken;
-  assign redirect_target = e_target;
+  // (a predicted DCTI that is not taken, or annulled -- a NOP here --
+  // continues after its slot)
+  assign redirect        = e_ctl_now && (e_pred ? !e_taken : e_taken);
+  assign redirect_target = e_pred ? e_pc8 : e_target;
   assign annul_slot      = e_ctl_now && e_annul;
 
   assign e_go    = e_valid && !m_stall && !md_wait;
@@ -907,6 +968,9 @@ module iu
         w_trap <= 1'b1;
         w_tt <= (m_fault_now == 2'd1) ? TT_DATA_ACCESS_EXC : TT_DATA_ACCESS_ERR;
       end
+    end else if (w_fp_cvt) begin
+      w_trap <= 1'b1;
+      w_tt <= TT_FP_EXCEPTION;          // the deferred exception, taken on this FP instruction
     end else if (!w_stall) begin
       w_valid <= 1'b0;
     end
@@ -922,7 +986,14 @@ module iu
 
   logic w_two_cycles;          // ldd, or a trap (l1 then l2)
   assign w_two_cycles = w_valid && ((w_trap && w_tt != TT_RESET) || (!w_trap && w_dec.cls == C_LOAD && w_dec.size == 2'd3));
-  assign w_stall = w_two_cycles && !w_second;
+  // FP_OVERLAP: an FPop or FP load waits in W while the FPU is busy (one
+  // datapath, one register write port); with an exception pending it
+  // becomes the fp_exception trap (below), as it would have in E
+  assign w_fp_hold = HAS_FPU && FP_OVERLAP && w_valid && !w_trap &&
+                     (w_dec.cls == C_FPOP || (w_dec.cls == C_FPLOAD && !w_dec.fsr)) &&
+                     (fpu_rsp_i.busy || fpu_rsp_i.exc_pending);
+  assign w_fp_cvt  = w_fp_hold && !fpu_rsp_i.busy;
+  assign w_stall = (w_two_cycles && !w_second) || w_fp_hold;
 
   always_ff @(posedge clk) begin
     if (rst) w_second <= 1'b0;
@@ -1058,12 +1129,15 @@ module iu
   // refill); also taken control transfers and traps.
   logic        perf_on;
   longint      pf_period;
+  longint      pi_ok, pi_es, pi_md, pi_lu, pi_sr, pi_fp, pi_fr, pi_fo, pi_ot;
+  int          pi_rd;
   longint      pf_cyc, pf_cu, pf_cs, pf_w2, pf_ld, pf_st, pf_md, pf_fp, pf_hz, pf_fe, pf_ot, pf_br, pf_tr;
   initial begin
     perf_on = $test$plusargs("perf");
     if (!$value$plusargs("perf_period=%d", pf_period)) pf_period = 10000000;
     pf_cyc = 0; pf_cu = 0; pf_cs = 0; pf_w2 = 0; pf_ld = 0; pf_st = 0; pf_md = 0; pf_fp = 0;
     pf_hz = 0; pf_fe = 0; pf_ot = 0; pf_br = 0; pf_tr = 0;
+    pi_ok = 0; pi_es = 0; pi_md = 0; pi_lu = 0; pi_sr = 0; pi_fp = 0; pi_fr = 0; pi_fo = 0; pi_ot = 0; pi_rd = 0;
   end
   /* verilator lint_off BLKSEQ */
   always_ff @(posedge clk) begin
@@ -1078,16 +1152,39 @@ module iu
       else if (!d_valid)                             pf_fe = pf_fe + 1;
       else                                           pf_ot = pf_ot + 1;
       if (redirect && e_go) pf_br = pf_br + 1;
+      // the issue slot (D to E): taken, or lost and why
+      if (redirect) pi_rd = 3; else if (pi_rd != 0) pi_rd = pi_rd - 1;
+      if (d_go)                                      pi_ok = pi_ok + 1;
+      else if (d_valid && e_stall)                   begin if (md_wait) pi_md = pi_md + 1; else pi_es = pi_es + 1; end
+      else if (d_valid && d_hazard && d_uses_rd_of_e) pi_lu = pi_lu + 1;
+      else if (d_valid && d_hazard && ser_inflight)  pi_sr = pi_sr + 1;
+      else if (d_valid && d_hazard)                  pi_fp = pi_fp + 1;
+      else if (!d_valid && pi_rd != 0)               pi_fr = pi_fr + 1;
+      else if (!d_valid)                             pi_fo = pi_fo + 1;
+      else                                           pi_ot = pi_ot + 1;
       if (w_valid && !w_stall && w_trap) pf_tr = pf_tr + 1;
       if (pf_cyc % pf_period == 0) begin
         $display("perf %m %0dM: commit user %0d sup %0d | w2 %0d | mem ld %0d st %0d | muldiv %0d | fp %0d | hazard %0d | fetch %0d | other %0d | taken %0d traps %0d",
                  pf_cyc / 1000000, pf_cu, pf_cs, pf_w2, pf_ld, pf_st, pf_md, pf_fp, pf_hz, pf_fe, pf_ot, pf_br, pf_tr);
         pf_cu = 0; pf_cs = 0; pf_w2 = 0; pf_ld = 0; pf_st = 0; pf_md = 0; pf_fp = 0; pf_hz = 0;
         pf_fe = 0; pf_ot = 0; pf_br = 0; pf_tr = 0;
+        $display("pissue %m: ok %0d | E held %0d muldiv %0d | load-use %0d | serialising %0d | fp %0d | fetch after redirect %0d | fetch other %0d | other %0d",
+                 pi_ok, pi_es, pi_md, pi_lu, pi_sr, pi_fp, pi_fr, pi_fo, pi_ot);
+        pi_ok = 0; pi_es = 0; pi_md = 0; pi_lu = 0; pi_sr = 0; pi_fp = 0; pi_fr = 0; pi_fo = 0; pi_ot = 0;
       end
     end
   end
   /* verilator lint_on BLKSEQ */
+  // +pipetrace=N: the pipeline, one line a cycle, for 120 cycles from cycle N
+  longint pt_start, pt_cyc;
+  initial begin if (!$value$plusargs("pipetrace=%d", pt_start)) pt_start = -1; pt_cyc = 0; end
+  always_ff @(posedge clk) begin
+    pt_cyc <= pt_cyc + 1;
+    if (pt_start >= 0 && pt_cyc >= pt_start && pt_cyc < pt_start + 120)
+      $display("PT %0d D%0d:%08x E%0d:%08x M%0d:%08x W%0d:%08x | hz%0d fpi%0d estl%0d mstl%0d wstl%0d com%0d ack%0d redir%0d ins %08x",
+        pt_cyc, d_valid, d_pc, e_valid, e_pc, m_valid, m_pc, w_valid, w_pc, d_hazard, fp_inflight, e_stall, m_stall, w_stall, w_commit,
+        dmem_rsp_i.ack, redirect, d_inst);
+  end
   // synthesis translate_on
 `endif
 

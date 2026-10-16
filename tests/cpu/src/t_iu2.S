@@ -17,6 +17,32 @@
         ld [%g7 + V_SKIP], %fsr
 #define RD_FSR(reg)     st %fsr, [%g7 + V_SIZE] ; ld [%g7 + V_SIZE], reg
 
+/* A DCTI whose target is its own delay slot (pc + 4): the slot runs (or
+ * is annulled) and then the target, the same instruction, runs again.
+ * NetBSD's locore has "ba,a .+4; wr %tbr": with ba,a the instruction must
+ * run exactly once (the core's branch prediction once annulled both).
+ * The nops let the fetch run ahead, one instruction a cycle, so that
+ * the target arrives as E resolves the branch. */
+BEGIN(t_dcti_pc4, "iu: ba,a / ba / call to .+4: the target that is also the slot")
+        mov 0, %l0
+        nop ; nop ; nop ; nop
+        ba,a 1f
+1:      add %l0, 1, %l0                 /* annulled slot, then the target */
+        EXPECT(%l0, 1, 1)
+        mov 0, %l0
+        nop ; nop ; nop ; nop
+        ba 2f
+2:      add %l0, 1, %l0                 /* slot, then the target */
+        EXPECT(%l0, 2, 2)
+        mov 0, %l0
+        mov %o7, %l3
+        nop ; nop ; nop ; nop
+        call 3f
+3:      add %l0, 1, %l0
+        mov %l3, %o7
+        EXPECT(%l0, 2, 3)
+END
+
 /* 1.0 / 0.0 with TEM.DZ set. A precise FPU (QEMU) traps on the fdivs; a
  * deferred one (the core, real modules) at the next FP instruction. In
  * both cases the misaligned FP store must take tt 7 and leave memory
@@ -71,6 +97,76 @@ BEGIN(t_fpu_trap_prio, "fpu: misaligned st %f with a pending fp_exception takes 
         and %l6, 0x1f, %l7
         EXPECT(%l7, 0x02, 6)            /* cexc: DZ */
         ld [%g7 + V_SKIP], %fsr
+END
+
+/* FPops back to back: the second FP instruction is on its way while the
+ * first runs. A deferred FPU (the core) takes the first one's exception
+ * on the second -- an FPop, then an FP load -- however close behind it
+ * is: exactly one fp_exception, the FQ holding the trapping fdivs. A
+ * precise FPU (QEMU) traps on the fdivs itself and is then in exception
+ * mode, so an FP instruction right behind would be a sequence error: a
+ * first probe tells the two apart, and the back-to-back cases run on a
+ * deferred FPU only. Then, on both, a dependent chain with no exception
+ * must compute: 2*2 = 4, 4+2 = 6, 6*6 = 36. */
+BEGIN(t_fpu_b2b, "fpu: back-to-back FP instructions: deferred trap on the next one, dependent chain")
+        FPU_OR_SKIP2
+        LDF2(0x3f800000, %f0)           /* 1.0 */
+        LDF2(0x00000000, %f1)           /* 0.0 */
+        LDF2(0x40000000, %f4)           /* 2.0 */
+        set FTMP2, %l0
+        set 0x01000000, %o0             /* TEM.DZ */
+        st %o0, [%g7 + V_SIZE]
+        ld [%g7 + V_SIZE], %fsr
+        EXPECT_TRAP(TT_FP_EXC)          /* the probe */
+        fdivs %f0, %f1, %f2
+        nop
+        ld [%g7 + V_TRAP_SEEN], %l5     /* TT_FP_EXC: precise; -1: deferred */
+        cmp %l5, -1
+        bne 1f
+        nop
+        fmovs %f4, %f3                  /* deferred: taken here */
+        nop
+1:      CHECK_TRAPPED(TT_FP_EXC, 1)
+        std %fq, [%l0]                  /* leave exception mode */
+        cmp %l5, -1
+        bne 5f                          /* precise: no back-to-back cases */
+        nop
+        set 0x01000000, %o0
+        st %o0, [%g7 + V_SIZE]
+        ld [%g7 + V_SIZE], %fsr
+        EXPECT_TRAP(TT_FP_EXC)
+9:      fdivs %f0, %f1, %f2
+        fmovs %f4, %f3                  /* right behind: taken here */
+        nop
+        CHECK_TRAPPED(TT_FP_EXC, 2)
+        std %fq, [%l0]
+        ld [%l0], %l3
+        set 9b, %l4
+        EXPECT_R(%l3, %l4, 3)           /* the fdivs' address */
+        RD_FSR(%l6)
+        and %l6, 0x1f, %l7
+        EXPECT(%l7, 0x02, 4)            /* cexc: DZ */
+        EXPECT_TRAP(TT_FP_EXC)
+8:      fdivs %f0, %f1, %f2
+        ld [%g7 + V_SIZE], %f5          /* an FP load right behind */
+        nop
+        CHECK_TRAPPED(TT_FP_EXC, 5)
+        std %fq, [%l0]
+        ld [%l0], %l3
+        set 8b, %l4
+        EXPECT_R(%l3, %l4, 6)
+5:      ld [%g7 + V_SKIP], %fsr         /* no traps enabled */
+        fmuls %f4, %f4, %f6
+        fadds %f6, %f4, %f7
+        fmuls %f7, %f7, %f8
+        st %f8, [%l0]
+        ld [%l0], %l3
+        set 0x42100000, %l4             /* 36.0 */
+        EXPECT_R(%l3, %l4, 7)
+        st %f7, [%l0]
+        ld [%l0], %l3
+        set 0x40c00000, %l4             /* 6.0 */
+        EXPECT_R(%l3, %l4, 8)
 END
 
 BEGIN(t_fpu_fq, "fpu: FQ holds the trapping FPop; STDFQ empties it, is privileged, traps when empty")
