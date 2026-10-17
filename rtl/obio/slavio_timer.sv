@@ -42,7 +42,17 @@
 //
 // Reset (§12 and NCR §6): all counts and limits 0, counter/timer mode,
 // RUN bits 0. The count is 0 (not 0x200) at reset and takes one tick to
-// show 0x200.
+// show 0x200. A software reset (swr_i: the System Control register's
+// SW_RST) resets the same state but keeps the RUN bits. OBP 2.25 sets
+// processor 0's RUN at power-on (reset_power_on: user timer for its
+// keyboard time-outs), then issues SW_RST and never writes RUN again
+// (obp_start); NeXTSTEP 3.3's kernel later makes the processor counters
+// User Timers (configuration 0xF), loads processor 0's and calibrates its
+// delay loop on that count without writing RUN: with RUN cleared by the
+// software reset the count stays 0 and the calibration never ends. NeXTSTEP
+// boots under OBP on a real SS20, so RUN must survive SW_RST there (QEMU
+// resets RUN to 1 on every reset; the Sun-4M spec, §5.3.4 and §12, gives
+// no reset value).
 //
 // Left out: nothing from the specification. Reserved bits read as 0;
 // writes to read-only registers and reserved words are ignored (acked).
@@ -55,6 +65,7 @@ module slavio_timer
 )(
   input  logic     clk,
   input  logic     rst,
+  input  logic     swr_i,              // with rst: a software reset (RUN kept)
 
   input  iob_req_t bus_i,              // addr[19:0] within the timer space
   output iob_rsp_t bus_o,
@@ -199,7 +210,8 @@ module slavio_timer
         cpu_limit[n] <= '0;
         ucnt_hi[n]   <= '0;
         cpu_l[n]     <= 1'b0;
-        run[n]       <= 1'b0;
+        if (!swr_i)
+          run[n]     <= 1'b0;
       end else begin
         if (tick) begin
           if (user_mode[n]) begin

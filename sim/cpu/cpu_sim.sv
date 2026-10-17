@@ -239,7 +239,7 @@ module cpu_sim
   logic       tmr_irq_sys;
   logic [0:0] tmr_irq_cpu;
   slavio_timer #(.NCPU(1), .CLK_HZ(100_000_000)) u_timer (
-    .clk, .rst, .bus_i(tmr_req), .bus_o(tmr_rsp), .irq_sys(tmr_irq_sys), .irq_cpu(tmr_irq_cpu));
+    .clk, .rst, .swr_i(1'b0), .bus_i(tmr_req), .bus_o(tmr_rsp), .irq_sys(tmr_irq_sys), .irq_cpu(tmr_irq_cpu));
 
   // ---- the interconnect slave ----
   logic is_ram, is_rom, is_escc, is_misc, is_timer, is_io, is_sbus_empty, is_dma;

@@ -432,7 +432,7 @@ module ss20_machine #(
   logic irq_tsys;
   logic [NCPU-1:0] irq_tcpu;
   slavio_timer #(.NCPU(NCPU), .CLK_HZ(CLK_HZ)) u_timer (
-    .clk, .rst(rst_m), .bus_i(iob_q[3]), .bus_o(iob_r[3]), .irq_sys(irq_tsys), .irq_cpu(irq_tcpu));
+    .clk, .rst(rst_m), .swr_i(rst_swr), .bus_i(iob_q[3]), .bus_o(iob_r[3]), .irq_sys(irq_tsys), .irq_cpu(irq_tcpu));
 
   logic [31:0] isrc;
   always_comb begin

@@ -16,8 +16,8 @@ module tb_slavio_timer;
   localparam logic [19:0] CPU1 = 20'h01000;
   localparam logic [19:0] LIMIT = 20'h0, COUNT = 20'h4, LIMIT_NR = 20'h8, RUN = 20'hC, CFG = 20'h10;
 
-  logic clk, rst;
-  initial begin clk = 0; rst = 1; end
+  logic clk, rst, swr;
+  initial begin clk = 0; rst = 1; swr = 0; end
   always #5 clk = ~clk;
 
   iob_req_t req = IOB_REQ_IDLE;
@@ -26,7 +26,7 @@ module tb_slavio_timer;
   logic [NCPU-1:0] irq_cpu;
 
   slavio_timer #(.NCPU(NCPU), .CLK_HZ(CLK_HZ)) dut (
-    .clk, .rst, .bus_i(req), .bus_o(rsp), .irq_sys, .irq_cpu);
+    .clk, .rst, .swr_i(swr), .bus_i(req), .bus_o(rsp), .irq_sys, .irq_cpu);
 
   // ---- bus functional model ------------------------------------------
   task automatic cycles(input int n);
@@ -229,6 +229,36 @@ module tb_slavio_timer;
     bus_read(SYS + COUNT, v2);
     check((v2 >> 9) <= 6 && v2[31] == 0, "22-bit count wrapped without L");
     check(!irq_sys, "free-run wrap is not an interrupt");
+
+    // ---- a software reset keeps RUN (OBP 2.25, then NeXTSTEP 3.3) ----
+    // reset_power_on: processor 0's counter a running User Timer
+    bus_write(SYS + CFG, 32'h1);
+    bus_write(CPU0 + RUN, 32'h1);
+    bus_write(CPU0 + LIMIT, 32'h0);
+    bus_write(CPU0 + COUNT, 32'h0);
+    cycles(5 * TICK);
+    // obp_prep: SW_RST (the machine holds rst with swr for a few clocks)
+    rst = 1; swr = 1; cycles(4); rst = 0; swr = 0; cycles(2);
+    bus_read(SYS + CFG, v);    check32(v, 32'h0, "software reset: counter/timer mode again");
+    bus_read(CPU0 + LIMIT, v); check32(v, 32'h0, "software reset: limit 0");
+    bus_read(CPU0 + RUN, v);   check32(v, 32'h1, "software reset keeps RUN");
+    // obp_start: processor 0 is OBP's level-14 tick
+    bus_write(CPU0 + LIMIT, 32'h009c_4000);
+    // the kernel: all four counters User Timers, processor 0's loaded,
+    // then counted without a write to RUN
+    bus_write(SYS + CFG, 32'hF);
+    bus_write(CPU0 + COUNT, 32'h0);
+    bus_write(CPU0 + LIMIT, 32'h4290_0000);
+    bus_read(CPU0 + COUNT, v);
+    cycles(20 * TICK);
+    bus_read(CPU0 + COUNT, v2);
+    check((v2 >> 9) - (v >> 9) >= 19 && (v2 >> 9) - (v >> 9) <= 21,
+          "after SW_RST the User Timer counts without a RUN write");
+    bus_read(CPU1 + RUN, v);   check32(v, 32'h0, "processor 1's RUN stays 0");
+    // a power-on reset clears RUN
+    bus_write(SYS + CFG, 32'h0);
+    rst = 1; cycles(4); rst = 0; cycles(2);
+    bus_read(CPU0 + RUN, v);   check32(v, 32'h0, "power-on reset clears RUN");
 
     tb_done("tb_slavio_timer");
   end
