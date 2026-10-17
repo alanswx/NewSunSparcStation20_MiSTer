@@ -143,5 +143,11 @@ Totals: baseline 55,449 ALUTs / 33,082 registers; after 1-4 (map 2)
 - c2 (changes 1-9): sim/out/check-c2.log: perfbench ticks = baseline
   (DHRY 66364, COPY 76447, ZERO 47800, CHASE 130104, SORT 128554, FP
   69899); CPU suite 84/0/5 (sim/out/cputest-ss20-c2.log).
+- c3 (changes 1-12, = commits through 9f86ec2): sim/out/check-c3.log:
+  perfbench ticks = baseline; CPU suite 84/0/5 (sim/out/cputest-ss20-c3.log).
+- OpenBIOS (the board's ROM, openbios-icwait) booting NetBSD 11 from the
+  disk image on the 2-CPU c3 model: "CPUs: 2", "Trying disk...", the
+  secondary boot, the kernel's copyright banner at 1,334M cycles
+  (sim/out/obios-o1.log; 48 min at 464 kHz on the shared Mac).
 - Quartus 17 syntax (scripts/qcheck.sh on misterubuntu): emc, cpu_module
   ok; the maps compiled everything else.
