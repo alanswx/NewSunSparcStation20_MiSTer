@@ -220,6 +220,18 @@ module emc
   logic [EW-1:0] slot;
   logic [7:0]    inj_s;                  // the syndrome a new injection gives
   assign inj_s = check_bits(mem_req_i.wdata) ^ dr[7:0];
+
+  // What a syndrome means, {correctable, data_bit}, from a ROM read as the
+  // injection is seen and written into the entry a cycle later: the
+  // entry's first use is at least two cycles away (the memory controller
+  // has a gap cycle after every access). The 64 comparators of the two
+  // functions cost ~200 ALUTs.
+  (* ramstyle = "M10K, no_rw_check" *) logic [7:0] syn_rom [256];
+  initial for (int s = 0; s < 256; s++) syn_rom[s] = {correctable(8'(s)), data_bit(8'(s))};
+  logic [7:0]    syn_q;
+  logic          inj_q;                  // an injection was written last cycle, into slot_q
+  logic [EW-1:0] slot_q;
+  always_ff @(posedge clk) syn_q <= syn_rom[inj_s];
   always_comb begin
     slot = victim;
     for (int k = NENT - 1; k >= 0; k--)
@@ -263,7 +275,7 @@ module emc
       mer <= 12'h3FC; mdr <= 31'h20; vcr <= '0; dr <= '0; ecr0 <= '0; ecr1 <= '0; diag <= '0;
       e_me <= 1'b0; e_ue <= 1'b0; e_ce <= 1'b0; e_synd <= '0; e_dw <= '0;
       efar0 <= 32'h07C0_0000; efar1 <= '0;
-      ent_v <= '0; victim <= '0;
+      ent_v <= '0; victim <= '0; inj_q <= 1'b0; slot_q <= '0;
       fix_v_o <= '0; fix_bit_o <= '0;
       irq_cnt <= '0; irq_o <= 1'b0;
     end else begin
@@ -294,16 +306,20 @@ module emc
         fix_v_o   <= mem_req_i.write ? 4'd0 : fx_v;
         fix_bit_o <= fx_bit;
       end
+      inj_q <= 1'b0;
       if (mem_v_i && mem_req_i.write) begin
         ent_v <= ent_v & ~m_ent;
         if (m_full && m_diag && !mem_req_i.burst && inj_s != 8'h00) begin
           ent_v[slot]  <= 1'b1;
           ent_pa[slot] <= mem_req_i.pa[35:3];
           ent_s[slot]  <= inj_s;
-          ent_b[slot]  <= data_bit(inj_s);
-          ent_ce[slot] <= correctable(inj_s);
+          inj_q <= 1'b1; slot_q <= slot;   // ent_b, ent_ce next cycle, from the ROM
           if (&ent_v) victim <= victim + 1'b1;
         end
+      end
+      if (inj_q) begin
+        ent_b[slot_q]  <= syn_q[6:0];
+        ent_ce[slot_q] <= syn_q[7];
       end
 
       if (efsr_we) begin
