@@ -2,7 +2,7 @@
 
 | File | What |
 |---|---|
-| `SunSparcStation20_20261014.rbf` | the core, main at 16938f1 (md5 0f5b7727): two SuperSPARC CPUs at 55 MHz |
+| `SunSparcStation20_20261017.rbf` | the core, main at cf549f1 (seed 3, md5 0fc11337): two SuperSPARC CPUs at 55 MHz |
 | `boot.rom` | OpenBIOS for it, built from `bios/` at 16938f1 (md5 72d937ea) |
 
 The core needs this OpenBIOS: an older one lists all memory in one
@@ -12,7 +12,7 @@ instead of 123 s).
 
 ## Install
 
-1. Copy `SunSparcStation20_20261014.rbf` to the SD card's `_Unstable/`
+1. Copy `SunSparcStation20_20261017.rbf` to the SD card's `_Unstable/`
    (or `_Computer/`).
 2. Copy `boot.rom` to `games/SunSparcStation/boot.rom` (Main loads it
    when the core starts).
@@ -37,16 +37,28 @@ instead of 123 s).
 Sun's own PROM (OBP 2.25, from a real SS20) also runs as `boot.rom`; it
 is Sun's code and is not distributed here.
 
+## New since the 20261014 build
+
+- Faster: a store buffer, D-cache hits answered in their first cycle,
+  branch prediction and overlapped FP operations. UnixBench (one CPU,
+  NetBSD) 2.6 -> 3.5, Whetstone 13.7 -> 19.8 MWIPS, the NetBSD CD boot
+  123 -> 93 s.
+- NeXTSTEP 3.3 boots to the Workspace under OpenBIOS and under the Sun
+  PROM (two ESP and timer fixes).
+- NetBSD's MP kernel boots under the Sun PROM with both CPUs.
+
 ## Tested on the board with this build
 
-The CPU suite (82 pass, 0 fail, 5 skip); NetBSD 11 and Solaris 8 from
-disk; NetBSD's install CD (123 s); CD audio; the network under NetBSD and
-Solaris; 30 minutes of stress under both PROMs; Solaris's audio; under
-the Sun PROM its POST, Solaris on two CPUs, the CDE desktop with keyboard
-and mouse.
+The CPU suite (84 pass, 0 fail, 5 skip); NetBSD 11 and Solaris 8 from
+disk; NeXTSTEP 3.3 to the Workspace; NetBSD's install CD (93 s); CD
+audio; the network and audio under NetBSD and Solaris; under the Sun PROM
+its POST, Solaris on two CPUs, its network test, audio, the CD (87 s) and
+NeXTSTEP. Every clock meets timing in this build.
 
 Known: Solaris's mouse driver ignores the first 48 mouse packets after X
 starts (about a second of movement) while it settles the baud rate, as
 on a real machine; `psrinfo` reports 27 MHz under the Sun PROM (its own
-estimate from a delay loop, not the clock); the HDMI clock misses timing
-by 0.15 ns in this build (no effect seen).
+estimate from a delay loop, not the clock); NeXTSTEP's GUI needs the
+console on the screen and keyboard (with the console on ttya it attaches
+no mouse); under OpenBIOS, NetBSD's MP kernel does not start the second
+CPU.
