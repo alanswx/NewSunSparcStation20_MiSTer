@@ -193,7 +193,7 @@ module l1cache
   logic [63:0] fill_data;        // the demand doubleword
   logic        fill_err, fill_snooped;
   logic [WW-1:0] fill_way;
-  logic [31:0] fill_tag_start, fill_tag_end;   // the victim's tag word at the start and at the end of the fill
+  logic [31:0] fill_tag_start;   // the victim's tag word at the start of the fill (at its end: with the valid bit)
   logic        st_hit_written;
   logic        single_lock;
 
@@ -450,34 +450,35 @@ module l1cache
   end
 
   // tag port B: fill start/end, an atomic's invalidation, a snoop's read
-  // and invalidation, the flash sweep, the diagnostics
+  // and invalidation, the flash sweep, the diagnostics. One word is chosen
+  // (tb_wcom) and offered to every way, the enables say which takes it;
+  // the flash sweep alone writes every way, each its own word. (A word
+  // muxed per way cost a 7-way mux per way: ~500 ALUTs a cache.)
+  logic [31:0] tb_wcom;
+  logic        flash_wr;
+  assign flash_wr = flash_go && fs == F_WRITE && !f_kind_l;
   always_comb begin
-    tb_addr = '0; tb_we_way = '0;
-    for (int i = 0; i < WAYS; i++) tb_wdata[i] = '0;
+    tb_addr = '0; tb_we_way = '0; tb_wcom = dg_tag_word;
     if (fill_tag_go) begin
-      tb_addr = r_set; tb_we_way[fill_way] = 1'b1; tb_wdata[fill_way] = fill_tag_start;
+      tb_addr = r_set; tb_we_way[fill_way] = 1'b1; tb_wcom = fill_tag_start;
     end else if (fill_end_go) begin
-      tb_addr = r_set; tb_we_way[fill_way] = 1'b1; tb_wdata[fill_way] = fill_tag_end;
+      tb_addr = r_set; tb_we_way[fill_way] = 1'b1; tb_wcom = fill_tag_start | vbit_of(r_pa);
     end else if (atomic_inval_go) begin
-      tb_addr = r_set; tb_we_way[hit_idx] = 1'b1; tb_wdata[hit_idx] = ta_rdata[hit_idx] & ~vbit_of(r_pa);
+      tb_addr = r_set; tb_we_way[hit_idx] = 1'b1; tb_wcom = ta_rdata[hit_idx] & ~vbit_of(r_pa);
     end else if (snoop_wr_go) begin
-      tb_addr = q_set; tb_we_way[q_way_q] = 1'b1; tb_wdata[q_way_q] = q_word_q;
+      tb_addr = q_set; tb_we_way[q_way_q] = 1'b1; tb_wcom = q_word_q;
     end else if (q_retry_go) begin
       tb_addr = q_set;
     end else if (snoop_rd_go) begin
       tb_addr = sq_head[6 -: SET_W];
     end else if (flash_go) begin
       tb_addr = f_set;
-      if (fs == F_WRITE && !f_kind_l) begin
-        tb_we_way = '1;
-        for (int i = 0; i < WAYS; i++) tb_wdata[i] = tb_rdata[i] & ~TAG_VMASK;
-      end
+      if (flash_wr) tb_we_way = '1;
     end else if (dg_tag_go) begin
       tb_addr = dg_set;
-      if (diag_we_i && dg_t == 2'd2 && dg_way_ok) begin
-        tb_we_way[dg_way] = 1'b1; tb_wdata[dg_way] = dg_tag_word;
-      end
+      if (diag_we_i && dg_t == 2'd2 && dg_way_ok) tb_we_way[dg_way] = 1'b1;
     end
+    for (int i = 0; i < WAYS; i++) tb_wdata[i] = flash_wr ? (tb_rdata[i] & ~TAG_VMASK) : tb_wcom;
   end
 
   // set-word port B: the MRU update of a hit or a fill, the flash sweep, the diagnostics
@@ -604,7 +605,7 @@ module l1cache
       st <= S_IDLE;
       r_we <= 1'b0; r_atomic <= 1'b0; r_cacheable <= 1'b0; r_pa <= '0; r_be <= '0; r_wdata <= '0;
       fill_beat <= '0; fill_data <= '0; fill_err <= 1'b0; fill_snooped <= 1'b0; fill_way <= '0;
-      fill_tag_start <= '0; fill_tag_end <= '0;
+      fill_tag_start <= '0;
       st_hit_written <= 1'b0; single_lock <= 1'b0;
       rdata_q <= '0; err_q <= 1'b0;
       sq_wr <= '0; sq_rd <= '0; sq_count <= '0;
@@ -630,8 +631,6 @@ module l1cache
             // the way already holds this tag (I-cache), else nothing valid
             fill_tag_start <= {8'd0, r_pa[35:12]} |
                               ((tag_present && tag_idx == victim) ? (ta_rdata[victim] & TAG_VMASK & ~vbit_of(r_pa)) : 32'd0);
-            fill_tag_end   <= {8'd0, r_pa[35:12]} |
-                              ((tag_present && tag_idx == victim) ? (ta_rdata[victim] & TAG_VMASK) : 32'd0) | vbit_of(r_pa);
             st <= S_FILL_START;
           end
         end

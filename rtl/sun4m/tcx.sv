@@ -133,7 +133,11 @@ module tcx
   logic [7:0]  e_color;
   logic        e_copy;
   logic [2:0]  e_k, e_nis, e_nret;
-  logic [63:0] rb [5];
+  // the copy's source doublewords, rb[0..4]: in MLAB (asynchronous reads),
+  // one copy per read port (the destination word k takes rb[k-1] and
+  // rb[k], shifted); in flops with their 5:1 muxes they cost ~250 ALMs
+  (* ramstyle = "MLAB, no_rw_check" *) logic [63:0] rb_lo_m [8];
+  (* ramstyle = "MLAB, no_rw_check" *) logic [63:0] rb_hi_m [8];
 
   function automatic logic [28:0] vword(input logic [16:0] w);
     return ddr_word(VRAM_BASE + {9'd0, w, 3'd0});
@@ -151,18 +155,22 @@ module tcx
   logic        adj;
   logic [3:0]  m;
 
-  function automatic logic [63:0] rb_get(input logic [3:0] i);   // rb[-1] and rb[5] are 0
-    return (i < 4'd5) ? rb[i[2:0]] : 64'd0;
-  endfunction
-
+  // rb[-1] and rb[5] are 0
+  logic [3:0] m1;
+  assign m1    = m + 4'd1;
   assign e_ben = {e_mask, 8'd0} >> e_dst[2:0];
   assign e_benk = e_ben << (8 * e_k);
   assign be_k  = e_benk[39:32];
   assign sh    = e_src[2:0] - e_dst[2:0];
   assign adj   = e_src[2:0] < e_dst[2:0];
   assign m     = {1'b0, e_k} - {3'd0, adj};                       // 4'hF for k = 0, adj = 1
-  assign cp_lo = rb_get(m);
-  assign cp_hi = rb_get(m + 4'd1);
+  assign cp_lo = (m  < 4'd5) ? rb_lo_m[m[2:0]]  : 64'd0;
+  assign cp_hi = (m1 < 4'd5) ? rb_hi_m[m1[2:0]] : 64'd0;
+  always_ff @(posedge clk)
+    if (est == E_SRC && vram_readdatavalid) begin
+      rb_lo_m[e_nret] <= vram_readdata;
+      rb_hi_m[e_nret] <= vram_readdata;
+    end
   /* verilator lint_off UNUSEDSIGNAL */
   logic [127:0] cp_sh;
   /* verilator lint_on UNUSEDSIGNAL */
@@ -232,8 +240,7 @@ module tcx
             vram_address <= vword(e_src[19:3] + 17'(e_nis));
             e_nis <= e_nis + 3'd1;
           end
-          if (vram_readdatavalid) begin
-            rb[e_nret] <= vram_readdata;
+          if (vram_readdatavalid) begin       // (the word goes into rb_*_m above)
             e_nret <= e_nret + 3'd1;
             if (e_nret == 3'd4) est <= E_DST;
           end

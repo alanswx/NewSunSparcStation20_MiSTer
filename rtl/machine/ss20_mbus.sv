@@ -55,24 +55,29 @@ module ss20_mbus
     for (int m = 0; m < NM; m++)
       want[m] = req_i[m].valid && !(m < NCPU && park_i[m < NCPU ? m : 0]);
 
-  // the first master asking after `last`, or NONE
-  function automatic logic [MW-1:0] pick(input logic [NM-1:0] w, input logic [MW-1:0] l);
-    logic [MW-1:0] r;
-    r = NONE;
-    for (int k = NM; k >= 1; k--)
-      if (w[(int'(l) + k) % NM]) r = MW'((int'(l) + k) % NM);
-    return r;
-  endfunction
+  // the first master asking after `last`, or NONE. The modulo is taken on
+  // the loop constants only: a modulo of the register itself was synthesised
+  // as 32-bit dividers (~700 ALUTs, 2026-10-17).
+  logic [MW-1:0] picked;
+  always_comb begin
+    picked = NONE;
+    for (int l = 0; l < NM; l++)
+      if (last == MW'(l))
+        for (int k = NM; k >= 1; k--)
+          if (want[(l + k) % NM]) picked = MW'((l + k) % NM);
+  end
 
   // the master presented this cycle: the owner, or a new grant when free
   logic [MW-1:0] cur;
-  assign cur = own != NONE ? own : gap ? NONE : pick(want, last);
+  assign cur = own != NONE ? own : gap ? NONE : picked;
 
+  // the request of master i, or an idle one for NONE (an indexed read of the
+  // array, one mux level; a priority chain over the masters cost a level
+  // per master, 2026-10-17)
+  localparam int IW = (NM > 1) ? $clog2(NM) : 1;   // the array index width
   function automatic mem_req_t sel_req(input logic [MW-1:0] i);
-    mem_req_t r;
-    r = '0;
-    for (int m = 0; m < NM; m++) if (i == MW'(m)) r = req_i[m];
-    return r;
+    if (i < MW'(NM)) return req_i[i[IW-1:0]];
+    return '0;
   endfunction
 
   mem_req_t m_req;
@@ -90,8 +95,14 @@ module ss20_mbus
   end
   assign mid_o = (cur < MW'(NCPU)) ? 4'(8 + int'(cur)) : 4'd0;
 
+  // the answer goes to the owner; the data goes to everyone (a master reads
+  // it only with its ack), which saves gating 64 bits per master
   always_comb
-    for (int m = 0; m < NM; m++) rsp_o[m] = (own == MW'(m)) ? rsp_i : '0;
+    for (int m = 0; m < NM; m++) begin
+      rsp_o[m] = '0;
+      rsp_o[m].rdata = rsp_i.rdata;
+      if (own == MW'(m)) begin rsp_o[m].ack = rsp_i.ack; rsp_o[m].err = rsp_i.err; end
+    end
 
   // the owner's request's last ack
   logic active, done;

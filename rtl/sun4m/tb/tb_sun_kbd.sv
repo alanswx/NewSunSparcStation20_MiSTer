@@ -25,13 +25,13 @@ module tb_sun_kbd;
   logic        rx_ready = 1'b1;
   logic        bell, click, any_key;
   logic [3:0]  leds;
-  logic [127:0] held;
+
 
   sun_kbd #(.BYTE_CLKS(BYTE_CLKS)) dut (
     .clk, .rst, .ps2_key_i(ps2_key), .layout_i(layout),
     .tx_byte_i(tx_byte), .tx_byte_valid_i(tx_valid),
     .rx_byte_o(rx_byte), .rx_byte_valid_o(rx_valid), .rx_byte_ready_i(rx_ready),
-    .bell_o(bell), .click_o(click), .leds_o(leds), .any_key_o(any_key), .held_o(held));
+    .bell_o(bell), .click_o(click), .leds_o(leds), .any_key_o(any_key));
 
   initial begin
     clk = 1'b0;
@@ -109,7 +109,10 @@ module tb_sun_kbd;
   initial begin
     repeat (4) @(posedge clk);
     rst = 1'b0;
-    repeat (4) @(posedge clk);
+    // the keyboard clears its key bits in RAM for 128 cycles after reset; an
+    // event meanwhile waits, a second one would be dropped (hps_io's events
+    // are milliseconds apart, this bench's 30 cycles)
+    repeat (140) @(posedge clk);
 
     // a plain key, and its pacing: the first byte BYTE_CLKS after the event,
     // the next BYTE_CLKS after that
@@ -132,7 +135,7 @@ module tb_sun_kbd;
     ps2(1'b0, 1'b1, A);
     ps2(1'b0, 1'b1, S);
     check(any_key, "any_key with keys down");
-    check(held[7'h4D] && held[7'h4E], "held_o: A and S");
+    // (held_o, the 128 key bits, is gone: the reset reply below lists the keys down)
     ps2(1'b0, 1'b0, A);
     ps2(1'b0, 1'b0, S);
     check(!any_key, "no key held after release");

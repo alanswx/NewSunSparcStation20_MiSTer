@@ -282,17 +282,16 @@ module ss20_msi
   // Round robin: the first asking port after last_q.
   logic          any_req;
   logic [PW-1:0] next_port;
+  // (the modulo is taken on loop constants only: a modulo of last_q itself
+  // was synthesised as 32-bit dividers, ~500 ALUTs, 2026-10-17)
   always_comb begin
     any_req   = 1'b0;
     next_port = last_q;
-    for (int i = NDVMA; i >= 1; i--) begin
-      int unsigned p;
-      p = (int'(last_q) + i) % NDVMA;
-      if (dvma_req_i[p].valid) begin
-        any_req   = 1'b1;
-        next_port = PW'(p);
-      end
-    end
+    for (int p = 0; p < NDVMA; p++) any_req |= dvma_req_i[p].valid;
+    for (int l = 0; l < NDVMA; l++)
+      if (last_q == PW'(l))
+        for (int i = NDVMA; i >= 1; i--)
+          if (dvma_req_i[(l + i) % NDVMA].valid) next_port = PW'((l + i) % NDVMA);
   end
 
   logic fill;
@@ -421,20 +420,15 @@ module ss20_msi
         end
       end
 
-      // TLB: fill, then the bus's changes on top
-      if (fill) begin
-        tag_q[rr_q] <= creq.va[30:12];
-        w_q[rr_q]   <= pte[2];
-        v_q[rr_q]   <= 1'b1;
-        rr_q        <= rr_q + 4'd1;
-      end
-      if (w_flall) v_q <= '0;
-      if (w_flpg)  v_q <= v_q & ~match;
-      if (w_tag)   tag_q[idx] <= bus_i.wdata[30:12];
-      if (w_data) begin
-        w_q[idx]   <= bus_i.wdata[2];
-        v_q[idx]   <= bus_i.wdata[1];
-      end
+      // TLB: a fill, or the bus's changes (never both: a TLB write is a
+      // tlb_change, which stops the fill), through one write port per
+      // vector (one index decoder each, not one per writer)
+      if (fill) rr_q <= rr_q + 4'd1;
+      if (fill || w_tag) tag_q[w_tag ? idx : rr_q] <= w_tag ? bus_i.wdata[30:12] : creq.va[30:12];
+      if (fill || w_data) w_q[w_data ? idx : rr_q] <= w_data ? bus_i.wdata[2] : pte[2];
+      if (w_flall)             v_q <= '0;
+      else if (w_flpg)         v_q <= v_q & ~match;
+      else if (fill || w_data) v_q[w_data ? idx : rr_q] <= w_data ? bus_i.wdata[1] : 1'b1;
     end
   end
 

@@ -327,7 +327,7 @@ module ss20_machine #(
     .clk, .rst(rst_m), .ps2_key_i, .layout_i(opt_kbd_layout_i),
     .tx_byte_i(kb_tx), .tx_byte_valid_i(kb_tx_v),
     .rx_byte_o(kb_rx), .rx_byte_valid_o(kb_rx_v), .rx_byte_ready_i(kb_rx_rdy),
-    .bell_o(kb_bell), .click_o(kb_click), .leds_o(kb_leds), .any_key_o(), .held_o());
+    .bell_o(kb_bell), .click_o(kb_click), .leds_o(kb_leds), .any_key_o());
 
   kbd_beep #(.CLK_HZ(CLK_HZ)) u_beep (.clk, .rst(rst_m), .bell_i(kb_bell), .click_i(kb_click), .audio_o(beep));
 

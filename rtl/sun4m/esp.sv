@@ -193,7 +193,9 @@ module esp
   logic [HW-1:0] hold_cnt;               // ESP-7
   logic [BW-1:0] brst_cnt;
 
-  logic [7:0]  fifo [16];
+  // the FIFO's bytes in MLAB (asynchronous read at the tail; in flops with
+  // their write decode and 16:1 mux they cost ~170 ALUTs)
+  (* ramstyle = "MLAB, no_rw_check" *) logic [7:0] fifo [16];
   logic [3:0]  f_rp, f_wp;
   logic [4:0]  f_cnt;
 
