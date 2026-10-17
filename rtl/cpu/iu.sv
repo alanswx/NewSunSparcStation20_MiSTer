@@ -1116,7 +1116,7 @@ module iu
   always_ff @(posedge clk) begin
     ct_cyc <= ct_cyc + 1;
     if (ct_from >= 0 && ct_cyc >= ct_from && ct_cyc <= ct_to && w_valid && !w_stall)
-      $display("ct %0d pc=%08x i=%08x%s%s rd=%0d%s=%08x icc=%x y=%08x cwp=%0d", ct_cyc, w_pc, w_inst,
+      $display("ct %0d pc=%08x i=%08x%s%s rd=%0d%s=%08x icc=%x y=%08x cwp=%0d %m", ct_cyc, w_pc, w_inst,
                w_trap ? " TRAP" : "", w_second ? " 2nd" : "", rf_rd, rf_we ? "" : "(-)", rf_wdata, icc, y, cwp);
   end
 
@@ -1174,6 +1174,21 @@ module iu
     end
   end
   /* verilator lint_on BLKSEQ */
+  // +pcsample=N: every N cycles, the PC of the last instruction to leave W
+  // (and PSR.S/PIL/ET), from +pcsample_from=C on: where a quiet machine is
+  longint ps_period, ps_from, ps_cyc;
+  logic [31:0] ps_lastpc;
+  initial begin
+    if (!$value$plusargs("pcsample=%d", ps_period)) ps_period = 0;
+    if (!$value$plusargs("pcsample_from=%d", ps_from)) ps_from = 0;
+    ps_cyc = 0; ps_lastpc = '0;
+  end
+  always_ff @(posedge clk) begin
+    ps_cyc <= ps_cyc + 1;
+    if (w_valid && !w_stall) ps_lastpc <= w_pc;
+    if (ps_period > 0 && ps_cyc >= ps_from && ps_cyc % ps_period == 0)
+      $display("pcs %0d pc=%08x s=%0d et=%0d pil=%0d %m", ps_cyc, ps_lastpc, s, et, pil);
+  end
   // +pipetrace=N: the pipeline, one line a cycle, for 120 cycles from cycle N
   longint pt_start, pt_cyc;
   initial begin if (!$value$plusargs("pipetrace=%d", pt_start)) pt_start = -1; pt_cyc = 0; end

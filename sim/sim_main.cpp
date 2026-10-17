@@ -499,6 +499,7 @@ static void usage() {
         "  --cycles N          stop after N cycles (k/M/G suffixes; default 200M)\n"
         "  --stop STR          end the run, exit 0, at the end of the line that prints STR\n"
         "  --fail STR          end the run, exit 1, at the end of the line that prints STR\n"
+        "  --mark STR          print the cycle (stderr) each time the console prints STR\n"
         "  --send PAT=>TEXT    type TEXT on ttya once PAT has been printed (\\r etc.;\n"
         "                      \\B is a BREAK)\n"
         "  --log FILE          copy of the console output\n"
@@ -536,7 +537,7 @@ static uint8_t bcd(int v) { return (uint8_t)(((v / 10) << 4) | (v % 10)); }
 
 int main(int argc, char **argv) {
     std::string rom, hd[4], log_path, frame_path, trace_path;   // hd[3]: NVRAM
-    std::vector<std::string> stops, fails;
+    std::vector<std::string> stops, fails, marks;
     struct Send { std::string pat, text; bool done; };
     std::vector<Send> sends;
     uint64_t max_cycles = 200000000ull, trace_from = 0, ddr_log = 0;
@@ -566,6 +567,7 @@ int main(int argc, char **argv) {
         else if (a == "--cycles") max_cycles = parse_count(next().c_str());
         else if (a == "--stop") stops.push_back(unescape(next()));
         else if (a == "--fail") fails.push_back(unescape(next()));
+        else if (a == "--mark") marks.push_back(unescape(next()));
         else if (a == "--send") {
             std::string s = next();
             size_t p = s.find("=>");
@@ -822,6 +824,10 @@ int main(int argc, char **argv) {
                     console.compare(console.size() - s.size(), s.size(), s) == 0) {
                     end_result = 0; why = "stop string";
                 }
+            for (auto &s : marks)
+                if (console.size() >= s.size() &&
+                    console.compare(console.size() - s.size(), s.size(), s) == 0)
+                    fprintf(stderr, "\n[sim] mark '%s' at cycle %" PRIu64 "\n", s.c_str(), cyc);
             for (auto &s : fails)
                 if (end_result < 0 && console.size() >= s.size() &&
                     console.compare(console.size() - s.size(), s.size(), s) == 0) {
@@ -836,6 +842,7 @@ int main(int argc, char **argv) {
                         uart.tx_q.push_back((uint8_t)c == 0xff ? Uart::BRK : (uint8_t)c);
                     s.done = true;
                     send_from = p + s.pat.size();
+                    fprintf(stderr, "\n[sim] send after '%s' at cycle %" PRIu64 "\n", s.pat.c_str(), cyc);
                 }
                 break;               // in order: one pending send at a time
             }

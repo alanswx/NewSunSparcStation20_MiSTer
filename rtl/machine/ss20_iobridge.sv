@@ -220,11 +220,18 @@ module ss20_iobridge
 
 `ifndef SYNTHESIS
   // +iolog: every I/O beat as it completes (simulation)
+  // (+iolog_from=C: from cycle C on)
   logic iolog;
-  initial iolog = $test$plusargs("iolog");
+  longint io_from, io_cyc;
+  initial begin
+    iolog = $test$plusargs("iolog");
+    if (!$value$plusargs("iolog_from=%d", io_from)) io_from = 0;
+    io_cyc = 0;
+  end
+  always_ff @(posedge clk) io_cyc <= io_cyc + 1;
   always_ff @(posedge clk)
-    if (iolog && go && (b_ack || b_err))
-      $display("io: %s sel=%0d pa=%09x addr=%07x be=%x %s=%08x%s", beat.we ? "W" : "R", sel, rq.pa,
+    if (iolog && io_cyc >= io_from && go && (b_ack || b_err))
+      $display("io: %0d %s sel=%0d pa=%09x addr=%07x be=%x %s=%08x%s", io_cyc, beat.we ? "W" : "R", sel, rq.pa,
                beat.addr, beat.be, beat.we ? "wd" : "rd", beat.we ? beat.wdata : b_rdata, b_err ? " ERR" : "");
 `endif
 
