@@ -135,13 +135,12 @@ module iu
   logic [31:0] m_pc, m_npc;
   logic        m_trap;
   logic [7:0]  m_tt;
-  logic [31:0] m_result;       // the ALU result / address / link / rd value
+  logic [31:0] m_result;       // the ALU result / address / link / rd value; the wr %y/%psr/%wim/%tbr value
   logic [63:0] m_wdata;        // store data (rs3, rs4) after forwarding
   logic [3:0]  m_icc;
   logic        m_wicc;         // writes icc
   logic [31:0] m_y;
   logic        m_wy;
-  logic [31:0] m_wr_val;       // wr %psr/%wim/%tbr value
   logic [2:0]  m_newcwp;
   // W
   logic        w_valid;
@@ -158,7 +157,6 @@ module iu
   logic        w_wicc;
   logic [31:0] w_y;
   logic        w_wy;
-  logic [31:0] w_wr_val;
   logic [2:0]  w_newcwp;
   logic        w_second;       // the second cycle of ldd / of a trap (l2)
   logic        w_fp_hold, w_fp_cvt; // FP_OVERLAP: W waits for the FPU / takes the deferred trap (below)
@@ -628,12 +626,20 @@ module iu
 
   logic [31:0] w_rdval;        // what W writes to rd (first cycle)
 
+  // The immediates, from the instruction word held in E (iu_decode's
+  // fields of the same name are not carried into E: 87 flops a CPU)
+  logic [31:0] e_simm13, e_disp22, e_disp30, e_imm22;
+  assign e_simm13 = {{19{e_inst[12]}}, e_inst[12:0]};
+  assign e_disp22 = {{8{e_inst[21]}}, e_inst[21:0], 2'b00};
+  assign e_disp30 = {e_inst[29:0], 2'b00};
+  assign e_imm22  = {e_inst[21:0], 10'd0};
+
   logic [31:0] a, b, a_fwd, b_fwd, rs3v, rs4v;
   always_comb begin
     a_fwd = fwd(e_dec.rs1, e_rs1);
     b_fwd = fwd(e_dec.rs2, e_rs2);
     a    = a_fwd;
-    b    = e_dec.imm ? e_dec.simm13 : b_fwd;
+    b    = e_dec.imm ? e_simm13 : b_fwd;
     rs3v = fwd(e_dec.rd, e_rs3);
     rs4v = fwd({e_dec.rd[4:1], 1'b1}, e_rs4);
   end
@@ -728,9 +734,11 @@ module iu
   logic [7:0]  e_tag_tt;
   logic        br_cond;
   logic [31:0] e_wrval;        // wr %y/%psr/%wim/%tbr: rs1 xor operand 2
+  logic [31:0] e_pc_disp;      // the branch or call target: one adder for both
   assign br_cond = cond_true(e_dec.cond, icc_fwd);
   assign e_addr  = a + b;
   assign e_wrval = a ^ b;
+  assign e_pc_disp = e_pc + (e_dec.cls == C_CALL ? e_disp30 : e_disp22);
 
   always_comb begin
     e_taken  = 1'b0;
@@ -743,18 +751,18 @@ module iu
     case (e_dec.cls)
       C_BICC: begin
         e_taken  = br_cond;
-        e_target = e_pc + e_dec.disp22;
+        e_target = e_pc_disp;
         // annul: untaken with a = 1, or BA with a = 1 (never-branch BN with a also annuls)
         e_annul  = e_dec.annul && (!br_cond || e_dec.cond == 4'h8);
       end
       C_FBFCC: begin
         e_taken  = fcond_true(e_dec.cond, fpu_rsp_i.fsr[11:10]);
-        e_target = e_pc + e_dec.disp22;
+        e_target = e_pc_disp;
         e_annul  = e_dec.annul && (!e_taken || e_dec.cond == 4'h8);
       end
       C_CALL: begin
         e_taken  = 1'b1;
-        e_target = e_pc + e_dec.disp30;
+        e_target = e_pc_disp;
       end
       C_JMPL, C_RETT: begin
         e_taken  = 1'b1;
@@ -815,7 +823,7 @@ module iu
     e_wy = 1'b0;
     case (e_dec.cls)
       C_ALU:   begin e_wicc = alu_cc; e_wy = alu_wy; end
-      C_SETHI: e_result = e_dec.imm22;
+      C_SETHI: e_result = e_imm22;
       C_CALL, C_JMPL: e_result = e_pc;                        // the link
       C_SAVE, C_RESTORE: e_result = e_addr;
       C_MUL: begin
@@ -885,7 +893,6 @@ module iu
       m_wicc <= e_wicc & ~e_trap & ~e_tag_trap;
       m_y <= e_y;
       m_wy <= e_wy & ~e_trap & ~e_tag_trap;
-      m_wr_val <= e_wrval;
       m_newcwp <= e_newcwp;
     end else if (m_go) begin
       m_valid <= 1'b0;
@@ -959,7 +966,6 @@ module iu
       w_wicc <= m_wicc;
       w_y <= m_y;
       w_wy <= m_wy;
-      w_wr_val <= m_wr_val;
       w_newcwp <= m_newcwp;
       w_trap <= m_trap;
       w_tt <= m_tt;
@@ -1215,18 +1221,19 @@ module iu
       end else begin
         if (w_wicc) icc <= w_icc;
         if (w_wy) y <= w_y;
+        // (a wr's value, rs1 xor operand 2, travels as the result: e_result)
         case (w_dec.cls)
-          C_WRY:   y <= w_wr_val;
-          C_WRWIM: wim <= w_wr_val[7:0];
-          C_WRTBR: tba <= w_wr_val[31:12];
+          C_WRY:   y <= w_result;
+          C_WRWIM: wim <= w_result[7:0];
+          C_WRTBR: tba <= w_result[31:12];
           C_WRPSR: begin
-            icc <= w_wr_val[23:20];
-            ef  <= HAS_FPU ? w_wr_val[12] : 1'b0;
-            pil <= w_wr_val[11:8];
-            s   <= w_wr_val[7];
-            ps  <= w_wr_val[6];
-            et  <= w_wr_val[5];
-            cwp <= w_wr_val[2:0];
+            icc <= w_result[23:20];
+            ef  <= HAS_FPU ? w_result[12] : 1'b0;
+            pil <= w_result[11:8];
+            s   <= w_result[7];
+            ps  <= w_result[6];
+            et  <= w_result[5];
+            cwp <= w_result[2:0];
           end
           C_SAVE, C_RESTORE: cwp <= w_newcwp;
           C_RETT: begin
@@ -1242,7 +1249,8 @@ module iu
 
   logic unused_ok;
   assign unused_ok = &{1'b0, d_supv_for_dec, take_from_buf, m_dec.opf, e_dec.opf, f_slot_pending,
-                       e_rs4[0], w_wr_val[11:8], src_inst[31:30], src_inst[24:19], src_inst[13:5],
+                       e_rs4[0], src_inst[31:30], src_inst[24:19], src_inst[13:5],
+                       e_dec.simm13, e_dec.disp22, e_dec.disp30, e_dec.imm22,
                        reads_state(d_dec.cls, d_dec.op3)};
   assign d_supv_for_dec = s;
 

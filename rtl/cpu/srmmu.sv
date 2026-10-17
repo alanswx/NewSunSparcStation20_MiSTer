@@ -345,12 +345,14 @@ module srmmu
   end
 
   // Victim: the first invalid entry, else the first unlocked entry whose
-  // used bit is clear (Viking §4.11.4)
-  logic [5:0] victim;
+  // used bit is clear (Viking §4.11.4); 63 when there is none. One priority
+  // encoder over the vector that applies (two encoders cost ~130 ALUTs more)
+  logic [5:0]  victim;
+  logic [63:0] vsel;
+  assign vsel = (tv != '1) ? ~tv : (~tlock & ~used);
   always_comb begin
     victim = 6'd63;
-    for (int i = 63; i >= 0; i--) if (!tlock[i] && !used[i]) victim = 6'(i);
-    for (int i = 63; i >= 0; i--) if (!tv[i]) victim = 6'(i);
+    for (int i = 63; i >= 0; i--) if (vsel[i]) victim = 6'(i);
   end
 
   // ---------------------------------------------------------------------
@@ -466,6 +468,41 @@ module srmmu
   logic [5:0]  fill_idx;
   assign fill_go  = ws == W_DONE && !w_probe && !w_fault && es == E_IDLE;
   assign fill_idx = w_rep ? w_rep_idx : victim;
+
+  // ---------------------------------------------------------------------
+  // The write ports of the flop vectors: one indexed write per vector per
+  // cycle (the fill, the flush sweep and the ASI 6 writes are exclusive by
+  // state), so that each vector costs one 6-to-64 decoder, not one per
+  // writer (~450 ALUTs a CPU, 2026-10-17). The whole-vector clears are in
+  // the state machine below.
+  // ---------------------------------------------------------------------
+  logic        tv_we, tv_wv, lk_we, lk_wv, used_we, used_hist_clr;
+  logic [5:0]  tv_wi, lk_wi, used_wi;
+  logic [63:0] victim_oh;
+  assign victim_oh = 64'd1 << victim;
+  always_comb begin
+    tv_we = 1'b0; tv_wi = img_entry; tv_wv = reg_wdata_i[5];
+    lk_we = 1'b0; lk_wi = img_entry; lk_wv = reg_wdata_i[0];
+    if (fill_go) begin
+      tv_we = 1'b1; tv_wi = fill_idx; tv_wv = 1'b1;
+      lk_we = 1'b1; lk_wi = fill_idx; lk_wv = 1'b0;
+    end else if (es == E_FLUSH) begin
+      // (abandoned when the register access is gone: nothing cleared)
+      if (reg_valid_i && ecnt != 7'd0 && flush_match(im_e, reg_va_i[10:8], reg_va_i, ctx)) begin
+        tv_we = 1'b1; tv_wi = 6'(ecnt - 7'd1); tv_wv = 1'b0;
+      end
+    end else if (es == E_IMG && reg_valid_i && reg_we_i) begin
+      tv_we = img_sel == 3'd2;                   // SEL 2: V with the PTE word
+      lk_we = img_sel == 3'd3;                   // SEL 3: the lock bit
+    end
+    // used: a hit marks its entry, a fill its new one (the fill's when both
+    // come in one cycle: a hit's mark is replacement history only); a fill
+    // that finds every entry used clears the others' history (Viking
+    // §4.11.4), the locked ones' kept
+    used_we       = fill_go || (lk_go && h_hit);
+    used_wi       = fill_go ? fill_idx : h_idx;
+    used_hist_clr = fill_go && !w_rep && &(used | victim_oh);
+  end
 
   // ---------------------------------------------------------------------
   // Register access decode
@@ -625,9 +662,6 @@ module srmmu
       end
       if (berr_valid_i) berr_masked_o <= nf && berr_no_fault_i;
 
-      // used bits: a hit sets
-      if (lk_go && h_hit) used[h_idx] <= 1'b1;
-
       // translation caches outside drop on anything that changes a
       // translation (held while a TLB access waits or runs)
       tlb_changed_o <= wd_i ||
@@ -716,14 +750,9 @@ module srmmu
             walk_masked_o <= nf && w_no_fault;
             ws <= W_IDLE;
           end else if (fill_go) begin
-            // insert: the image is written now (im_* above), the CAM by the engine
-            tv[fill_idx] <= 1'b1;
-            tlock[fill_idx] <= 1'b0;
-            used[fill_idx] <= 1'b1;
-            if (!w_rep && &(used | (64'd1 << victim))) begin
-              // every entry used: clear the others' history (Viking §4.11.4)
-              for (int i = 0; i < 64; i++) if (6'(i) != victim && !tlock[i]) used[i] <= 1'b0;
-            end
+            // insert: the image is written now (im_* above), V, lock and
+            // used by the write ports (tv_we, lk_we, used_we), the CAM by
+            // the engine
             es <= E_CAM; ecnt <= '0; e_reg <= 1'b0;
             e_idx <= fill_idx; e_key <= {w_va[31:12], ctx}; e_lvl <= w_level; e_glob <= w_entry[4:3] == 2'b11;
             ws <= W_FILL;
@@ -738,6 +767,13 @@ module srmmu
         end
         default: ws <= W_IDLE;
       endcase
+
+      // ---- the TLB's flop vectors (the write ports above; the clears of
+      // the TLB accesses below come after and win) ----
+      if (tv_we) tv[tv_wi] <= tv_wv;
+      if (lk_we) tlock[lk_wi] <= lk_wv;
+      if (used_hist_clr) used <= (used & tlock) | victim_oh;
+      else if (used_we) used[used_wi] <= 1'b1;
 
       // ---- register accesses other than the TLB's ----
       if (reg_go && !tlb_op) begin
@@ -795,8 +831,7 @@ module srmmu
           if (!reg_valid_i) begin
             es <= E_IDLE;                      // abandoned (watchdog)
           end else begin
-            ecnt <= ecnt + 7'd1;
-            if (ecnt != 7'd0 && flush_match(im_e, reg_va_i[10:8], reg_va_i, ctx)) tv[6'(ecnt - 7'd1)] <= 1'b0;
+            ecnt <= ecnt + 7'd1;                 // (a match clears V: tv_we above)
             if (ecnt == 7'd64) begin es <= E_IDLE; reg_ack_o <= 1'b1; end
           end
         end
@@ -814,15 +849,14 @@ module srmmu
             e_key <= {im_rvtag, im_rctx};
             e_lvl <= im_rpte[1:0];
             e_glob <= im_rpte[4:3] == 2'b11;
-            case (img_sel)
+            case (img_sel)                       // (SEL 2 writes V, SEL 3 the lock: tv_we, lk_we above)
               3'd0: begin e_key[35:16] <= reg_wdata_i[31:12]; es <= E_CAM; end
               3'd1: begin e_key[15:0] <= reg_wdata_i[15:0]; es <= E_CAM; end
               3'd2: begin
-                tv[img_entry] <= reg_wdata_i[5];
                 e_lvl <= reg_wdata_i[1:0]; e_glob <= reg_wdata_i[4:3] == 2'b11;
                 es <= E_CAM;
               end
-              3'd3: begin tlock[img_entry] <= reg_wdata_i[0]; reg_ack_o <= 1'b1; end
+              3'd3: reg_ack_o <= 1'b1;
               default: reg_ack_o <= 1'b1;
             endcase
           end
