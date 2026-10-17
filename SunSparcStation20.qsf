@@ -58,8 +58,10 @@ set_global_assignment -name SEED 1
 #do not enable DEBUG_NOHDMI in release!
 #set_global_assignment -name VERILOG_MACRO "MISTER_DEBUG_NOHDMI=1"
 
-# disable bilinear filtering when downscaling
-#set_global_assignment -name VERILOG_MACRO "MISTER_DOWNSCALE_NN=1"
+# disable bilinear filtering when downscaling (nearest neighbour when the
+# output is smaller than the picture, which an SS20's 1024x768 rarely is:
+# 134 ALUTs and 6 DSPs in the scaler, 2026-10-17)
+set_global_assignment -name VERILOG_MACRO "MISTER_DOWNSCALE_NN=1"
 
 # disable adaptive scanline filtering
 set_global_assignment -name VERILOG_MACRO "MISTER_DISABLE_ADAPTIVE=1"
