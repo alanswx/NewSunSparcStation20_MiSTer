@@ -4,7 +4,7 @@
 # disk, under the Sun OBP with --obp, else under OpenBIOS (the board's
 # openbios.rom, or --rom FILE). --l2tlb sets the OSD's L2TLB option for the
 # run; it acts only where the PROM sets MCNTL bit 6 (OpenBIOS does, the Sun
-# OBP does not), and the result line gives CPU 0's MCNTL.
+# OBP does not).
 #
 # The disk is a NeXTSTEP 3.3 installation (HD0, default ns33.img in the
 # games folder; docs/disk-images.md says how it was made), the CD its
@@ -19,9 +19,12 @@
 #     calibrates against the user timer; DEC-4: sbus_config names every
 #     SBus node; Ctrl-C on ttya skips the network configuration panel);
 #   - loginwindow starts;
-#   - two minutes later CPU 0 is not spinning in the SCSI completion path
-#     (ESP-7: NXConditionLock's interlock, 0xf00c944c-0xf00c9458) and its
-#     PC moves.
+#   - the Workspace logs in ("Workspace[n]: logged in" on ttya, about 10 s
+#     later under either PROM): rc, loginwindow and the Workspace's start
+#     all ran, so the machine kept running (ESP-7, CPU 0 spinning on the
+#     SCSI completion's interlock, never got here). Until 2026-10-17 this
+#     step read CPU 0's PC with tools/debugarm/pcdump, which cannot be
+#     built (clean room).
 # With the console on ttya NeXTSTEP attaches no mouse (consconfig): for
 # the GUI, use a copy of ss20-obp-video.nvr instead.
 # Last line: PASS or FAIL.
@@ -57,7 +60,6 @@ else
     scripts/mount.sh --hd0 "$DISK" --hd1 "" --cd "$CD" --nvram "" > /dev/null
     scripts/setopt.sh console=serial autoboot=on network=off ${L2:+l2tlb=$L2} > /dev/null 2>&1 || exit 1
 fi
-rsh "test -x /tmp/pcdump" || scp -q "${SSH_OPTS[@]}" tools/debugarm/pcdump "$DEV:/tmp/pcdump"
 cap_stop; cap_start "$LOG" 1800
 core_start
 # Under OpenBIOS nothing passes -v: without it the kernel prints nothing on
@@ -84,18 +86,7 @@ for try in 1 2 3; do
 done
 grep -a -q 'Reboot complete' "$LOG" || fail "rc did not finish (see $LOG)"
 tty_wait 'loginwindow' 120 "$LOG" || fail "no loginwindow (see $LOG)"
-sleep 120
+tty_wait 'Workspace\[[0-9]+\]: logged in' 180 "$LOG" || fail "loginwindow started but the Workspace did not log in (see $LOG)"
 cap_stop
-pcs=""
-for k in 1 2 3 4 5 6; do
-    out=$(rsh "timeout 8 /tmp/pcdump -c 0 -A 4,0" 2>&1)
-    pc=$(echo "$out" | awk '/^cpu0 pc/ {print $3}')
-    mcntl=$(echo "$out" | awk '/asi 04 \[00000000\]/ {print $5}')
-    pcs="$pcs $pc"; sleep 1
-done
 restore_openbios; scripts/setopt.sh console=serial > /dev/null 2>&1
-echo "CPU 0 PCs:$pcs; MCNTL $mcntl${L2:+ (OSD L2TLB $L2)}"
-n=$(echo $pcs | tr ' ' '\n' | grep -c -E '^f00c94(4c|50|54|58)$')
-[ "$n" -ge 6 ] && { echo "FAIL: CPU 0 spins on the SCSI completion's interlock (ESP-7)"; exit 1; }
-[ "$(echo $pcs | tr ' ' '\n' | sort -u | grep -c .)" -lt 2 ] && { echo "FAIL: CPU 0 stuck at one PC"; exit 1; }
-echo "PASS: NeXTSTEP booted to loginwindow and keeps running (MCNTL $mcntl${L2:+, OSD L2TLB $L2})"
+echo "PASS: NeXTSTEP booted to loginwindow and the Workspace logged in${L2:+ (OSD L2TLB $L2)}"
