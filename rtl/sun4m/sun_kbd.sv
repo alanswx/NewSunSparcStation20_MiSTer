@@ -62,8 +62,7 @@ module sun_kbd #(
   output logic         bell_o,          // level: bell on
   output logic         click_o,         // one-clock pulse per key make with click on
   output logic [3:0]   leds_o,          // Num, Compose, Scroll, Caps (bit 0..3)
-  output logic         any_key_o,       // some key is down
-  output logic [127:0] held_o           // bit n: Sun key number n is down
+  output logic         any_key_o        // some key is down
 );
 
   // ---------------------------------------------------------------------
@@ -204,16 +203,49 @@ module sun_kbd #(
   typedef enum logic [2:0] {R_IDLE, R_FF, R_TYPE, R_KEYS, R_7F, R_FE, R_LAY} rep_t;
   rep_t       rep;
   logic [6:0] scan;
+  logic       scan_ph;                  // R_KEYS: 0 read the key's bit, 1 push it
   logic       led_arg;
   logic       click_en;
-  logic [127:0] held;
   logic       cmd_reset;
 
   assign cmd_reset = tx_byte_valid_i && !led_arg && tx_byte_i == 8'h01;
   assign q_clear   = cmd_reset;
 
-  assign held_o    = held;
-  assign any_key_o = |held;
+  // ---------------------------------------------------------------------
+  // The keys down: a bit per Sun key number, in RAM (one copy per read
+  // port: the event's key, the reset reply's scan; both read a cycle ahead),
+  // cleared by a sweep after reset; the AltGraph key (0x0D), which goes down
+  // and up in the same event as another key, in a flop of its own; n_held
+  // counts the keys down (the idle byte follows the last release). In
+  // flops, the bits with their decoders cost ~350 ALUTs.
+  // ---------------------------------------------------------------------
+  (* ramstyle = "no_rw_check" *) logic held_a [128];
+  (* ramstyle = "no_rw_check" *) logic held_b [128];
+  logic       held_ev_q, held_sc_q;     // the bits read: the event's key, the scan's
+  logic       held_we, held_wv;         // the event's write ...
+  logic       ev_take;                  // ... in the cycle the event is decoded (below)
+  logic       altgr_held;
+  logic [7:0] n_held;
+  logic       clr_busy;                 // the sweep after reset
+  logic [6:0] clr_idx;
+  logic [6:0] dec_key;                  // (the event's Sun key, below)
+
+  always_ff @(posedge clk) begin
+    if (clr_busy) begin
+      held_a[clr_idx] <= 1'b0;
+      held_b[clr_idx] <= 1'b0;
+    end else if (ev_take && held_we && dec_key != 7'h0D) begin
+      held_a[dec_key] <= held_wv;
+      held_b[dec_key] <= held_wv;
+    end
+    held_ev_q <= held_a[dec_key];
+    held_sc_q <= held_b[scan];
+  end
+  logic held_ev, held_sc;               // ... with the AltGraph key from its flop
+  assign held_ev = (dec_key == 7'h0D) ? altgr_held : held_ev_q;
+  assign held_sc = (scan == 7'h0D) ? altgr_held : held_sc_q;
+
+  assign any_key_o = n_held != 8'd0;
 
   // the reply pusher's byte (valid in rep_push when it pushes this cycle)
   logic       rep_push;
@@ -224,7 +256,7 @@ module sun_kbd #(
     case (rep)
       R_FF:   begin rep_push = 1'b1; rep_byte = 8'hFF; end
       R_TYPE: begin rep_push = 1'b1; rep_byte = 8'h04; end
-      R_KEYS: begin rep_push = held[scan]; rep_byte = {1'b0, scan}; end
+      R_KEYS: begin rep_push = scan_ph && held_sc; rep_byte = {1'b0, scan}; end
       R_7F:   begin rep_push = 1'b1; rep_byte = 8'h7F; end
       R_FE:   begin rep_push = 1'b1; rep_byte = 8'hFE; end
       R_LAY:  begin rep_push = 1'b1; rep_byte = layout_i; end
@@ -241,6 +273,7 @@ module sun_kbd #(
   logic        tog_q;
   logic        pause_brk;                // a Pause make was taken: its break follows
   logic        ev_pend, ev_ext, ev_make;
+  logic        ev_rdy;                   // ev_pend for a cycle: the key's bit has been read
   logic [7:0]  ev_code;
 
   logic        ralt_down, altgr_sent;
@@ -254,13 +287,13 @@ module sun_kbd #(
   // decode (combinational, from the latched event and the key state)
   logic [7:0] dec_sun;                  // {valid, key}
   logic [3:0] dec_f;
-  logic [6:0] dec_key;
   logic       dec_is_ralt, dec_is_f, dec_chord_now;
   logic       dec_altgr;                // push AltGraph make first
   logic       dec_emit;                 // push the key's make/break
   logic       dec_idle;                 // push 7F after the break
   logic       dec_ralt_up_altgr;        // Right Alt up with AltGraph down
-  logic [127:0] held_nx;
+  logic       altgr_nx;
+  logic [7:0] n_held_nx;
 
   logic [3:0] dec_fi;                   // dec_f, in range for indexing
   assign dec_f  = fidx(ev_ext, ev_code);
@@ -277,37 +310,53 @@ module sun_kbd #(
     dec_emit    = 1'b0;
     dec_idle    = 1'b0;
     dec_ralt_up_altgr = 1'b0;
-    held_nx     = held;
+    held_we     = 1'b0;
+    held_wv     = 1'b0;
+    altgr_nx    = altgr_held;
+    n_held_nx   = n_held;
     if (dec_is_ralt) begin
       dec_ralt_up_altgr = !ev_make && altgr_sent;
-      if (dec_ralt_up_altgr) held_nx[7'h0D] = 1'b0;
-      dec_idle = dec_ralt_up_altgr && (held_nx == 128'd0);
+      if (dec_ralt_up_altgr) begin altgr_nx = 1'b0; n_held_nx = n_held - 8'd1; end
+      dec_idle = dec_ralt_up_altgr && (n_held_nx == 8'd0);
     end else if (dec_sun[7]) begin
       if (ev_make) begin
-        if (!held[dec_key]) begin
+        if (!held_ev) begin
           dec_emit = 1'b1;
           dec_altgr = ralt_down && !altgr_sent && !dec_chord_now && (chord == 11'd0);
-          held_nx[dec_key] = 1'b1;
-          if (dec_altgr) held_nx[7'h0D] = 1'b1;
+          held_we = 1'b1; held_wv = 1'b1;
+          n_held_nx = n_held + 8'd1;
+          if (dec_altgr) begin altgr_nx = 1'b1; n_held_nx = n_held + 8'd2; end
         end
-      end else if (held[dec_key]) begin
+      end else if (held_ev) begin
         dec_emit = 1'b1;
-        held_nx[dec_key] = 1'b0;
-        dec_idle = (held_nx == 128'd0);
+        held_we = 1'b1; held_wv = 1'b0;
+        n_held_nx = n_held - 8'd1;
+        dec_idle = (n_held_nx == 8'd0);
       end
     end
+    // (a key numbered 0x0D, were there one, would live in the flop)
+    if (held_we && dec_key == 7'h0D) altgr_nx = held_wv;
   end
+
+  // the decode of the pending event: once its key's bit is read (ev_rdy),
+  // the queue has room and no reply is being built or sweep running
+  assign ev_take = ev_pend && ev_rdy && !ev_busy && !rep_busy && !clr_busy && q_cnt <= 6'(QD - 4);
 
   always_ff @(posedge clk) begin
     click_o <= 1'b0;
+    ev_rdy  <= ev_pend;
     if (rst) begin
       tog_q      <= ps2_key_i[10];
       pause_brk  <= 1'b0;
       ev_pend    <= 1'b0;
+      ev_rdy     <= 1'b0;
       ev_ext     <= 1'b0;
       ev_make    <= 1'b0;
       ev_code    <= 8'h00;
-      held       <= '0;
+      altgr_held <= 1'b0;
+      n_held     <= '0;
+      clr_busy   <= 1'b1;
+      clr_idx    <= '0;
       ralt_down  <= 1'b0;
       altgr_sent <= 1'b0;
       chord      <= '0;
@@ -316,11 +365,18 @@ module sun_kbd #(
       ev_busy    <= 1'b0;
       rep        <= R_IDLE;
       scan       <= '0;
+      scan_ph    <= 1'b0;
       led_arg    <= 1'b0;
       click_en   <= 1'b0;
       bell_o     <= 1'b0;
       leds_o     <= 4'h0;
     end else begin
+      // the sweep that clears the key bits after reset
+      if (clr_busy) begin
+        clr_idx <= clr_idx + 7'd1;
+        if (clr_idx == 7'd127) clr_busy <= 1'b0;
+      end
+
       // capture a PS/2 event (one pending; a second before the first is
       // decoded is dropped -- hps_io events are milliseconds apart)
       tog_q <= ps2_key_i[10];
@@ -340,10 +396,11 @@ module sun_kbd #(
           pause_brk <= 1'b1;
       end
 
-      // decode when the queue has room and no reply is being built
-      if (ev_pend && !ev_busy && !rep_busy && q_cnt <= 6'(QD - 4)) begin
-        ev_pend <= 1'b0;
-        held    <= held_nx;
+      // decode (the key bits are written above: held_we)
+      if (ev_take) begin
+        ev_pend    <= 1'b0;
+        altgr_held <= altgr_nx;
+        n_held     <= n_held_nx;
         ob_n    <= 2'd0;
         ob_i    <= 2'd0;
         if (dec_is_ralt) begin
@@ -408,14 +465,18 @@ module sun_kbd #(
         end
       end
 
-      // the reply state machine
-      if (rep_busy && !tx_byte_valid_i && !q_full) begin
+      // the reply state machine (the held keys two cycles each: the bit is
+      // read, then pushed if set)
+      if (rep_busy && !tx_byte_valid_i && !q_full && !clr_busy) begin
         case (rep)
           R_FF:   rep <= R_TYPE;
-          R_TYPE: begin rep <= R_KEYS; scan <= 7'd0; end
+          R_TYPE: begin rep <= R_KEYS; scan <= 7'd0; scan_ph <= 1'b0; end
           R_KEYS: begin
-            scan <= scan + 7'd1;
-            if (scan == 7'd127) rep <= R_7F;
+            scan_ph <= !scan_ph;
+            if (scan_ph) begin
+              scan <= scan + 7'd1;
+              if (scan == 7'd127) rep <= R_7F;
+            end
           end
           R_7F:   rep <= R_IDLE;
           R_FE:   rep <= R_LAY;
