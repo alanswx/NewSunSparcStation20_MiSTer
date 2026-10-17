@@ -21,7 +21,8 @@
 //     awaited) with the bus reset's interrupt left pending into the probe;
 //   - ESP-7: no interrupt visible before HOLD_CYCLES after a select;
 //   - ESP-8: SDTR sent by SELATNS + TI, the reply taken a byte at a time,
-//     each MESSAGE ACCEPTED a Bus Service, then the CDB through the FIFO;
+//     each MESSAGE ACCEPTED a Bus Service, then the CDB through the FIFO
+//     (ESP-9: its first bytes one per TI, written after the command);
 //     a queue tag; COMMAND COMPLETE then MESSAGE ACCEPTED disconnects;
 //   - a DVMA error: ERR_PEND, the interrupt, INVALIDATE;
 //   - ledma: the LANCE's requests with E_BASE_ADDR as va[31:24], the
@@ -676,8 +677,23 @@ module tb_espdma;
       check32({24'd0, in}, {24'd0, I_BS}, $sformatf("ESP-8: MESSAGE ACCEPTED %0d: Bus Service", i));
       check32({29'd0, st[2:0]}, i == 4 ? 32'd2 : 32'd7, $sformatf("after MESSAGE ACCEPTED %0d: the phase", i));
     end
+    // ESP-9: NeXTSTEP's sc driver sends the first CDB bytes one per TI,
+    // each written to the FIFO after the command: the TI waits for it
     c = '{8'h12, 0, 0, 0, 36, 0};
-    foreach (c[i]) esp_w(R_FIFO, c[i]);
+    for (int i = 0; i < 3; i++) begin
+      esp_w(R_CMD, C_FLUSH);
+      esp_w(R_CMD, C_TI);
+      cycles(200);
+      esp_r(R_STAT, st);
+      check(st[7] == 1'b0, $sformatf("ESP-9: TI with an empty FIFO waits (byte %0d)", i));
+      esp_w(R_FIFO, c[i]);
+      wait_int(got);
+      esp_r(R_STAT, st);
+      esp_r(R_INTR, in);
+      check32({24'd0, in}, {24'd0, I_BS}, $sformatf("ESP-9: CDB byte %0d sent: Bus Service", i));
+      check32({29'd0, st[2:0]}, 32'd2, $sformatf("ESP-9: after CDB byte %0d: still COMMAND", i));
+    end
+    for (int i = 3; i < 6; i++) esp_w(R_FIFO, c[i]);
     esp_go(C_TI, in, st);
     check32({29'd0, st[2:0]}, 32'd1, "the CDB by TI: DATA IN");
     for (int i = 0; i < 40; i++) mem[DATAB + i] = 8'hEE;

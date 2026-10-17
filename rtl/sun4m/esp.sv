@@ -11,7 +11,7 @@
 //   DMA count reload, the CFG2/CFG3 probe); NetBSD dev/sbus/esp_sbus.c
 //   (how the variant is told apart) and dev/ic/ncr53c9x.c (DMA select);
 //   OpenBIOS drivers/esp.c do_command (tests/cpu/src/scsitest.S mode 2);
-//   docs/VERILOG-PLAN.md §6 ESP-7, ESP-8; docs/legacy/impl-gaps/chipset.md
+//   docs/VERILOG-PLAN.md §6 ESP-7, ESP-8, ESP-9; docs/legacy/impl-gaps/chipset.md
 //   §6 (ESP-1..6); rtl/sun4m/scsi_targets.sv's header (the bus contract).
 //   The register file, FIFO and interrupt merge follow our Quadra core's
 //   ncr53c96.sv (GPL-2, ours); its built-in target is replaced by the bus
@@ -62,6 +62,10 @@
 //    no MESSAGE ACCEPTED follows (modes 0 and 2). After any MESSAGE IN
 //    byte the phase reads MESSAGE IN until MESSAGE ACCEPTED, as the
 //    chip's with ACK held (OBP 2.25 and Solaris rely on it);
+//  - ESP-9: a TI without DMA in an OUT phase moves at least one byte: with
+//    the FIFO empty it waits for the CPU to write one (NeXTSTEP's sc driver
+//    issues TI, then writes the CDB byte; ending at once gave it a Bus
+//    Service in COMMAND phase with nothing sent, and it retried forever);
 //  - scsi_targets has no BSY of its own: the ESP knows the target leaves
 //    the bus after COMMAND COMPLETE/DISCONNECT in (above) and after an
 //    ABORT or BUS DEVICE RESET it sent (Disconnected, bsy dropped);
@@ -201,7 +205,7 @@ module esp
   logic        msg_sent, cmd_sent;
   logic [2:0]  xph;                      // TI/PAD: the phase it moves bytes in
   logic        xph_v;                    //   known (the first req seen)
-  logic        got1;                     // a non-DMA TI received its byte
+  logic        got1;                     // TI: a byte moved (non-DMA in: its one byte)
   logic [16:0] bus_left;                 // DMA TI in: bytes the bus may still bring
   logic        got_st;                   // ICCS took the status byte
   // MESSAGE IN parsing (ESP-8): where the next byte falls in a message
@@ -535,8 +539,8 @@ module esp
             xph_v <= 1'b1;
           end
           if (esp_ack) begin
+            got1 <= 1'b1;
             if (eff_ph[0]) begin
-              got1 <= 1'b1;
               if (dma) bus_left <= bus_left - 17'd1;
             end else if (eff_ph == PH_MOUT && f_cnt == 5'd1 && !(dma && tc != 17'd0))
               atn <= 1'b0;               // before the last message byte's ack
@@ -565,7 +569,9 @@ module esp
                 rz |= I_BS;
                 fin = 1'b1;
               end
-            end else if (!more) begin
+            end else if (!more && (dma || got1)) begin
+              // ESP-9: a non-DMA TI out sends at least one byte, which
+              // may be written to the FIFO after the command
               rz |= I_BS;
               fin = 1'b1;
             end

@@ -60,6 +60,9 @@ fi
 rsh "test -x /tmp/pcdump" || scp -q "${SSH_OPTS[@]}" tools/debugarm/pcdump "$DEV:/tmp/pcdump"
 cap_stop; cap_start "$LOG" 1800
 core_start
+# Under OpenBIOS nothing passes -v: without it the kernel prints nothing on
+# ttya after the loader, so answer the loader's prompt
+[ -n "$OBP" ] || { tty_wait 'boot: ' 300 "$LOG" && tty_type '-v\r'; }
 # Every run ends with the core reloaded under NeXTSTEP, so the root is
 # unclean at the next: fsck fixes it and reboots once ("Root fixed")
 drv='Setting tape block size for /dev/nrst1'
